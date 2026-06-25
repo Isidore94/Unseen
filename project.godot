@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/name="AC Rearmed Clone V0.01"
+config/name="UNSEEN"
 run/main_scene="uid://d317rgsg1mww6"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
