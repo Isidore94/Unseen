@@ -1,0 +1,13 @@
+[gd_scene format=3 uid="uid://d317rgsg1mww6"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_c6smh"]
+
+[node name="Game" type="Node2D" unique_id=595940361]
+
+[node name="Player" type="CharacterBody2D" parent="." unique_id=1457812191]
+motion_mode = 1
+
+[node name="Polygon2D" type="Polygon2D" parent="Player" unique_id=466866030]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Player/Polygon2D" unique_id=1244979358]
+shape = SubResource("RectangleShape2D_c6smh")
