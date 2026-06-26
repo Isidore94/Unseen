@@ -30,6 +30,9 @@ var _arrivals: Array = []
 
 
 func _ready() -> void:
+	# Join "portal" so the online match can find every pad and switch teleporting OFF
+	# on clients — only the host (referee) may move a body through a portal.
+	add_to_group("portal")
 	collision_layer = 0
 	collision_mask = 2  # detect the "player" physics layer (players are layer 2)
 	monitoring = true

@@ -1,0 +1,13 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0unseenmenu01"]
+
+[ext_resource type="Script" path="res://scripts/main_menu.gd" id="1_menu"]
+
+; MainMenu — UNSEEN, Phase 6.0. The default run scene. Host / Join / Local-AI-test.
+; UI is built in code by main_menu.gd, so this scene is just the script holder.
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_menu")

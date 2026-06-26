@@ -2,6 +2,31 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 6 — Online multiplayer (started)  ·  version 0.6.0
+
+### Session: 6.0 loopback spike (ENet) + versioning
+- **Plan:** added `MULTIPLAYER_PLAN.md` — the detailed netcode plan (server-authoritative
+  listen-server, clients send INPUT only, uniform server authority to hide who's human,
+  ENet-loopback first then Steam relay). Read it before touching netcode.
+- **`scripts/net/network_manager.gd` (new, autoload):** connectivity only — host/join over
+  ENet, clean `player_joined`/`player_left`/`connection_*` signals. Transport is isolated
+  here so Steam relay can slot in at 6.2 without touching the game.
+- **`scenes/main_menu.tscn` + `main_menu.gd` (new):** the new default scene — Host / Join /
+  Local-AI-test (the kept split-screen). Shows the build version bottom-left.
+- **`scenes/online_match.tscn` + `online_match.gd` (new):** networked run shell. Builds the
+  map locally on each peer; host spawns one character per player via `MultiplayerSpawner`;
+  host/client `_request_spawn` handshake avoids spawn races. Portals disabled on clients
+  (host-authoritative). 6.0 scope = players only (no crowd/kills yet).
+- **`scripts/player.gd`:** added server-authoritative ONLINE mode (`network_controlled`).
+  The controlling machine reads input and `rpc`s it to the host; the host moves every
+  character; a `MultiplayerSynchronizer` (built in code) replicates position+velocity to
+  all. Offline path unchanged. Kill component disabled online until 6.1.
+- **`scripts/portal.gd`:** joins group `"portal"` so clients can switch teleporting off.
+- **`project.godot`:** registered the `NetworkManager` autoload; default scene → main menu;
+  added `config/version="0.6.0"` as the single source of truth for the build number.
+- **Test:** Debug → Run Multiple Instances (2); F5; one window Host, one Join 127.0.0.1;
+  both characters should move in sync.
+
 ## Phase 4 - Local two-player fun test (started)
 
 ### Session: Character sprite sheets + crowd avoidance + mark highlight

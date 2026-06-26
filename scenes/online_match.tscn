@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0unseenmatch01"]
+
+[ext_resource type="Script" path="res://scripts/online_match.gd" id="1_match"]
+
+; OnlineMatch — UNSEEN, Phase 6.0. The networked run shell. The map, the players
+; container, and the MultiplayerSpawner are all built in code (online_match.gd) so
+; that server and clients construct an identical tree at matching node paths.
+
+[node name="OnlineMatch" type="Node2D"]
+script = ExtResource("1_match")
