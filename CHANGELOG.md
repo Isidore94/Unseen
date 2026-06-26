@@ -4,6 +4,18 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 6 — Online multiplayer (started)  ·  version 0.6.0
 
+### Session: 6.1 — networked crowd + private marks (in progress, on `phase-6-online`)
+- **6.1a crowd:** `npc.gd` gained online mode — host runs the wandering AI, clients show
+  a replicated puppet (code-built `MultiplayerSynchronizer`, position+velocity). A second
+  `CrowdSpawner` in `online_match.gd` spawns `npc_count` NPCs with shared appearance.
+- **6.1b private marks + per-client mini-map + highlight:** host secretly picks a random
+  crowd NPC as each peer's mark (`killable_for_<peer>` + "mark") and tells ONLY that peer
+  (owner-only RPC of the mark's node name). Each machine builds its own HUD: a mini-map
+  (you + gold mark dot, reused `mini_map.gd` via new `track_objective()`) and a gold
+  highlight ring on the mark — drawn ONLY on the owner's screen, so the split-screen
+  highlight leak is gone online. Lazy per-frame resolution avoids spawn/RPC races.
+- Still to come in 6.1: server-validated kills + owner-only exposure HUD + win/lose.
+
 ### Session: 6.0 loopback spike (ENet) + versioning
 - **Plan:** added `MULTIPLAYER_PLAN.md` — the detailed netcode plan (server-authoritative
   listen-server, clients send INPUT only, uniform server authority to hide who's human,

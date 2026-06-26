@@ -21,6 +21,9 @@ class_name MiniMap
 var _map: TestMap01 = null
 var _player: Node2D = null
 var _contract: ContractManager = null
+## Online play hands the objective node in directly (the host privately tells each
+## client which crowd member is its mark), instead of asking an offline contract.
+var _objective_node: Node2D = null
 
 var _ping_timer: float = 0.0
 var _ping_visible: bool = false
@@ -49,7 +52,14 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+# Online: point the mini-map straight at the mark node the host told us about.
+func track_objective(node: Node2D) -> void:
+	_objective_node = node
+
+
 func _objective() -> Node2D:
+	if _objective_node != null and is_instance_valid(_objective_node):
+		return _objective_node
 	if _contract != null and is_instance_valid(_contract):
 		return _contract.get_objective()
 	return null
