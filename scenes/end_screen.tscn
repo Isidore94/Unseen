@@ -1,0 +1,35 @@
+[gd_scene format=3 uid="uid://cvb1ydmrou2nc"]
+
+[ext_resource type="Script" path="res://scripts/end_screen.gd" id="1_end"]
+
+[node name="EndScreen" type="CanvasLayer"]
+process_mode = 3
+script = ExtResource("1_end")
+
+[node name="Dim" type="ColorRect" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0, 0, 0, 0.65)
+
+[node name="Center" type="CenterContainer" parent="."]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Box" type="VBoxContainer" parent="Center"]
+theme_override_constants/separation = 24
+
+[node name="ResultLabel" type="Label" parent="Center/Box"]
+theme_override_font_sizes/font_size = 56
+text = "RESULT"
+horizontal_alignment = 1
+
+[node name="BreakdownLabel" type="Label" parent="Center/Box"]
+theme_override_font_sizes/font_size = 24
+text = "..."
+horizontal_alignment = 1
+
+[node name="PlayAgainButton" type="Button" parent="Center/Box"]
+custom_minimum_size = Vector2(220, 56)
+text = "Play Again"

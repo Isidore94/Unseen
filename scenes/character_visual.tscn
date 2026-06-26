@@ -1,0 +1,13 @@
+[gd_scene load_steps=2 format=3 uid="uid://f287ld01dvlg"]
+
+[ext_resource type="Script" path="res://scripts/character_visual.gd" id="1_visual"]
+
+; CharacterVisual — UNSEEN. The shared "body" worn by the PLAYER and EVERY NPC.
+; Pillar #1 (sameness is sacred): players and civilians instance this one node.
+; It renders a random character SPRITE SHEET, picking the facing row and walk-cycle
+; column from the parent's velocity. The Sprite2D is built in code (see the script)
+; so the scene stays tiny; appearance is set via set_appearance() — data, not a
+; baked-in look — ready for the per-viewer cosmetics system later.
+
+[node name="CharacterVisual" type="Node2D"]
+script = ExtResource("1_visual")

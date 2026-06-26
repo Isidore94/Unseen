@@ -1,0 +1,54 @@
+[gd_scene load_steps=4 format=3 uid="uid://dofv6lag80e7k"]
+
+[ext_resource type="Script" path="res://scripts/test_map.gd" id="1_map"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_vertical"]
+size = Vector2(40, 2440)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_horizontal"]
+size = Vector2(3640, 40)
+
+[node name="TestMap" type="Node2D"]
+script = ExtResource("1_map")
+
+[node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]
+
+[node name="WallLeft" type="StaticBody2D" parent="."]
+position = Vector2(-1800, 0)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallLeft"]
+shape = SubResource("RectangleShape2D_vertical")
+
+[node name="Polygon2D" type="Polygon2D" parent="WallLeft"]
+color = Color(0.4, 0.4, 0.43, 1)
+polygon = PackedVector2Array(-20, -1220, 20, -1220, 20, 1220, -20, 1220)
+
+[node name="WallRight" type="StaticBody2D" parent="."]
+position = Vector2(1800, 0)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallRight"]
+shape = SubResource("RectangleShape2D_vertical")
+
+[node name="Polygon2D" type="Polygon2D" parent="WallRight"]
+color = Color(0.4, 0.4, 0.43, 1)
+polygon = PackedVector2Array(-20, -1220, 20, -1220, 20, 1220, -20, 1220)
+
+[node name="WallTop" type="StaticBody2D" parent="."]
+position = Vector2(0, -1200)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallTop"]
+shape = SubResource("RectangleShape2D_horizontal")
+
+[node name="Polygon2D" type="Polygon2D" parent="WallTop"]
+color = Color(0.4, 0.4, 0.43, 1)
+polygon = PackedVector2Array(-1820, -20, 1820, -20, 1820, 20, -1820, 20)
+
+[node name="WallBottom" type="StaticBody2D" parent="."]
+position = Vector2(0, 1200)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="WallBottom"]
+shape = SubResource("RectangleShape2D_horizontal")
+
+[node name="Polygon2D" type="Polygon2D" parent="WallBottom"]
+color = Color(0.4, 0.4, 0.43, 1)
+polygon = PackedVector2Array(-1820, -20, 1820, -20, 1820, 20, -1820, 20)

@@ -1,0 +1,29 @@
+[gd_scene format=3 uid="uid://bnsdns3qio105"]
+
+[ext_resource type="Script" path="res://scripts/npc.gd" id="1_npc"]
+[ext_resource type="PackedScene" uid="uid://f287ld01dvlg" path="res://scenes/character_visual.tscn" id="2_visual"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_npc"]
+size = Vector2(71, 67.5)
+
+[node name="NPC" type="CharacterBody2D"]
+motion_mode = 1
+collision_layer = 4
+collision_mask = 1
+script = ExtResource("1_npc")
+
+[node name="CharacterVisual" parent="." instance=ExtResource("2_visual")]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(-2.5, -10.75)
+shape = SubResource("RectangleShape2D_npc")
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
+path_desired_distance = 16.0
+target_desired_distance = 24.0
+avoidance_enabled = true
+radius = 40.0
+neighbor_distance = 220.0
+max_neighbors = 12
+time_horizon_agents = 1.0
+max_speed = 90.0

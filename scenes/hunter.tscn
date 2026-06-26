@@ -1,0 +1,28 @@
+[gd_scene load_steps=5 format=3 uid="uid://bhunter000001"]
+
+[ext_resource type="Script" path="res://scripts/hunter_ai.gd" id="1_hunter"]
+[ext_resource type="PackedScene" uid="uid://f287ld01dvlg" path="res://scenes/character_visual.tscn" id="2_visual"]
+[ext_resource type="Script" uid="uid://dr5nj6w7uwien" path="res://components/exposure_component.gd" id="3_exposure"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_hunter"]
+size = Vector2(71, 67.5)
+
+[node name="Hunter" type="CharacterBody2D"]
+motion_mode = 1
+collision_layer = 4
+collision_mask = 1
+script = ExtResource("1_hunter")
+
+[node name="CharacterVisual" parent="." instance=ExtResource("2_visual")]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+position = Vector2(-2.5, -10.75)
+shape = SubResource("RectangleShape2D_hunter")
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
+path_desired_distance = 16.0
+target_desired_distance = 16.0
+avoidance_enabled = false
+
+[node name="ExposureComponent" type="Node" parent="."]
+script = ExtResource("3_exposure")
