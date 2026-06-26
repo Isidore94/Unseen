@@ -21,7 +21,15 @@ Short, session-by-session log so we never lose the thread between sessions.
   wrong-commit exposure penalty (never client-trusted). Host relays each player's
   exposure to its OWNER only (`exposure_changed` → owner RPC → private bar). Killing
   your mark shows "Mark eliminated".
-- Still to come in 6.1: the PvP "hunt your opponent" phase + win/lose + scoring.
+- **6.1d PvP endgame (full loop):** killing your mark now moves you to the "target"
+  phase — the host makes your human opponent killable by you and privately tells you
+  who they are. Your view switches to PvP tracking: the mini-map shows delayed **pings**
+  (`track_objective_pinged`) and a fading **exposure arrow** points at them when they're
+  exposed (host forwards the opponent's exposure to you — the §7.1 reward). Killing your
+  target ends the round: the host declares the winner and every machine shows a
+  **YOU WIN / YOU LOSE** end overlay (pause + back-to-menu). Returning to the menu now
+  clears pause. Offline split-screen path unchanged.
+- 6.1 complete pending verification → then merge `phase-6-online` to `main`.
 
 ### Session: 6.0 loopback spike (ENet) + versioning
 - **Plan:** added `MULTIPLAYER_PLAN.md` — the detailed netcode plan (server-authoritative

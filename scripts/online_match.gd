@@ -41,6 +41,12 @@ var _next_spawn_index: int = 0
 ## the host; each peer is told only ITS OWN mark (MULTIPLAYER_PLAN.md §4).
 var _mark_by_peer: Dictionary = {}
 
+## Host-only contract state: each peer's phase ("marks" -> "target" -> "done") and,
+## once in the target phase, which peer they are hunting.
+var _phase_by_peer: Dictionary = {}
+var _hunter_target: Dictionary = {}  # hunter_peer -> target_peer
+var _round_over: bool = false
+
 ## This machine's own private view. Host AND client each control one local player and
 ## each builds its own HUD + mini-map + mark highlight for that player only.
 var _local_player: Player = null
@@ -50,6 +56,11 @@ var _objective_label: Label = null
 var _exposure_bar: ProgressBar = null
 var _my_mark_name: String = ""
 var _my_mark: Node2D = null
+## Online PvP: once we've finished our mark, the host tells us our opponent. We resolve
+## the node, switch the mini-map to pings, and point a fading arrow at them.
+var _my_target_name: String = ""
+var _my_target: Node2D = null
+var _target_arrow: ExposureArrow = null
 
 
 func _ready() -> void:
@@ -156,12 +167,29 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	if exposure != null:
 		exposure.exposure_changed.connect(_on_player_exposure_changed.bind(peer_id))
 
+	# Host watches for this player being killed (their death ends the round).
+	character.died.connect(_on_player_killed.bind(peer_id))
+
 	_update_status()
 
 
-# Host-side: a player's exposure changed → push the new value to that player only.
+# Host-side: a player's exposure changed → push it to that player (their own bar) AND
+# to whoever is hunting them (so the hunter's exposure arrow can react — §7.1 intel).
 func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 	_receive_exposure.rpc_id(peer_id, value)
+	for hunter_peer in _hunter_target:
+		if _hunter_target[hunter_peer] == peer_id:
+			_receive_opponent_exposure.rpc_id(hunter_peer, value)
+
+
+# Owner-only: our opponent's exposure, fed to our local copy of them so the arrow can
+# decide whether to point. Only sent to a peer that has earned tracking (finished its mark).
+@rpc("authority", "call_local", "unreliable")
+func _receive_opponent_exposure(value: float) -> void:
+	if _my_target != null and is_instance_valid(_my_target):
+		var exposure := _my_target.get_node_or_null("ExposureComponent") as ExposureComponent
+		if exposure != null:
+			exposure.exposure = value
 
 
 # Owner-only: update OUR exposure bar with the host's authoritative value.
@@ -248,6 +276,9 @@ func _spawn_position_for_index(index: int) -> Vector2:
 
 
 func _return_to_menu() -> void:
+	# Pause survives a scene change, so always clear it on the way out (e.g. after the
+	# end screen, or if the host drops while we're paused) or the menu would be frozen.
+	get_tree().paused = false
 	NetworkManager.leave()
 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
 
@@ -277,17 +308,102 @@ func _assign_mark_for_peer(peer_id: int) -> void:
 	_receive_mark.rpc_id(peer_id, String(mark.name))
 
 
-# Host-side: a peer's mark was killed → tell that peer (privately).
+# Host-side: a peer's mark was killed → move that peer into the PvP "hunt" phase.
 func _on_mark_killed(peer_id: int) -> void:
-	_mark_killed_for_owner.rpc_id(peer_id)
+	_begin_target_phase(peer_id)
 
 
-# Owner-only: our mark is down. (Hunting the human opponent comes in the next step.)
+# Host-only: the peer has finished their mark, so now they hunt the human opponent.
+# We make the opponent killable BY this peer and privately tell this peer who it is.
+func _begin_target_phase(peer_id: int) -> void:
+	if not multiplayer.is_server() or _phase_by_peer.get(peer_id, "marks") == "target":
+		return
+	var opponent_peer := _other_peer(peer_id)
+	if opponent_peer == 0:
+		return  # nobody to hunt yet
+	_phase_by_peer[peer_id] = "target"
+	_hunter_target[peer_id] = opponent_peer
+	var opponent := _players_by_peer[opponent_peer] as Player
+	opponent.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
+	_enter_target_phase.rpc_id(peer_id, String(opponent.name))
+
+
+# Returns any other living player's peer id (the opponent). 2-player for now.
+func _other_peer(peer_id: int) -> int:
+	for other in _players_by_peer:
+		if other != peer_id:
+			return other
+	return 0
+
+
+# Owner-only: our mark is down — start hunting our opponent. The opponent node is
+# resolved lazily (next frame) to switch the mini-map to pings and raise the arrow.
 @rpc("authority", "call_local", "reliable")
-func _mark_killed_for_owner() -> void:
+func _enter_target_phase(opponent_name: String) -> void:
 	_my_mark = null
+	_my_mark_name = ""
+	_my_target_name = opponent_name
 	if _objective_label != null:
-		_objective_label.text = "Mark eliminated! (hunting your opponent comes next)"
+		_objective_label.text = "Mark down — HUNT YOUR OPPONENT (pings on the map)."
+
+
+# === win / lose =============================================================
+
+# Host-side: a player was killed → the round is over; whoever was hunting them wins.
+func _on_player_killed(loser_peer: int) -> void:
+	if not multiplayer.is_server() or _round_over:
+		return
+	_round_over = true
+	var winner_peer := _hunter_of(loser_peer)
+	_declare_round_over.rpc(winner_peer)
+
+
+func _hunter_of(loser_peer: int) -> int:
+	for hunter_peer in _hunter_target:
+		if _hunter_target[hunter_peer] == loser_peer:
+			return hunter_peer
+	return _other_peer(loser_peer)  # fallback: the other player
+
+
+# Everyone: show the result for THIS machine and freeze the match.
+@rpc("authority", "call_local", "reliable")
+func _declare_round_over(winner_peer: int) -> void:
+	var we_won := winner_peer == multiplayer.get_unique_id()
+	_show_end_overlay(we_won)
+	get_tree().paused = true
+
+
+func _show_end_overlay(we_won: bool) -> void:
+	var overlay := CanvasLayer.new()
+	overlay.name = "EndOverlay"
+	# Keep working while the tree is paused, so the button still responds.
+	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(overlay)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.6)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(dim)
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_CENTER)
+	box.add_theme_constant_override("separation", 16)
+	overlay.add_child(box)
+
+	var result := Label.new()
+	result.text = "YOU WIN" if we_won else "YOU LOSE"
+	result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	result.add_theme_font_size_override("font_size", 56)
+	box.add_child(result)
+
+	var menu_button := Button.new()
+	menu_button.text = "Back to menu"
+	menu_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	box.add_child(menu_button)
+	menu_button.pressed.connect(func() -> void:
+		get_tree().paused = false
+		_return_to_menu()
+	)
 
 
 # Owner-only: the host tells US which crowd NPC is our mark. We just remember the
@@ -312,7 +428,7 @@ func _update_local_view() -> void:
 		if _local_player != null:
 			_build_player_hud()
 
-	if _my_mark == null and _my_mark_name != "" and _crowd_parent != null:
+	if _my_mark == null and _my_target == null and _my_mark_name != "" and _crowd_parent != null:
 		var mark := _crowd_parent.get_node_or_null(_my_mark_name) as Node2D
 		if mark != null:
 			_my_mark = mark
@@ -321,6 +437,16 @@ func _update_local_view() -> void:
 				_mini_map.track_objective(mark)
 			if _objective_label != null:
 				_objective_label.text = "Find and eliminate your mark (gold dot)."
+
+	# Once the host hands us our opponent, resolve them and raise the PvP tracking:
+	# delayed mini-map pings + a fading arrow that points their way (master_plan §7.1).
+	if _my_target == null and _my_target_name != "" and _players_parent != null:
+		var opponent := _players_parent.get_node_or_null(_my_target_name) as Node2D
+		if opponent != null:
+			_my_target = opponent
+			if _mini_map != null:
+				_mini_map.track_objective_pinged(opponent)
+			_build_target_arrow(opponent)
 
 
 func _find_local_player() -> Player:
@@ -375,6 +501,18 @@ func _highlight_mark(mark: Node) -> void:
 	var visual := mark.get_node_or_null("CharacterVisual")
 	if visual != null and visual.has_method("set_highlight"):
 		visual.call("set_highlight", true)
+
+
+# A fading arrow that points toward our opponent when they're off-screen AND exposed
+# (the host feeds us their exposure once we've earned tracking). It uses the active
+# camera, so it just works in our own view.
+func _build_target_arrow(opponent: Node2D) -> void:
+	if _player_hud_layer == null:
+		return
+	_target_arrow = ExposureArrow.new()
+	_target_arrow.name = "TargetArrow"
+	_player_hud_layer.add_child(_target_arrow)
+	_target_arrow.track_target(opponent)
 
 
 # === minimal on-screen status (6.0 debugging aid) ===========================

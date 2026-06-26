@@ -24,6 +24,9 @@ var _contract: ContractManager = null
 ## Online play hands the objective node in directly (the host privately tells each
 ## client which crowd member is its mark), instead of asking an offline contract.
 var _objective_node: Node2D = null
+## Online: when true, the objective is shown as periodic pings (PvP opponent), not a
+## live dot (PvE mark). Offline keeps using the contract's phase instead.
+var _ping_mode: bool = false
 
 var _ping_timer: float = 0.0
 var _ping_visible: bool = false
@@ -52,9 +55,17 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
-# Online: point the mini-map straight at the mark node the host told us about.
+# Online, PvE: track a node with a LIVE dot (your wandering mark).
 func track_objective(node: Node2D) -> void:
 	_objective_node = node
+	_ping_mode = false
+
+
+# Online, PvP: track a node with delayed PINGS only (your opponent, once you've
+# earned tracking by finishing your mark — master_plan §7.1).
+func track_objective_pinged(node: Node2D) -> void:
+	_objective_node = node
+	_ping_mode = true
 
 
 func _objective() -> Node2D:
@@ -88,12 +99,22 @@ func _draw() -> void:
 	if _player != null and is_instance_valid(_player):
 		draw_circle(_world_to_map(_player.global_position), 4.5, self_color)
 
-	# Objective.
-	var phase: String = _contract.get_phase() if (_contract != null and is_instance_valid(_contract)) else "marks"
-	if phase == "marks":
-		var mark := _objective()
-		if mark != null and is_instance_valid(mark):
-			draw_circle(_world_to_map(mark.global_position), 4.5, mark_color)
-	elif _ping_visible:
-		# PvP: only the periodic ping — intel with delay, not a live tracker.
-		draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
+	# Objective dot.
+	if _contract != null and is_instance_valid(_contract):
+		# Offline: phase-driven (live mark, then PvP ping) via the contract.
+		var phase: String = _contract.get_phase()
+		if phase == "marks":
+			var mark := _objective()
+			if mark != null and is_instance_valid(mark):
+				draw_circle(_world_to_map(mark.global_position), 4.5, mark_color)
+		elif _ping_visible:
+			draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
+	else:
+		# Online: mode is set explicitly by the match (live mark, or pinged opponent).
+		var objective := _objective()
+		if objective != null and is_instance_valid(objective):
+			if _ping_mode:
+				if _ping_visible:
+					draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
+			else:
+				draw_circle(_world_to_map(objective.global_position), 4.5, mark_color)
