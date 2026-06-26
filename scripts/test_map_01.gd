@@ -27,8 +27,10 @@ const LAYOUT := [
 ]
 
 # ===== size / tuning =====
-@export var play_half_width: float = 1500.0
-@export var play_half_height: float = 1100.0
+## Half-extents of the playable area. Enlarged so a bigger crowd spreads out instead
+## of clumping (the nav, walls, spawns and portals all scale from these two numbers).
+@export var play_half_width: float = 2400.0
+@export var play_half_height: float = 1750.0
 @export var wall_thickness: float = 40.0
 ## Gap kept between the walkable navigation floor and solid walls/buildings, so
 ## actors never clip corners. MUST exceed an actor half-width (~36) with margin to
@@ -54,6 +56,9 @@ var _player_spawns: Array[Vector2] = []
 var _mark_locations: Array[Vector2] = []
 var _teleport_pads: Array[Vector2] = []
 var _density_zones: Array[Rect2] = []
+## Each portal pair: {"a": Vector2, "b": Vector2, "color": Color}. The mini-map reads
+## this to show where each teleporter goes (matching colour = the two linked ends).
+var _portal_links: Array = []
 
 
 func _ready() -> void:
@@ -74,6 +79,10 @@ func get_mark_locations() -> Array[Vector2]:
 
 func get_teleport_pads() -> Array[Vector2]:
 	return _teleport_pads
+
+# Portal pairs (positions + colour) — used by the mini-map to show the teleporters.
+func get_portal_links() -> Array:
+	return _portal_links
 
 # Building rectangles (in world coords) — used by the mini-map to sketch the layout.
 func get_building_rects() -> Array:
@@ -226,6 +235,8 @@ func _spawn_portal_pair(a: Vector2, b: Vector2, color: Color, cost: float, radiu
 	var portal_b := _make_portal(b, color, cost, radius)
 	portal_a.link = portal_b
 	portal_b.link = portal_a
+	# Remember the pair so the mini-map can draw it (matching colour links the two ends).
+	_portal_links.append({"a": a, "b": b, "color": color})
 
 
 func _make_portal(pos: Vector2, color: Color, cost: float, radius: float) -> Portal:

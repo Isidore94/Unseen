@@ -37,7 +37,12 @@ Short, session-by-session log so we never lose the thread between sessions.
   **flashing** style (`set_flashing`) that pulses toward them every ~2.5s when
   off-screen, ignoring exposure. `exposure_arrow.gd` gained the flashing mode +
   `_compute_offscreen_arrow` split; mini-map keeps only self + the gold mark dot.
-- 6.1 complete pending verification → then merge `phase-6-online` to `main`.
+- **6.1f crowd + map + mini-map tweaks:** crowd tripled (`npc_count` 30 → 90); map play
+  area enlarged (`play_half_width/height` → 2400/1750, ~2.5× area) so the bigger crowd
+  spreads out instead of clumping. Mini-map now draws the **teleporters/passages
+  colour-coded** — each pair shares a colour with a thin line linking its two ends
+  (`test_map_01.get_portal_links()` + mini-map drawing).
+- 6.1 complete pending verification → then merge `phase-6-online` to `main` + tag v0.6.1.
 
 ### Session: 6.0 loopback spike (ENet) + versioning
 - **Plan:** added `MULTIPLAYER_PLAN.md` — the detailed netcode plan (server-authoritative

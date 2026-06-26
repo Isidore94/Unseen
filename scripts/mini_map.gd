@@ -95,6 +95,17 @@ func _draw() -> void:
 			var bottom_right := _world_to_map(rect.end)
 			draw_rect(Rect2(top_left, bottom_right - top_left), Color(1, 1, 1, 0.10), true)
 
+	# Teleporters / passages — colour-coded. Each pair shares a colour, and a thin line
+	# links its two ends, so you can read at a glance where each one comes out.
+	if _map.has_method("get_portal_links"):
+		for link in _map.get_portal_links():
+			var end_a := _world_to_map(link["a"])
+			var end_b := _world_to_map(link["b"])
+			var link_color: Color = link["color"]
+			draw_line(end_a, end_b, Color(link_color.r, link_color.g, link_color.b, 0.35), 1.5)
+			draw_circle(end_a, 3.5, link_color)
+			draw_circle(end_b, 3.5, link_color)
+
 	# You.
 	if _player != null and is_instance_valid(_player):
 		draw_circle(_world_to_map(_player.global_position), 4.5, self_color)

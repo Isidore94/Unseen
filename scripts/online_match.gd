@@ -23,7 +23,7 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 const NUM_SHEETS := 5
 
 ## Size of the AI crowd the host simulates (the people you hide among).
-@export var npc_count: int = 30
+@export var npc_count: int = 90
 
 var _map: Node = null
 var _players_parent: Node2D = null
