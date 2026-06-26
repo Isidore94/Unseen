@@ -30,6 +30,15 @@ class_name Npc
 ## so they stay put at their location for you to find and kill.
 @export var can_wander: bool = true
 
+# === networking (Phase 6.1 — see MULTIPLAYER_PLAN.md §2) ====================
+## When true, this NPC is part of an ONLINE crowd: the HOST runs its wandering AI
+## and replicates its position; clients just display it as a puppet (no local AI).
+## Offline play leaves this false and the NPC behaves exactly as before.
+@export var network_controlled: bool = false
+## (Online) Which sprite sheet (0-4) this NPC wears. The host assigns it so the crowd
+## looks identical on every screen.
+@export var appearance_index: int = 0
+
 ## Emitted the moment this NPC is killed (before the death animation). The
 ## contract uses it to know a mark is down.
 signal died
@@ -51,10 +60,48 @@ func _ready() -> void:
 	# nearby NPCs, then hands it back via this signal — and THAT's the one we move
 	# with. This is what stops the crowd clumping into a single blob.
 	navigation_agent.velocity_computed.connect(_on_velocity_computed)
+
+	# Online: only the host runs AI; clients display a replicated puppet.
+	if network_controlled:
+		_setup_network_role()
+		return
+
 	# Marks don't wander; the crowd does. The navigation mesh isn't registered on
 	# the very first frame, so we defer the first destination pick a frame.
 	if can_wander:
 		call_deferred("_begin_wandering")
+
+
+# Online setup, run on every machine. The host keeps simulating; clients freeze the
+# local AI and let the position replicator drive the body. (MULTIPLAYER_PLAN.md §2.)
+func _setup_network_role() -> void:
+	# Wear the sheet the host assigned (sent identically to every peer at spawn).
+	var visual := get_node_or_null("CharacterVisual")
+	if visual != null and visual.has_method("set_appearance"):
+		visual.call("set_appearance", appearance_index)
+
+	_build_position_synchronizer()
+
+	if multiplayer.is_server():
+		# Host: run the wandering AI normally; the synchronizer ships positions out.
+		if can_wander:
+			call_deferred("_begin_wandering")
+	else:
+		# Client: this NPC is a puppet the host moves — switch off our local AI so it
+		# can't fight the replicated position.
+		set_physics_process(false)
+
+
+# Copies this NPC's position + velocity FROM the host TO every client each tick.
+# Velocity is included so the shared CharacterVisual faces/animates on clients too.
+func _build_position_synchronizer() -> void:
+	var replication := SceneReplicationConfig.new()
+	replication.add_property(NodePath(".:position"))
+	replication.add_property(NodePath(".:velocity"))
+	var synchronizer := MultiplayerSynchronizer.new()
+	synchronizer.name = "NetSync"
+	synchronizer.replication_config = replication
+	add_child(synchronizer)
 
 
 # Called by the player's KillComponent when this NPC is a valid (marked) target.

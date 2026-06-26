@@ -8,20 +8,27 @@ class_name OnlineMatch
 # geometry, so each peer just builds its own copy) and lets the HOST spawn one
 # character per connected player. Those characters are the only thing replicated.
 #
-# 6.0 SCOPE: just players walking around in sync. No crowd, no kills yet — those
-# come in 6.1. This milestone exists to prove the networking loop end-to-end.
+# STATUS: 6.0 (players replicated) done; 6.1 in progress — a HOST-simulated crowd is
+# now replicated to all clients too. Still to come in 6.1: server-validated kills and
+# private per-player state (your mark, exposure, mini-map, highlight).
 
 const MAP_SCENE := preload("res://maps/test_map_01.tscn")
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
+const NPC_SCENE := preload("res://scenes/npc.tscn")
 const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 
 ## How many sprite sheets exist (assets/sprites). Characters cycle through them so a
 ## small match still looks varied. Keep in sync with CharacterVisual's sheet list.
 const NUM_SHEETS := 5
 
+## Size of the AI crowd the host simulates (the people you hide among).
+@export var npc_count: int = 30
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
+var _crowd_parent: Node2D = null
+var _crowd_spawner: MultiplayerSpawner = null
 var _status_label: Label = null
 
 ## Host-only bookkeeping: which character belongs to which peer, and the next spawn
@@ -66,14 +73,40 @@ func _build_world() -> void:
 	_player_spawner.spawn_path = _player_spawner.get_path_to(_players_parent)
 	_player_spawner.spawn_function = Callable(self, "_create_networked_player")
 
+	# The crowd lives under its own node with its own spawner. The host fills it; the
+	# spawner copies each NPC to every client (where it's a display-only puppet).
+	_crowd_parent = Node2D.new()
+	_crowd_parent.name = "Crowd"
+	add_child(_crowd_parent)
+	_crowd_spawner = MultiplayerSpawner.new()
+	_crowd_spawner.name = "CrowdSpawner"
+	add_child(_crowd_spawner)
+	_crowd_spawner.spawn_path = _crowd_spawner.get_path_to(_crowd_parent)
+	_crowd_spawner.spawn_function = Callable(self, "_create_networked_npc")
+
 
 # === host ===================================================================
 
 func _start_as_host() -> void:
 	# Spawn the host's own character (the host is peer 1 and also a player).
 	_spawn_player_for_peer(1)
+	# Populate the crowd the players hide among (host-simulated, replicated out).
+	_spawn_crowd()
 	# When a client's scene is ready, it asks us (via _request_spawn) to spawn it.
 	NetworkManager.player_left.connect(_on_player_left)
+
+
+func _spawn_crowd() -> void:
+	var map := _map as TestMap01
+	for _i in npc_count:
+		var spawn_position := Vector2.ZERO
+		if map != null:
+			spawn_position = map.random_walkable_point()
+		var spawn_data := {
+			"pos": spawn_position,
+			"appearance": randi() % NUM_SHEETS,
+		}
+		_crowd_spawner.spawn(spawn_data)
 
 
 # Called BY a client (over the network) once that client's scene is built and ready
@@ -152,6 +185,19 @@ func _create_networked_player(spawn_data: Dictionary) -> Node:
 	if visual != null:
 		visual.set("randomize_on_ready", false)
 	return character
+
+
+# Runs on EVERY peer to build a crowd NPC from the host's spawn data, so each NPC
+# looks and starts identically everywhere. The host then runs its AI; clients freeze it.
+func _create_networked_npc(spawn_data: Dictionary) -> Node:
+	var npc := NPC_SCENE.instantiate() as Npc
+	npc.network_controlled = true
+	npc.appearance_index = int(spawn_data["appearance"])
+	npc.position = spawn_data["pos"]
+	var visual := npc.get_node_or_null("CharacterVisual")
+	if visual != null:
+		visual.set("randomize_on_ready", false)
+	return npc
 
 
 func _spawn_position_for_index(index: int) -> Vector2:
