@@ -47,6 +47,7 @@ var _local_player: Player = null
 var _player_hud_layer: CanvasLayer = null
 var _mini_map: MiniMap = null
 var _objective_label: Label = null
+var _exposure_bar: ProgressBar = null
 var _my_mark_name: String = ""
 var _my_mark: Node2D = null
 
@@ -148,7 +149,26 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	var character := _player_spawner.spawn(spawn_data)
 	_players_by_peer[peer_id] = character
 	_next_spawn_index += 1
+
+	# Host relays THIS player's exposure to its owner only (private — §4). The signal
+	# fires only when the value changes, so this isn't a constant stream.
+	var exposure := character.get_node_or_null("ExposureComponent")
+	if exposure != null:
+		exposure.exposure_changed.connect(_on_player_exposure_changed.bind(peer_id))
+
 	_update_status()
+
+
+# Host-side: a player's exposure changed → push the new value to that player only.
+func _on_player_exposure_changed(value: float, peer_id: int) -> void:
+	_receive_exposure.rpc_id(peer_id, value)
+
+
+# Owner-only: update OUR exposure bar with the host's authoritative value.
+@rpc("authority", "call_local", "unreliable")
+func _receive_exposure(value: float) -> void:
+	if _exposure_bar != null:
+		_exposure_bar.value = value
 
 
 func _on_player_left(peer_id: int) -> void:
@@ -247,12 +267,27 @@ func _assign_mark_for_peer(peer_id: int) -> void:
 	if candidates.is_empty():
 		return
 	var mark: Npc = candidates[randi() % candidates.size()]
-	mark.add_to_group("killable_for_%d" % peer_id)  # used by server-validated kills (6.1c)
+	mark.add_to_group("killable_for_%d" % peer_id)  # the host-validated kill check uses this
 	mark.add_to_group("mark")
 	_mark_by_peer[peer_id] = mark
+	# Tell the owner privately when their mark dies (the host emits "died" on the kill).
+	mark.died.connect(_on_mark_killed.bind(peer_id))
 	# Send the mark's node name ONLY to its owner. The name matches across peers, so
 	# the owner can find the same NPC in its own copy of the crowd.
 	_receive_mark.rpc_id(peer_id, String(mark.name))
+
+
+# Host-side: a peer's mark was killed → tell that peer (privately).
+func _on_mark_killed(peer_id: int) -> void:
+	_mark_killed_for_owner.rpc_id(peer_id)
+
+
+# Owner-only: our mark is down. (Hunting the human opponent comes in the next step.)
+@rpc("authority", "call_local", "reliable")
+func _mark_killed_for_owner() -> void:
+	_my_mark = null
+	if _objective_label != null:
+		_objective_label.text = "Mark eliminated! (hunting your opponent comes next)"
 
 
 # Owner-only: the host tells US which crowd NPC is our mark. We just remember the
@@ -304,8 +339,25 @@ func _build_player_hud() -> void:
 	_player_hud_layer.name = "PlayerHUD"
 	add_child(_player_hud_layer)
 
+	# Your OWN exposure bar (private — the host sends only your value to you).
+	var exposure_caption := Label.new()
+	exposure_caption.position = Vector2(24.0, 78.0)
+	exposure_caption.add_theme_font_size_override("font_size", 14)
+	exposure_caption.text = "EXPOSURE"
+	_player_hud_layer.add_child(exposure_caption)
+
+	_exposure_bar = ProgressBar.new()
+	_exposure_bar.name = "ExposureBar"
+	_exposure_bar.min_value = 0.0
+	_exposure_bar.max_value = 100.0
+	_exposure_bar.show_percentage = false
+	_exposure_bar.position = Vector2(24.0, 100.0)
+	_exposure_bar.custom_minimum_size = Vector2(300.0, 22.0)
+	_exposure_bar.size = Vector2(300.0, 22.0)
+	_player_hud_layer.add_child(_exposure_bar)
+
 	_objective_label = Label.new()
-	_objective_label.position = Vector2(24.0, 70.0)
+	_objective_label.position = Vector2(24.0, 132.0)
 	_objective_label.add_theme_font_size_override("font_size", 18)
 	_objective_label.text = "Locating your mark..."
 	_player_hud_layer.add_child(_objective_label)

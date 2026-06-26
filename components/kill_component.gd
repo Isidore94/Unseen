@@ -49,8 +49,22 @@ var _primed: Node2D = null
 ## The way we're facing, used to pick "the one in front" when locking.
 var _last_facing: Vector2 = Vector2.RIGHT
 
+## Online only: true on the machine that locally controls this killer. When set, we
+## send a kill REQUEST to the host instead of resolving the kill ourselves.
+var _network_local_control: bool = false
+
+
+# Called by the player on the machine that controls it, to switch this component into
+# "ask the host" mode (MULTIPLAYER_PLAN.md §4 — the client never self-confirms a kill).
+func enable_network_local_control() -> void:
+	_network_local_control = true
+
 
 func _physics_process(_delta: float) -> void:
+	if _network_local_control:
+		_network_kill_input()
+		return
+
 	if _body.velocity.length() > 5.0:
 		_last_facing = _body.velocity.normalized()
 
@@ -58,6 +72,57 @@ func _physics_process(_delta: float) -> void:
 		_lock_suspect()
 
 	_update_locked()
+
+
+# ONLINE: pick who we mean locally (using the replicated crowd we can see), then ask
+# the HOST to resolve it. We only fire when actually in range, for immediate feel.
+func _network_kill_input() -> void:
+	if _body.velocity.length() > 5.0:
+		_last_facing = _body.velocity.normalized()
+
+	if not Input.is_action_just_pressed(action_primary_action):
+		return
+
+	var suspect := _best_suspect_in_front()
+	if suspect == null:
+		return
+	var distance := _body.global_position.distance_to(suspect.global_position)
+	if distance > kill_range:
+		return  # not close enough to commit (the host enforces this as well)
+
+	_play_strike()  # instant local feedback; the host decides the actual outcome
+	request_kill.rpc_id(1, suspect.get_path())
+
+
+# HOST-ONLY: validate and resolve a kill request. Never trust the client — re-check
+# that the sender controls this killer, the target is genuinely in range, and that it
+# really is this player's mark. A wrong target costs exposure instead.
+@rpc("any_peer", "call_local", "reliable")
+func request_kill(target_path: NodePath) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender_id := multiplayer.get_remote_sender_id()
+	var effective_sender := sender_id if sender_id != 0 else multiplayer.get_unique_id()
+	var controller := int(_body.get("controlling_peer_id"))
+	if effective_sender != controller:
+		return  # someone tried to kill on behalf of a player they don't control
+
+	var target := get_node_or_null(target_path) as Node2D
+	if target == null or target == _body or not is_instance_valid(target):
+		return
+	var distance := _body.global_position.distance_to(target.global_position)
+	if distance > kill_range:
+		return
+
+	if target.is_in_group("killable_for_%d" % controller):
+		# Right read — clean kill. The permanent exposure spike is the cost.
+		_exposure.add_exposure(kill_exposure_spike, "kill")
+		kill_landed.emit()
+		if target.has_method("die"):
+			target.die()
+	else:
+		# Wrong read — you lunged at a civilian. Pay the exposure tell.
+		_exposure.add_exposure(wrong_commit_exposure, "wrong_commit")
 
 
 # Lock the best suspect in front of us (any character — you might be wrong).

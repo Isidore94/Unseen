@@ -97,11 +97,16 @@ func _setup_network_role() -> void:
 		if _is_locally_controlled:
 			camera.make_current()
 
-	# Kills are server-validated and arrive in 6.1. Until then, switch the kill
-	# component off so it doesn't run its targeting locally on every peer.
+	# Kills are server-validated (MULTIPLAYER_PLAN.md §4). The kill component runs ONLY
+	# on the machine that controls this player: it picks a target and asks the host to
+	# resolve it. On every other machine we switch it off so it can't read the local
+	# keyboard and act on a character that isn't ours.
 	var kill_component := get_node_or_null("KillComponent")
 	if kill_component != null:
-		kill_component.set_physics_process(false)
+		if _is_locally_controlled:
+			kill_component.call("enable_network_local_control")
+		else:
+			kill_component.set_physics_process(false)
 
 	_build_position_synchronizer()
 

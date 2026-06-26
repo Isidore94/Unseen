@@ -14,7 +14,14 @@ Short, session-by-session log so we never lose the thread between sessions.
   (you + gold mark dot, reused `mini_map.gd` via new `track_objective()`) and a gold
   highlight ring on the mark — drawn ONLY on the owner's screen, so the split-screen
   highlight leak is gone online. Lazy per-frame resolution avoids spawn/RPC races.
-- Still to come in 6.1: server-validated kills + owner-only exposure HUD + win/lose.
+- **6.1c server-validated kills + private exposure bar:** the kill component gained an
+  online path — on the controlling machine it picks the suspect in front (within range)
+  and sends `request_kill(target_path)` to the host; the host re-checks sender, range,
+  and whether the target is in `killable_for_<peer>`, then kills the mark or applies a
+  wrong-commit exposure penalty (never client-trusted). Host relays each player's
+  exposure to its OWNER only (`exposure_changed` → owner RPC → private bar). Killing
+  your mark shows "Mark eliminated".
+- Still to come in 6.1: the PvP "hunt your opponent" phase + win/lose + scoring.
 
 ### Session: 6.0 loopback spike (ENet) + versioning
 - **Plan:** added `MULTIPLAYER_PLAN.md` — the detailed netcode plan (server-authoritative
