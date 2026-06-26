@@ -56,11 +56,13 @@ var _objective_label: Label = null
 var _exposure_bar: ProgressBar = null
 var _my_mark_name: String = ""
 var _my_mark: Node2D = null
-## Online PvP: once we've finished our mark, the host tells us our opponent. We resolve
-## the node, switch the mini-map to pings, and point a fading arrow at them.
+## Online PvP: our opponent (the other player). Known from the start so the exposure
+## arrow can react when they run; only KILLABLE once we've finished our own mark.
 var _my_target_name: String = ""
 var _my_target: Node2D = null
 var _target_arrow: ExposureArrow = null
+## True once our mark is dead — flips the arrow from exposure-gated to flashing.
+var _hunt_phase: bool = false
 
 
 func _ready() -> void:
@@ -149,6 +151,27 @@ func _request_spawn() -> void:
 		return  # already spawned (ignore a duplicate request)
 	_spawn_player_for_peer(requesting_peer)
 	_assign_mark_for_peer(requesting_peer)
+	# Both players now exist — tell each who their opponent is (for the exposure arrow).
+	_notify_opponents()
+
+
+# Host-only: privately tell each player which node is their opponent (2-player: the
+# other one). Owner-only, so nobody else learns it. Used by the exposure arrow.
+func _notify_opponents() -> void:
+	if not multiplayer.is_server():
+		return
+	for peer_id in _players_by_peer:
+		var opponent_peer := _other_peer(peer_id)
+		if opponent_peer != 0:
+			var opponent := _players_by_peer[opponent_peer] as Node
+			_receive_opponent.rpc_id(peer_id, String(opponent.name))
+
+
+# Owner-only: remember our opponent's node name; the per-frame view resolves it.
+@rpc("authority", "call_local", "reliable")
+func _receive_opponent(opponent_name: String) -> void:
+	if _my_target_name == "":
+		_my_target_name = opponent_name
 
 
 func _spawn_player_for_peer(peer_id: int) -> void:
@@ -174,16 +197,16 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 
 
 # Host-side: a player's exposure changed → push it to that player (their own bar) AND
-# to whoever is hunting them (so the hunter's exposure arrow can react — §7.1 intel).
+# to their opponent (so the opponent's exposure arrow can react when this player runs).
 func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 	_receive_exposure.rpc_id(peer_id, value)
-	for hunter_peer in _hunter_target:
-		if _hunter_target[hunter_peer] == peer_id:
-			_receive_opponent_exposure.rpc_id(hunter_peer, value)
+	var opponent_peer := _other_peer(peer_id)
+	if opponent_peer != 0:
+		_receive_opponent_exposure.rpc_id(opponent_peer, value)
 
 
-# Owner-only: our opponent's exposure, fed to our local copy of them so the arrow can
-# decide whether to point. Only sent to a peer that has earned tracking (finished its mark).
+# Owner-only: our opponent's exposure, fed to our local copy of them so the exposure
+# arrow can decide whether to point (it shows when they run past the threshold).
 @rpc("authority", "call_local", "unreliable")
 func _receive_opponent_exposure(value: float) -> void:
 	if _my_target != null and is_instance_valid(_my_target):
@@ -325,7 +348,7 @@ func _begin_target_phase(peer_id: int) -> void:
 	_hunter_target[peer_id] = opponent_peer
 	var opponent := _players_by_peer[opponent_peer] as Player
 	opponent.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
-	_enter_target_phase.rpc_id(peer_id, String(opponent.name))
+	_enter_hunt_phase.rpc_id(peer_id)
 
 
 # Returns any other living player's peer id (the opponent). 2-player for now.
@@ -336,15 +359,17 @@ func _other_peer(peer_id: int) -> int:
 	return 0
 
 
-# Owner-only: our mark is down — start hunting our opponent. The opponent node is
-# resolved lazily (next frame) to switch the mini-map to pings and raise the arrow.
+# Owner-only: our mark is down — start hunting our opponent. The exposure arrow that's
+# been tracking them switches to its stronger FLASHING style.
 @rpc("authority", "call_local", "reliable")
-func _enter_target_phase(opponent_name: String) -> void:
+func _enter_hunt_phase() -> void:
+	_hunt_phase = true
 	_my_mark = null
 	_my_mark_name = ""
-	_my_target_name = opponent_name
 	if _objective_label != null:
-		_objective_label.text = "Mark down — HUNT YOUR OPPONENT (pings on the map)."
+		_objective_label.text = "Mark down — HUNT YOUR OPPONENT."
+	if _target_arrow != null:
+		_target_arrow.set_flashing(true)
 
 
 # === win / lose =============================================================
@@ -428,7 +453,7 @@ func _update_local_view() -> void:
 		if _local_player != null:
 			_build_player_hud()
 
-	if _my_mark == null and _my_target == null and _my_mark_name != "" and _crowd_parent != null:
+	if _my_mark == null and _my_mark_name != "" and _crowd_parent != null:
 		var mark := _crowd_parent.get_node_or_null(_my_mark_name) as Node2D
 		if mark != null:
 			_my_mark = mark
@@ -438,14 +463,13 @@ func _update_local_view() -> void:
 			if _objective_label != null:
 				_objective_label.text = "Find and eliminate your mark (gold dot)."
 
-	# Once the host hands us our opponent, resolve them and raise the PvP tracking:
-	# delayed mini-map pings + a fading arrow that points their way (master_plan §7.1).
-	if _my_target == null and _my_target_name != "" and _players_parent != null:
+	# Resolve our opponent (known from the start) and raise the exposure arrow that
+	# points their way when they run. There are no mini-map pings for players — the
+	# arrow is the only hint, and only when they're exposed and off-screen.
+	if _my_target == null and _my_target_name != "" and _players_parent != null and _player_hud_layer != null:
 		var opponent := _players_parent.get_node_or_null(_my_target_name) as Node2D
 		if opponent != null:
 			_my_target = opponent
-			if _mini_map != null:
-				_mini_map.track_objective_pinged(opponent)
 			_build_target_arrow(opponent)
 
 
@@ -503,9 +527,9 @@ func _highlight_mark(mark: Node) -> void:
 		visual.call("set_highlight", true)
 
 
-# A fading arrow that points toward our opponent when they're off-screen AND exposed
-# (the host feeds us their exposure once we've earned tracking). It uses the active
-# camera, so it just works in our own view.
+# An arrow that points toward our opponent when they're off-screen. It starts in
+# exposure-gated mode (only shows when they run past the threshold) and flips to a
+# periodic flash once we've finished our mark. It uses the active camera (ours).
 func _build_target_arrow(opponent: Node2D) -> void:
 	if _player_hud_layer == null:
 		return
@@ -513,6 +537,8 @@ func _build_target_arrow(opponent: Node2D) -> void:
 	_target_arrow.name = "TargetArrow"
 	_player_hud_layer.add_child(_target_arrow)
 	_target_arrow.track_target(opponent)
+	if _hunt_phase:
+		_target_arrow.set_flashing(true)
 
 
 # === minimal on-screen status (6.0 debugging aid) ===========================

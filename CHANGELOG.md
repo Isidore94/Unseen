@@ -29,6 +29,14 @@ Short, session-by-session log so we never lose the thread between sessions.
   target ends the round: the host declares the winner and every machine shows a
   **YOU WIN / YOU LOSE** end overlay (pause + back-to-menu). Returning to the menu now
   clears pause. Offline split-screen path unchanged.
+- **6.1e tracking redesign (replaces opponent pings with arrows):** dropped the
+  mini-map opponent pings. Your opponent is now known from match start (owner-only),
+  and an **exposure arrow** tracks them: a steady arrow whenever they run past 50%
+  exposure and are off-screen (host forwards each player's exposure to their opponent),
+  fading on view transitions. Once your mark is dead, the same arrow flips to a
+  **flashing** style (`set_flashing`) that pulses toward them every ~2.5s when
+  off-screen, ignoring exposure. `exposure_arrow.gd` gained the flashing mode +
+  `_compute_offscreen_arrow` split; mini-map keeps only self + the gold mark dot.
 - 6.1 complete pending verification → then merge `phase-6-online` to `main`.
 
 ### Session: 6.0 loopback spike (ENet) + versioning

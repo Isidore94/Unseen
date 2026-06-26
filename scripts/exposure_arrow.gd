@@ -11,7 +11,7 @@ class_name ExposureArrow
 # a precise "that one is your target".
 
 ## Exposure (0-100) the target must exceed before its arrow can appear.
-@export var arrow_threshold: float = 55.0
+@export var arrow_threshold: float = 50.0
 
 ## How far in from the screen edge the arrow sits, in pixels.
 @export var edge_margin: float = 90.0
@@ -31,29 +31,35 @@ class_name ExposureArrow
 ## Seconds the target must be off-screen before the arrow STARTS appearing. This
 ## delay is the whole point: it breaks the correlation between "a figure just left
 ## my screen" and "the arrow lit up", so you can't tell who it was.
-@export var appear_delay: float = 2.5
+@export var appear_delay: float = 2.0
 ## How long the arrow takes to fade fully in / out once it starts.
-@export var fade_in_time: float = 1.0
-@export var fade_out_time: float = 0.7
+@export var fade_in_time: float = 0.8
+@export var fade_out_time: float = 2.0
+
+# --- flashing style (the stronger tracking earned by finishing your mark) ---
+## When true, IGNORE exposure and instead FLASH toward the off-screen target every
+## flash_interval seconds. (master_plan §7.1.)
+@export var flashing_mode: bool = false
+## How often the flash appears, and how long each flash lasts, in seconds.
+@export var flash_interval: float = 2.5
+@export var flash_duration: float = 0.8
 
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
 
 var _alpha: float = 0.0
 var _offscreen_timer: float = 0.0
+var _flash_timer: float = 0.0
 var _arrow_pos: Vector2 = Vector2.ZERO
 var _arrow_dir: Vector2 = Vector2.RIGHT
 
 
 func _process(delta: float) -> void:
 	_acquire_target()
-	if _should_show():
-		_offscreen_timer += delta
-		if _offscreen_timer >= appear_delay:
-			_alpha = minf(1.0, _alpha + delta / maxf(0.01, fade_in_time))
+	if flashing_mode:
+		_process_flashing(delta)
 	else:
-		_offscreen_timer = 0.0
-		_alpha = maxf(0.0, _alpha - delta / maxf(0.01, fade_out_time))
+		_process_exposure(delta)
 	queue_redraw()
 
 
@@ -62,14 +68,49 @@ func track_target(target: Node2D) -> void:
 	_target_exposure = _find_exposure_component(target)
 
 
-# True when the target is a valid, exposed, OFF-SCREEN actor — and when so, also
-# updates where on the screen edge the arrow should sit and which way it points.
-func _should_show() -> bool:
-	if _target == null or not is_instance_valid(_target) or _target_exposure == null:
+# Switch styles at runtime: exposure-gated solid arrow while you still have a mark,
+# then a periodic flash once your mark is dead.
+func set_flashing(on: bool) -> void:
+	flashing_mode = on
+	_offscreen_timer = 0.0
+	_flash_timer = 0.0
+	_alpha = 0.0
+
+
+# EXPOSURE STYLE — a steady arrow that appears (after a short delay) when the target
+# is off-screen AND exposed past the threshold, and fades out when they're visible.
+func _process_exposure(delta: float) -> void:
+	var exposed: bool = _target_exposure != null and _target_exposure.exposure >= arrow_threshold
+	if exposed and _compute_offscreen_arrow():
+		_offscreen_timer += delta
+		if _offscreen_timer >= appear_delay:
+			_alpha = minf(1.0, _alpha + delta / maxf(0.01, fade_in_time))
+	else:
+		_offscreen_timer = 0.0
+		_alpha = maxf(0.0, _alpha - delta / maxf(0.01, fade_out_time))
+
+
+# FLASHING STYLE — ignores exposure; pulses toward the target every flash_interval
+# while they're off-screen (no hint at all when they're on-screen).
+func _process_flashing(delta: float) -> void:
+	if not _compute_offscreen_arrow():
+		_alpha = 0.0
+		_flash_timer = 0.0
+		return
+	_flash_timer += delta
+	var t: float = fmod(_flash_timer, flash_interval)
+	if t < flash_duration:
+		_alpha = sin((t / flash_duration) * PI)  # smooth 0 -> 1 -> 0 pulse
+	else:
+		_alpha = 0.0
+
+
+# Works out whether the target is valid, alive, and OFF-screen — and if so, where on
+# the screen edge the arrow sits and which way it points. No exposure check here.
+func _compute_offscreen_arrow() -> bool:
+	if _target == null or not is_instance_valid(_target):
 		return false
 	if _target.has_method("is_dead") and _target.is_dead():
-		return false
-	if _target_exposure.exposure < arrow_threshold:
 		return false
 
 	var camera := get_viewport().get_camera_2d()
