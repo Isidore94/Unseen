@@ -29,6 +29,14 @@ class_name ContractManager
 ## Offset into the map's mark list. P1 can take mark 0 while P2 takes mark 1.
 @export var mark_location_offset: int = 0
 
+## Marks loiter as homebodies within this radius (px) of where they're tagged, so you
+## can learn their patch instead of chasing them across the map (buildplan note 13).
+@export var mark_wander_radius: float = 260.0
+
+## Two marks must spawn at least this far apart (px) — about two screens — so you
+## can't scoop both at once and so the hunt forces you across the map (buildplan note 13).
+@export var mark_min_separation: float = 1900.0
+
 ## Text prefix shown on this contract's HUD label.
 @export var status_prefix: String = "CONTRACT"
 
@@ -66,8 +74,8 @@ func _setup() -> void:
 
 	var wanted: int = marks_to_spawn if marks_to_spawn > 0 else 1
 	wanted = mini(wanted, candidates.size())
-	for i in wanted:
-		_designate_mark(candidates[i])
+	for npc in _pick_spaced_marks(candidates, wanted):
+		_designate_mark(npc)
 
 	if _remaining_marks <= 0:
 		_begin_target_phase()
@@ -86,10 +94,46 @@ func _setup() -> void:
 func _designate_mark(npc: Npc) -> void:
 	npc.add_to_group(valid_target_group_name)
 	npc.add_to_group("mark")
+	# Pin the mark LOCAL (buildplan note 13): from now it loiters as a homebody around
+	# where it stands, so you can learn its patch instead of chasing it across the map.
+	npc.is_traveler = false
+	npc.home_position = npc.global_position
+	npc.wander_radius = mark_wander_radius
 	npc.died.connect(_on_mark_killed)
 	_marks.append(npc)
 	_remaining_marks += 1
 	_highlight_mark(npc)
+
+
+# Choose `wanted` marks that are spread out: each must be at least `mark_min_separation`
+# from every mark already chosen (this contract's AND the other player's, which live in
+# the "mark" group). If spacing is too strict to fill the contract, top up with whatever
+# civilians remain so a player always gets their full set of marks.
+func _pick_spaced_marks(candidates: Array, wanted: int) -> Array:
+	var picked: Array = []
+	for npc in candidates:
+		if picked.size() >= wanted:
+			break
+		if _is_spaced_from_marks(npc, picked):
+			picked.append(npc)
+	if picked.size() < wanted:
+		for npc in candidates:
+			if picked.size() >= wanted:
+				break
+			if not (npc in picked):
+				picked.append(npc)
+	return picked
+
+
+func _is_spaced_from_marks(npc: Npc, also_avoid: Array) -> bool:
+	var here: Vector2 = npc.global_position
+	for other in get_tree().get_nodes_in_group("mark"):
+		if other is Node2D and here.distance_to((other as Node2D).global_position) < mark_min_separation:
+			return false
+	for other in also_avoid:
+		if here.distance_to((other as Npc).global_position) < mark_min_separation:
+			return false
+	return true
 
 
 func _highlight_mark(npc: Npc) -> void:

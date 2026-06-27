@@ -20,7 +20,8 @@ const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 @export var npc_count: int = 30
 
 ## Marks each player must kill before the other player becomes a valid target.
-@export var marks_per_player: int = 1
+## Two marks (buildplan §7.0, note 9), forced apart + local by the ContractManager.
+@export var marks_per_player: int = 2
 
 ## Camera zoom for each private view. Higher than 1.0 tightens the view (zoom IN);
 ## ~1.1 shows roughly three-quarters of the old span — the tighter new four-zone map
