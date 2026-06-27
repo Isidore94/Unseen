@@ -2,9 +2,16 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
-## Phase 9 — Endgame & commitment EXPERIMENTS (opt-in, isolated, removable)  ·  PHASE_9_EXPERIMENTS.md
+## Phase 9 — Hidden-identity pillar (§0.3) + endgame experiments  ·  PHASE_9_EXPERIMENTS.md
 
-Built inside the Phase 8 branch. A batch of *feel* experiments for two problems: rewarding map-smart
+> **Phase 9 = everything on the `…/post-integration-checklist-…` branch beyond the Phase 8 tip:** the
+> §0.3 per-viewer appearance pillar (below) AND the endgame experiments (here). It integrates to `main`
+> on its OWN, after Phase 7 then Phase 8 land — see `PHASE_9_TO_MAIN.md`. (Note: one commit is messaged
+> "Phase 8: per-viewer crowd appearance" — that's Phase 9 work; this label is canonical.)
+
+### Part B — Endgame & commitment EXPERIMENTS (opt-in, isolated, removable)
+
+Built on top of Phase 8. A batch of *feel* experiments for two problems: rewarding map-smart
 discipline, and giving the endgame ways to resolve instead of stalling. **Every experiment is OFF by
 default** — the base game runs identically with the whole phase present. Targeted at the ONLINE match
 (the only surface with two humans, which is what the phase is judged on), server-authoritative.
@@ -48,7 +55,7 @@ set_script node (host-own cues are delivered directly, so worst case only *remot
 Cue visuals (meters/markers/zones) are minimal placeholders to be tuned in playtest. Set wall mask /
 tunables per `PHASE_9_EXPERIMENTS.md`; record kept values here after playtest (§3.5).
 
-### Session: 8-per-viewer-appearance — the §0.3 hidden-identity pillar (crowd = copies of the OTHER players)
+### Part A — per-viewer appearance, the §0.3 hidden-identity pillar (crowd = copies of the OTHER players)
 Phase 8 built the cosmetic *plumbing*; this lands the gameplay pillar it exists for (`buildplan.md`
 §0.3): **on your screen you never see your own look in the crowd.** Visibility (Slice B) already
 decided WHO you can see; this decides WHAT the crowd looks like to YOU. All local-only — it never
