@@ -52,6 +52,11 @@ var _target_exposure: ExposureComponent = null
 ## sight for a perfect bearing). Toggled by the owner's LayerComponent.
 var _sewer_mode: bool = false
 
+## When true, the target has a CLOAK up: suppress the post-mark "hunt" (flashing) arrow
+## that points at them, while leaving the normal exposure arrow alone (buildplan §7.6 —
+## cloak kills only non-exposure arrows; run loud and your exposure still gives you away).
+var _suppressed: bool = false
+
 var _alpha: float = 0.0
 var _offscreen_timer: float = 0.0
 var _flash_timer: float = 0.0
@@ -64,10 +69,18 @@ func _process(delta: float) -> void:
 	if _sewer_mode:
 		_process_sewer()
 	elif flashing_mode:
-		_process_flashing(delta)
+		if _suppressed:
+			_alpha = 0.0  # cloak: the hunt arrow is hidden
+		else:
+			_process_flashing(delta)
 	else:
-		_process_exposure(delta)
+		_process_exposure(delta)  # exposure arrow always fires, even through a cloak
 	queue_redraw()
+
+
+# The target's cloak toggles this. Only the flashing "hunt" arrow is suppressed.
+func set_suppressed(on: bool) -> void:
+	_suppressed = on
 
 
 # SEWER STYLE — 100% uptime: a full-strength bearing on the target at all times, ignoring

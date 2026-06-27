@@ -55,6 +55,10 @@ var _last_facing: Vector2 = Vector2.RIGHT
 ## send a kill REQUEST to the host instead of resolving the kill ourselves.
 var _network_local_control: bool = false
 
+## Set by the ItemComponent: true while a smoke grenade is up (you can't attack while
+## you're hidden — buildplan §7.6). Blocks locking a new suspect.
+var attacks_disabled: bool = false
+
 
 # Called by the player on the machine that controls it, to switch this component into
 # "ask the host" mode (MULTIPLAYER_PLAN.md §4 — the client never self-confirms a kill).
@@ -70,7 +74,7 @@ func _physics_process(_delta: float) -> void:
 	if _body.velocity.length() > 5.0:
 		_last_facing = _body.velocity.normalized()
 
-	if Input.is_action_just_pressed(action_primary_action):
+	if Input.is_action_just_pressed(action_primary_action) and not attacks_disabled:
 		_lock_suspect()
 
 	_update_locked()
@@ -82,7 +86,7 @@ func _network_kill_input() -> void:
 	if _body.velocity.length() > 5.0:
 		_last_facing = _body.velocity.normalized()
 
-	if not Input.is_action_just_pressed(action_primary_action):
+	if not Input.is_action_just_pressed(action_primary_action) or attacks_disabled:
 		return
 
 	var suspect := _best_suspect_in_front()

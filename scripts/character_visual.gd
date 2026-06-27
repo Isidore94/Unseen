@@ -76,6 +76,8 @@ var _highlighted: bool = false    ## Draw the mark ring this frame?
 var _highlight_pulse: float = 0.0 ## Animates the ring so it reads as "alive".
 ## Per-layer tint multiplied into the sprite each frame (set by set_layer_visual).
 var _layer_tint: Color = Color(1, 1, 1, 1)
+## Alpha factor for the smoke grenade (1 = normal, low = nearly invisible).
+var _smoke_alpha: float = 1.0
 
 
 func _ready() -> void:
@@ -136,6 +138,13 @@ func set_layer_visual(layer: int) -> void:
 			_layer_tint = Color(1, 1, 1, 1)              # ground: normal
 
 
+# Smoke grenade: fade the body to near-invisible (a placeholder for true per-viewer
+# invisibility — buildplan §7.6 / §0.3; the real "others can't see you, you still can"
+# culling lands with the per-viewport pass). Folded into the per-frame modulate alpha.
+func set_smoked(on: bool) -> void:
+	_smoke_alpha = 0.12 if on else 1.0
+
+
 func _process(delta: float) -> void:
 	var velocity := _parent_velocity()
 	var is_moving := velocity.length() > moving_threshold
@@ -167,7 +176,7 @@ func _process(delta: float) -> void:
 			brighten * _layer_tint.r,
 			brighten * _layer_tint.g,
 			brighten * _layer_tint.b,
-			_layer_tint.a)
+			_layer_tint.a * _smoke_alpha)
 
 	# Keep the highlight ring animating while it's on.
 	if _highlighted:

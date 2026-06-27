@@ -154,6 +154,12 @@ func _setup_network_role() -> void:
 		else:
 			kill_component.set_physics_process(false)
 
+	# Items read local input too: only the controlling machine runs them (§7.6). Online
+	# effects aren't host-validated yet — that's a TODO, like claiming.
+	var item_component := get_node_or_null("ItemComponent")
+	if item_component != null and not _is_locally_controlled:
+		item_component.set_physics_process(false)
+
 	# Start the prediction/follow target at our spawn position (the spawn function set it
 	# on every machine), so nothing lurches from (0,0) on the first frame.
 	_net_position = position

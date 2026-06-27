@@ -112,6 +112,13 @@ func _build_local_match(map: TestMap01) -> void:
 	_wire_layer_feedback(player_one, p1_hud_data["hud"] as CanvasLayer, p1_hud_data["arrow"] as ExposureArrow)
 	_wire_layer_feedback(player_two, p2_hud_data["hud"] as CanvasLayer, p2_hud_data["arrow"] as ExposureArrow)
 
+	# Items (buildplan §7.6). Cloak hides the HUNT arrow the opponent has on you, so each
+	# player's cloak suppresses the OTHER player's arrow (which is the one tracking them).
+	_wire_cloak(player_one, p2_hud_data["arrow"] as ExposureArrow)
+	_wire_cloak(player_two, p1_hud_data["arrow"] as ExposureArrow)
+	_add_item_hud(p1_hud_data["hud"] as CanvasLayer, player_one)
+	_add_item_hud(p2_hud_data["hud"] as CanvasLayer, player_two)
+
 	_end_screen = END_SCREEN_SCENE.instantiate() as EndScreen
 	add_child(_end_screen)
 
@@ -139,6 +146,11 @@ func _spawn_player(player_id: int, spawn_position: Vector2, action_prefix: Strin
 	if kill_component != null:
 		kill_component.action_primary_action = "%s_action_primary" % action_prefix
 		kill_component.valid_target_group_name = "killable_for_%d" % player_id
+
+	var item_component := player.get_node_or_null("ItemComponent") as ItemComponent
+	if item_component != null:
+		item_component.item_primary_action = "%s_item_primary" % action_prefix
+		item_component.item_secondary_action = "%s_item_secondary" % action_prefix
 
 	_world.add_child(player)
 	player.global_position = spawn_position
@@ -270,6 +282,41 @@ func _wire_layer_feedback(player: Player, hud: CanvasLayer, arrow: ExposureArrow
 			arrow.set_sewer_mode(in_sewer)
 			overlay.visible = in_sewer
 		)
+
+
+# When this player raises their CLOAK, hide the opponent's hunt arrow on them; restore
+# it when the cloak expires (buildplan §7.6).
+func _wire_cloak(player: Player, opponent_arrow: ExposureArrow) -> void:
+	var item := player.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return
+	item.item_activated.connect(func(which: int, _duration: float) -> void:
+		if which == ItemComponent.Item.CLOAK:
+			opponent_arrow.set_suppressed(true)
+	)
+	item.item_expired.connect(func(which: int) -> void:
+		if which == ItemComponent.Item.CLOAK:
+			opponent_arrow.set_suppressed(false)
+	)
+
+
+# A tiny readout of each player's item charges + which is active, so the kit is legible.
+func _add_item_hud(hud: CanvasLayer, player: Player) -> void:
+	var label := Label.new()
+	label.name = "ItemLabel"
+	label.position = Vector2(40.0, 160.0)
+	label.add_theme_font_size_override("font_size", 16)
+	hud.add_child(label)
+	var item := player.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return
+	var refresh := func() -> void:
+		var smoke := "SMOKE x%d%s" % [item.charges_left(ItemComponent.Item.SMOKE), " (ON)" if item.smoke_active() else ""]
+		var cloak := "CLOAK x%d%s" % [item.charges_left(ItemComponent.Item.CLOAK), " (ON)" if item.cloak_active() else ""]
+		label.text = "%s   %s" % [smoke, cloak]
+	refresh.call()
+	item.item_activated.connect(func(_which: int, _duration: float) -> void: refresh.call())
+	item.item_expired.connect(func(_which: int) -> void: refresh.call())
 
 
 func _spawn_or_fallback(spawns: Array[Vector2], index: int, fallback: Vector2) -> Vector2:
