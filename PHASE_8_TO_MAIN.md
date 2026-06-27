@@ -127,7 +127,7 @@ git push origin main --tags
 Update `CHANGELOG.md` only if something changed during integration. You may delete the `PHASE_*_TO_MAIN.md`
 plan files from main once all three phases are in.
 
-**Next:** Phase 9 (`PHASE_9_TO_MAIN.md` on `claude/post-integration-checklist-ig0la4`) — the §0.3 per-viewer
+**Next:** Phase 9 (`PHASE_9_TO_MAIN.md` on the `phase-9` branch) — the §0.3 per-viewer
 appearance pillar + the endgame experiments.
 
 ---
