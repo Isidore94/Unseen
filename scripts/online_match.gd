@@ -51,6 +51,14 @@ var _phase_by_peer: Dictionary = {}
 var _hunter_target: Dictionary = {}  # hunter_peer -> target_peer
 var _round_over: bool = false
 
+## Lobby → match readiness gate. The clients we expect (everyone who was in the lobby),
+## which of them have reported their match scene ready, and whether we've begun. Nothing
+## is spawned until EVERY expected client is ready, so no character is replicated to a
+## client whose spawners don't exist yet (the lobby makes all peers transition at once).
+var _expected_clients: Array = []
+var _ready_clients: Dictionary = {}
+var _match_begun: bool = false
+
 ## This machine's own private view. Host AND client each control one local player and
 ## each builds its own HUD + mini-map + mark highlight for that player only.
 var _local_player: Player = null
@@ -67,6 +75,9 @@ var _my_target: Node2D = null
 var _target_arrow: ExposureArrow = null
 ## True once our mark is dead — flips the arrow from exposure-gated to flashing.
 var _hunt_phase: bool = false
+## Client-side: re-asks the host to spawn us until our player appears (covers the rare
+## case where our first request outran the host's scene during the lobby transition).
+var _spawn_retry_timer: float = 0.0
 
 
 func _ready() -> void:
@@ -120,14 +131,30 @@ func _build_world() -> void:
 # === host ===================================================================
 
 func _start_as_host() -> void:
-	# Spawn the host's own character (the host is peer 1 and also a player).
-	_spawn_player_for_peer(1)
-	# Populate the crowd the players hide among (host-simulated, replicated out).
-	_spawn_crowd()
-	# Now the crowd exists, give the host its own secret mark.
-	_assign_mark_for_peer(1)
-	# When a client's scene is ready, it asks us (via _request_spawn) to spawn it.
+	# Everyone who was in the lobby is already connected. Wait for each of them to
+	# report their match scene ready (via _request_spawn) before spawning anything.
+	_expected_clients = multiplayer.get_peers()
 	NetworkManager.player_left.connect(_on_player_left)
+	_maybe_begin_match()  # handles the no-clients case (begins immediately)
+
+
+# Begins the match once EVERY expected client's scene is ready: spawn all players,
+# then the crowd, then assign each player a mark and tell each who their opponent is —
+# all at once, after the handshake, so no spawn outruns a client's spawners.
+func _maybe_begin_match() -> void:
+	if _match_begun:
+		return
+	for client_peer in _expected_clients:
+		if not _ready_clients.has(client_peer):
+			return  # still waiting on someone
+	_match_begun = true
+	_spawn_player_for_peer(1)
+	for client_peer in _expected_clients:
+		_spawn_player_for_peer(client_peer)
+	_spawn_crowd()
+	for peer_id in _players_by_peer:
+		_assign_mark_for_peer(peer_id)
+	_notify_opponents()
 
 
 func _spawn_crowd() -> void:
@@ -158,10 +185,15 @@ func _request_spawn() -> void:
 	var requesting_peer := multiplayer.get_remote_sender_id()
 	if _players_by_peer.has(requesting_peer):
 		return  # already spawned (ignore a duplicate request)
-	_spawn_player_for_peer(requesting_peer)
-	_assign_mark_for_peer(requesting_peer)
-	# Both players now exist — tell each who their opponent is (for the exposure arrow).
-	_notify_opponents()
+	if _match_begun:
+		# A late joiner after the match already started — bring them in directly.
+		_spawn_player_for_peer(requesting_peer)
+		_assign_mark_for_peer(requesting_peer)
+		_notify_opponents()
+	else:
+		# Still in the start handshake: mark this client ready, begin once all are.
+		_ready_clients[requesting_peer] = true
+		_maybe_begin_match()
 
 
 # Host-only: privately tell each player which node is their opponent (2-player: the
@@ -234,11 +266,15 @@ func _receive_exposure(value: float) -> void:
 func _on_player_left(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
+	# If the match was still waiting on this peer to start, stop waiting for them.
+	_expected_clients.erase(peer_id)
+	_ready_clients.erase(peer_id)
 	if _players_by_peer.has(peer_id):
 		var character: Node = _players_by_peer[peer_id]
 		if is_instance_valid(character):
 			character.queue_free()  # the spawner replicates the removal to clients
 		_players_by_peer.erase(peer_id)
+	_maybe_begin_match()  # in case we were waiting on the peer who just left
 	_update_status()
 
 
@@ -452,8 +488,22 @@ func _receive_mark(mark_name: String) -> void:
 
 # === this machine's private view (host AND client each have one) ============
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_retry_spawn_if_needed(delta)
 	_update_local_view()
+
+
+# Client-only safety net: if our own player hasn't appeared yet, keep asking the host
+# every second. _request_spawn is idempotent (the host ignores duplicates), so this is
+# harmless and guarantees we're brought in even if the first ask raced the transition.
+func _retry_spawn_if_needed(delta: float) -> void:
+	if NetworkManager.is_host() or _local_player != null:
+		return
+	_spawn_retry_timer += delta
+	if _spawn_retry_timer >= 1.0:
+		_spawn_retry_timer = 0.0
+		if _is_connected():
+			_request_spawn.rpc_id(1)
 
 
 # Lazily wires up our own HUD and resolves our mark. Doing it per-frame (instead of

@@ -1,0 +1,14 @@
+[gd_scene load_steps=2 format=3 uid="uid://b0unseenlobby01"]
+
+[ext_resource type="Script" path="res://scripts/lobby.gd" id="1_lobby"]
+
+; Lobby — UNSEEN, Phase 6.2. The waiting room. UI is built in code by lobby.gd, so the
+; scene is just the script holder. Root MUST stay named "Lobby" so the host's
+; _begin_match RPC resolves to the same node path on every peer.
+
+[node name="Lobby" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1_lobby")

@@ -11,7 +11,7 @@ class_name MainMenu
 # The UI is built in code (same style as the rest of the project) so the .tscn stays
 # trivial. Connectivity is delegated entirely to the NetworkManager autoload.
 
-const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
+const LOBBY_SCENE := "res://scenes/lobby.tscn"
 const LOCAL_COOP_SCENE := "res://scenes/main.tscn"  # the kept split-screen test harness
 
 var _address_field: LineEdit = null
@@ -102,7 +102,7 @@ func _add_button(parent: Node, text: String) -> Button:
 
 func _on_host_pressed() -> void:
 	if NetworkManager.host_game():
-		get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
+		get_tree().change_scene_to_file(LOBBY_SCENE)
 	else:
 		_status_label.text = "Could not host (is the port already in use?)."
 
@@ -112,10 +112,9 @@ func _on_join_pressed() -> void:
 	if address.is_empty():
 		address = "127.0.0.1"
 	if NetworkManager.join_game(address):
-		# Load the match scene now (optimistically) so our spawner is ready before the
-		# host starts replicating characters to us. If the connection fails, the match
-		# scene sends us straight back here.
-		get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
+		# Into the shared lobby to wait for the host to start. If the connection fails,
+		# the lobby sends us straight back here.
+		get_tree().change_scene_to_file(LOBBY_SCENE)
 	else:
 		_status_label.text = "Could not start a connection to %s." % address
 

@@ -1,0 +1,132 @@
+extends Control
+class_name Lobby
+
+# Lobby — UNSEEN, Phase 6.2. A waiting room between the menu and the match.
+#
+# Everyone who hosts or joins lands here first. The host sees a START button that
+# stays DISABLED until at least MIN_PLAYERS_TO_START players are present, so a match
+# never begins with only one person. When the host starts, every peer is told to load
+# the match together (so they all transition at the same time).
+#
+# Connectivity is whatever NetworkManager is using (ENet/LAN now; Steam relay next),
+# so this screen doesn't change when we add Steam.
+
+const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
+const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
+
+## Don't let the host start until this many players are in the lobby.
+const MIN_PLAYERS_TO_START := 2
+
+var _code_label: Label = null
+var _roster_label: Label = null
+var _status_label: Label = null
+var _start_button: Button = null
+
+
+func _ready() -> void:
+	# The roster changes as people come and go; refresh the screen when it does.
+	NetworkManager.player_joined.connect(_on_roster_changed)
+	NetworkManager.player_left.connect(_on_roster_changed)
+	# If our connection drops or the host closes, bail back to the menu.
+	NetworkManager.connection_failed.connect(_return_to_menu)
+	NetworkManager.server_closed.connect(_return_to_menu)
+	_build_ui()
+	_refresh()
+
+
+func _on_roster_changed(_peer_id: int) -> void:
+	_refresh()
+
+
+func _build_ui() -> void:
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(center)
+
+	var panel := VBoxContainer.new()
+	panel.add_theme_constant_override("separation", 14)
+	panel.custom_minimum_size = Vector2(420.0, 0.0)
+	center.add_child(panel)
+
+	var title := Label.new()
+	title.text = "LOBBY"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 40)
+	panel.add_child(title)
+
+	_code_label = Label.new()
+	_code_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_code_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_code_label.custom_minimum_size = Vector2(420.0, 0.0)
+	panel.add_child(_code_label)
+
+	_roster_label = Label.new()
+	_roster_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_roster_label.add_theme_font_size_override("font_size", 22)
+	panel.add_child(_roster_label)
+
+	if NetworkManager.is_host():
+		_start_button = Button.new()
+		_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		_start_button.pressed.connect(_on_start_pressed)
+		panel.add_child(_start_button)
+	else:
+		_status_label = Label.new()
+		_status_label.text = "Waiting for the host to start..."
+		_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		panel.add_child(_status_label)
+
+	var leave_button := Button.new()
+	leave_button.text = "Leave"
+	leave_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	leave_button.pressed.connect(_return_to_menu)
+	panel.add_child(leave_button)
+
+
+func _refresh() -> void:
+	var count := _player_count()
+	_roster_label.text = "Players: %d / %d" % [count, NetworkManager.MAX_PLAYERS]
+
+	if NetworkManager.is_host():
+		_code_label.text = "LAN join code: %s\n(internet play via Steam — coming next)" % _host_code()
+		if _start_button != null:
+			var enough := count >= MIN_PLAYERS_TO_START
+			_start_button.disabled = not enough
+			_start_button.text = "Start game" if enough else "Need %d players to start" % MIN_PLAYERS_TO_START
+	else:
+		_code_label.text = "Connected — waiting in the lobby."
+
+
+# Total players = the peers we can see + ourselves.
+func _player_count() -> int:
+	if multiplayer.multiplayer_peer == null:
+		return 1
+	return multiplayer.get_peers().size() + 1
+
+
+# The host's address for friends on the same network to paste into "Join". Internet
+# play (a code that works anywhere) arrives with the Steam relay.
+func _host_code() -> String:
+	for address in IP.get_local_addresses():
+		if address.count(".") == 3 and not address.begins_with("127."):
+			return address
+	return "127.0.0.1"
+
+
+func _on_start_pressed() -> void:
+	if _player_count() < MIN_PLAYERS_TO_START:
+		return
+	# Tell EVERY peer (including us) to load the match together.
+	_begin_match.rpc()
+
+
+# Sent by the host to all peers: load the match scene. The match's own ready handshake
+# then takes over (nobody is spawned until every client's scene is up).
+@rpc("authority", "call_local", "reliable")
+func _begin_match() -> void:
+	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
+
+
+func _return_to_menu() -> void:
+	NetworkManager.leave()
+	get_tree().change_scene_to_file(MAIN_MENU_SCENE)

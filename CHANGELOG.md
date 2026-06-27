@@ -4,6 +4,20 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 6 — Online multiplayer (started)  ·  version 0.6.0
 
+### Session: 6.2 — lobby + start gate (v0.6.1 merged to main first)
+- Merged the full online match to `main` and tagged **v0.6.1**.
+- **`scripts/lobby.gd` + `scenes/lobby.tscn` (new):** a waiting room between menu and
+  match. Host/Join now land here. Shows the player roster (n/MAX) and, for the host, a
+  **Start button that's disabled until `MIN_PLAYERS_TO_START` (2)** are present. Host
+  start does `_begin_match.rpc()` so all peers load the match together. Shows the host's
+  LAN IP as a join code (internet code via Steam comes next).
+- **`online_match.gd` readiness gate:** because the lobby makes all peers transition at
+  once, the host now waits until every expected client reports its scene ready
+  (`_request_spawn`) before spawning ANYTHING — players, crowd, and marks are all spawned
+  together in `_maybe_begin_match`, so no spawn outruns a client's spawners. Added a
+  client-side `_request_spawn` retry as a belt-and-suspenders.
+- **`main_menu.gd`:** Host/Join route to the lobby instead of straight into a match.
+
 ### Session: 6.1 — networked crowd + private marks (in progress, on `phase-6-online`)
 - **6.1a crowd:** `npc.gd` gained online mode — host runs the wandering AI, clients show
   a replicated puppet (code-built `MultiplayerSynchronizer`, position+velocity). A second
