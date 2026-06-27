@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 NetworkManager="*res://scripts/net/network_manager.gd"
+CosmeticRegistry="*res://scripts/cosmetics/cosmetic_registry.gd"
 
 [display]
 
