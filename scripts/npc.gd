@@ -47,6 +47,20 @@ class_name Npc
 @export var home_position: Vector2 = Vector2.ZERO
 @export var wander_radius: float = 350.0
 
+# === network smoothing (Phase 6.2 perf pass) ===============================
+## (Online) Seconds between the host shipping this NPC's position to clients. Bigger =
+## far less host upload (the crowd's bandwidth was the bottleneck when hosting). Clients
+## interpolate between updates, so it still looks smooth. 0.05 = 20 sends/sec.
+@export var net_send_interval: float = 0.05
+## (Online, clients) How fast a client slides this puppet toward the host's latest
+## position each second (smooths the gaps between the throttled updates).
+@export var remote_follow_per_second: float = 18.0
+
+## (Online) The host's authoritative position/velocity, streamed to clients. Clients
+## interpolate the body toward it instead of snapping (which looked laggy/choppy).
+var _net_position: Vector2 = Vector2.ZERO
+var _net_velocity: Vector2 = Vector2.ZERO
+
 ## Emitted the moment this NPC is killed (before the death animation). The
 ## contract uses it to know a mark is down.
 signal died
@@ -97,27 +111,31 @@ func _setup_network_role() -> void:
 	if visual != null and visual.has_method("set_appearance"):
 		visual.call("set_appearance", appearance_index)
 
+	# Start the follow/publish target at our spawn position so nothing lurches on frame 1.
+	_net_position = global_position
+	_net_velocity = Vector2.ZERO
 	_build_position_synchronizer()
 
 	if multiplayer.is_server():
 		# Host: run the wandering AI normally; the synchronizer ships positions out.
 		if can_wander:
 			call_deferred("_begin_wandering")
-	else:
-		# Client: this NPC is a puppet the host moves — switch off our local AI so it
-		# can't fight the replicated position.
-		set_physics_process(false)
+	# NOTE: clients KEEP processing now, but only to smoothly interpolate toward the
+	# host's replicated position (see the top of _physics_process) — never to run AI.
 
 
 # Copies this NPC's position + velocity FROM the host TO every client each tick.
 # Velocity is included so the shared CharacterVisual faces/animates on clients too.
 func _build_position_synchronizer() -> void:
 	var replication := SceneReplicationConfig.new()
-	replication.add_property(NodePath(".:position"))
-	replication.add_property(NodePath(".:velocity"))
+	# Ship shadow fields (not the live position), throttled, so clients interpolate toward
+	# them instead of snapping — far less host upload AND smoother than before.
+	replication.add_property(NodePath(".:_net_position"))
+	replication.add_property(NodePath(".:_net_velocity"))
 	var synchronizer := MultiplayerSynchronizer.new()
 	synchronizer.name = "NetSync"
 	synchronizer.replication_config = replication
+	synchronizer.replication_interval = net_send_interval
 	add_child(synchronizer)
 
 
@@ -146,6 +164,17 @@ func _begin_wandering() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# CLIENT puppet (online, not the host): just glide toward the host's latest position.
+	# No AI, no pathfinding — that all runs on the host and arrives via the synchronizer.
+	if network_controlled and not multiplayer.is_server():
+		_follow_net(delta)
+		return
+
+	# HOST/offline: publish this NPC's authoritative state for clients before we move it.
+	if network_controlled:
+		_net_position = global_position
+		_net_velocity = velocity
+
 	# A non-wandering NPC (a mark) just stands at its spot.
 	if not can_wander:
 		_drive(Vector2.ZERO)
@@ -185,6 +214,13 @@ func _drive(desired_velocity: Vector2) -> void:
 func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	velocity = safe_velocity
 	move_and_slide()
+
+
+# CLIENT puppet: smoothly slide toward the host's replicated position between the
+# throttled updates, and copy velocity so the shared visual faces/animates correctly.
+func _follow_net(delta: float) -> void:
+	global_position = global_position.lerp(_net_position, clampf(remote_follow_per_second * delta, 0.0, 1.0))
+	velocity = _net_velocity
 
 
 # Picks a random destination spread EVENLY across the whole map and routes there.

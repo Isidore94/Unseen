@@ -13,10 +13,15 @@ class_name OnlineMatch
 # private per-player state (your mark, exposure, mini-map, highlight).
 
 const MAP_SCENE := preload("res://maps/test_map_01.tscn")
+const SMALL_MAP_SCENE := preload("res://maps/test_map_02.tscn")
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
+
+## Crowd size for the COMPACT arena (the lobby's "compact" toggle uses this instead of
+## npc_count — roughly two-thirds, to lighten the host).
+@export var compact_npc_count: int = 120
 
 ## How many sprite sheets exist (assets/sprites). Characters cycle through them so a
 ## small match still looks varied. Keep in sync with CharacterVisual's sheet list.
@@ -79,10 +84,17 @@ var _hunt_phase: bool = false
 ## case where our first request outran the host's scene during the lobby transition).
 var _spawn_retry_timer: float = 0.0
 
+## Network debug overlay (toggle with F3): FPS, ping, and how many predicted inputs are
+## still un-confirmed. Off by default so it doesn't clutter normal play.
+var _debug_layer: CanvasLayer = null
+var _debug_label: Label = null
+var _debug_visible: bool = false
+
 
 func _ready() -> void:
 	_build_world()
 	_build_hud()
+	_build_debug_overlay()
 
 	# Portals are map-control teleporters. They must only fire on the HOST (the
 	# referee); on clients the player bodies are just replicas, so a client-side
@@ -98,7 +110,9 @@ func _ready() -> void:
 
 
 func _build_world() -> void:
-	_map = MAP_SCENE.instantiate()
+	# The host's lobby choice (compact vs full) reaches every peer via NetworkManager.
+	var map_scene: PackedScene = SMALL_MAP_SCENE if NetworkManager.small_arena else MAP_SCENE
+	_map = map_scene.instantiate()
 	_map.name = "Map"
 	add_child(_map)
 
@@ -159,7 +173,9 @@ func _maybe_begin_match() -> void:
 
 func _spawn_crowd() -> void:
 	var map := _map as TestMap01
-	for _i in npc_count:
+	# Fewer NPCs in the compact arena (lighter for the host to simulate + replicate).
+	var crowd_size := compact_npc_count if NetworkManager.small_arena else npc_count
+	for _i in crowd_size:
 		# A minority cross the whole map (entering from an edge); most are homebodies
 		# that spawn wherever and potter around there.
 		var is_traveler := randf() < traveler_fraction
@@ -491,6 +507,32 @@ func _receive_mark(mark_name: String) -> void:
 func _process(delta: float) -> void:
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
+	_update_debug_overlay()
+
+
+# Builds the (hidden) network debug overlay. Toggle it in-match with F3.
+func _build_debug_overlay() -> void:
+	_debug_layer = CanvasLayer.new()
+	_debug_layer.name = "DebugOverlay"
+	_debug_layer.visible = false
+	add_child(_debug_layer)
+	_debug_label = Label.new()
+	_debug_label.position = Vector2(24.0, 320.0)
+	_debug_label.add_theme_font_size_override("font_size", 16)
+	_debug_label.modulate = Color(0.6, 1.0, 0.6)
+	_debug_layer.add_child(_debug_label)
+
+
+func _update_debug_overlay() -> void:
+	if not _debug_visible or _debug_label == null:
+		return
+	var fps := Engine.get_frames_per_second()
+	var ping := int(round(NetworkManager.ping_ms()))
+	var pending := _local_player.get_pending_input_count() if _local_player != null else 0
+	var role := "HOST" if NetworkManager.is_host() else "CLIENT"
+	_debug_label.text = "[F3] NET DEBUG\n%s\nFPS: %d\nping: %d ms\npredicted (pending): %d" % [
+		role, fps, ping, pending
+	]
 
 
 # Client-only safety net: if our own player hasn't appeared yet, keep asking the host
@@ -627,6 +669,12 @@ func _update_status() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Quick escape back to the menu while prototyping.
-	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		_return_to_menu()
+	if event is InputEventKey and event.pressed:
+		# Quick escape back to the menu while prototyping.
+		if event.keycode == KEY_ESCAPE:
+			_return_to_menu()
+		# F3 toggles the network debug overlay (FPS / ping / pending inputs).
+		elif event.keycode == KEY_F3:
+			_debug_visible = not _debug_visible
+			if _debug_layer != null:
+				_debug_layer.visible = _debug_visible

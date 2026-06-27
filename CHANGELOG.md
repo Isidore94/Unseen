@@ -4,6 +4,129 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 6 — Online multiplayer (started)  ·  version 0.6.0
 
+### Session: 6.2 — crowd netcode + compact arena (host perf) (v0.6.5)
+- Test result: prediction is working (player movement smooth both ways). The remaining
+  problem is the **crowd as seen by the JOINER when the host has a weaker uplink**: the
+  host simulates NPCs locally (so the host's own view is fine), but pushing 180 NPCs ×
+  ~60 updates/sec over the wire starves the joiner's copy → the joiner sees a laggy
+  crowd. Fixed by slashing the crowd's upload cost.
+- **`npc.gd` — throttled + interpolated crowd replication** (same shadow-field pattern as
+  the player): NPCs now publish `_net_position`/`_net_velocity` at `net_send_interval`
+  (0.05s = 20/sec, was every frame) and clients **interpolate** toward them
+  (`_follow_net`, `remote_follow_per_second`) instead of snapping. Net effect with the
+  count drop below: roughly **~75% less crowd upload** AND smoother NPCs. Clients no
+  longer freeze NPC processing — they run a cheap follow-lerp only.
+- **`npc.tscn`** avoidance eased to cut host CPU per agent: `neighbor_distance` 220→170,
+  `max_neighbors` 12→8.
+- **Compact arena (your request):** new `maps/test_map_02.tscn` reuses the WHOLE
+  `test_map_01.gd` via a new `layout_override` export — same features (solid ring, inner
+  road, building blocks, central fountain) on a 9×7 grid, ~62% less area. Portal spawns
+  now skip any endpoint that lands in a wall, so the script is layout-agnostic. The
+  **lobby has a host "Compact arena" checkbox**; the choice rides the `_begin_match` RPC
+  into `NetworkManager.small_arena`, and the match picks the small map + `compact_npc_count`
+  (120). Verified: both maps build at runtime, all scripts compile, offline boots.
+- Bumped `config/version` → **0.6.5**.
+
+### Session: 6.2 — prediction fix: input replay (v0.6.4)
+- The v0.6.3 prediction *eased* toward the host's position every frame, but that
+  position is always latency-old, so it **fought** the prediction — "wall on start,
+  glide on stop" (felt worse than before). Replaced the easing with proper
+  **input-replay reconciliation**.
+- **`player.gd`:** each input now carries a sequence id (`_input_seq`); the owner keeps
+  the un-acked ones in `_pending_inputs`. The host echoes the last id its position
+  reflects (`_net_ack_seq`, replicated alongside `_net_position`/`_net_velocity`). When
+  a fresh host snapshot arrives, the owner drops acked inputs, **snaps to the host's
+  position, and replays the rest on top** — landing exactly where prediction had it,
+  with zero tug toward the stale position. Between snapshots it just predicts forward.
+  Teleports/knockbacks fall out for free (replay starts from the host's new position).
+- Removed the old easing tunables (`reconcile_per_second`, deadzone, snap distance);
+  kept `remote_follow_per_second` for non-owned characters.
+- **Added an in-match network debug overlay (toggle F3)** so internet tests give real
+  numbers instead of "it's laggy": shows role, FPS, **ping** (round-trip, measured by a
+  twice-a-second timestamp bounce in `network_manager.gd` → `ping_ms()`), and **pending
+  predicted inputs** (`player.get_pending_input_count()` — a connection-health proxy:
+  steady single digits = healthy, a growing number = congestion/loss).
+- Parse + offline boot + in-project compile of all touched scripts verified. Bumped
+  `config/version` → **0.6.4**.
+
+### Session: 6.2 — client-side prediction (own-avatar input feel) (v0.6.3)
+- **Fixed laggy own-character input over the relay.** Movement was fully
+  server-authoritative: you pressed → host moved you → position came back → you
+  saw it (one round-trip of input delay over real internet). Added the planned
+  **local prediction** feel pass (MULTIPLAYER_PLAN.md §2) WITHOUT going
+  client-authoritative (which would leak who's human — the load-bearing rule).
+- **`player.gd`:** the host still simulates every character and is the authority,
+  but now publishes each character's truth into replicated `_net_position` /
+  `_net_velocity` (the synchronizer ships those instead of the live `position`, so it
+  no longer fights local prediction). On a client:
+  - **your own** character runs `_predict_local()` — it moves from your input the same
+    frame (instant), then eases toward the host's position (deadzone so it doesn't
+    micro-tug; snaps past `prediction_snap_distance_px` for teleports/knockbacks);
+  - **everyone else's** character runs `_follow_server()` — smoothly lerps toward the
+    host's latest position + copies velocity for the visual.
+  - Exposure stays host-owned: prediction calls a new movement-only `_move_with()`
+    (split out of `_apply_movement`) so the client never double-counts exposure.
+  - New tunables: `reconcile_per_second`, `prediction_deadzone_px`,
+    `prediction_snap_distance_px`, `remote_follow_per_second`.
+- **NOTE (future hardening):** players now replicate `_net_position` while NPCs still
+  replicate raw `position` — a minor property-name difference a cheater could read.
+  It's dwarfed by the existing player-vs-NPC scene differences; unify both when we do
+  the real "indistinguishable on clients" anti-cheat pass. Core rule intact: uniform
+  server authority (peer 1), clients send input only, prediction is purely local.
+- Parse + offline-scene boot verified; real feel needs a 2-machine relay test.
+- Bumped `config/version` → **0.6.3** (so the menu shows which build has prediction).
+
+### Session: 6.2 — Steam relay transport + friend invites (v0.6.2)
+- **Verified the GodotSteam build first** with a throwaway probe: it exposes
+  `SteamMultiplayerPeer` (`create_host`/`create_client`/`getLobbyOwner`/…) and the
+  lobby + invite functions, and inits fine (`ready as <persona>`). So the relay
+  transport is fully available — no extra add-on needed.
+- **`network_manager.gd` gained the Steam transport**, sitting behind the same clean
+  signals as ENet so the lobby/match code is untouched:
+  - `host_steam()` → `Steam.createLobby(friends-only)`; on `lobby_created` it stamps
+    the host's Steam id into lobby data and builds a host `SteamMultiplayerPeer`.
+  - `join_steam(lobby_id)` → `Steam.joinLobby`; on `lobby_joined` it reads the lobby
+    owner and builds a client peer to them.
+  - `invite_friends()` → opens the Steam overlay invite dialog; `join_requested`
+    (friend accepts) auto-joins.
+  - New signals `steam_lobby_ready` / `steam_lobby_failed`; `steam_lobby_code()` /
+    `is_using_steam()` for the UI; `leave()` now also leaves the Steam lobby.
+  - **Parse-safe:** the peer is built via `ClassDB.instantiate("SteamMultiplayerPeer")`
+    (never named directly), so the script still loads in stock Godot.
+  - **Bug caught in testing:** Steam fires `lobby_joined` for the lobby *creator* too,
+    which was overwriting the host peer with a client one (self-connect errors). Now
+    we ignore `lobby_joined` when we're the lobby owner.
+- **`main_menu.gd`:** when Steam is up, shows **Host online (invite friends)** +
+  **Join by code**; always keeps **Host (LAN)** / **Join IP** for local testing.
+  Waits for `steam_lobby_ready` before entering the lobby (lobby creation is async).
+- **`lobby.gd`:** the host on Steam gets an **Invite friends** button (overlay) and a
+  **Copy join code** button, and the code label shows the Steam lobby id.
+- **Tested:** host path drives end-to-end on one machine (lobby created, peer id 1,
+  `is_host=true`); boots clean in BOTH stock Godot (Steam off → LAN-only menu) and the
+  GodotSteam editor (Steam on). Real 2-machine join still needs a friend/2nd account.
+- Bumped `config/version` → **0.6.2**.
+
+### Session: Map redesign — tight alleys + central fountain plaza
+- **`scripts/test_map_01.gd` relaid out** to a denser **15×11** grid (was 7×5).
+  A **solid building ring hugs the outer wall** (no open border — buildings start
+  ~120px from the wall instead of ~510px, the thing that felt too empty), an inner
+  ring road runs just inside it, and a tight one-cell alley grid carves chunky
+  2-wide building blocks. Alleys narrowed from ~685px to ~320px; the map is now 46%
+  open (was 70%).
+- **Central fountain plaza:** the dead centre opens into a wide plaza/avenue with a
+  new **`'F'` cell type** = a solid circular fountain (`fountain_radius`, drawn as a
+  stone basin + water + spout). New `_is_solid()` (building OR fountain) feeds nav +
+  walkability so nobody paths into the basin; the fountain cell is fully excluded
+  from navigation and its collision circle sits safely inside that empty cell.
+- **Connectivity verified before committing** via a flood-fill script: one connected
+  network, all four player spawns open, zero dead ends.
+- Feature positions moved to valid cells (spawns at near-corner alley junctions,
+  marks on the central avenue, teleport pads on the inner ring mid-sides, density
+  zone = the plaza). The three Portal pairs re-pointed to open cells.
+- Headless `--check-only` parse passes. **NEXT:** convert the underground passage to
+  the single-occupancy outer-alley connector with two-way "someone's in there"
+  messaging.
+
 ### Session: 6.2 — lobby + start gate (v0.6.1 merged to main first)
 - Merged the full online match to `main` and tagged **v0.6.1**.
 - **`scripts/lobby.gd` + `scenes/lobby.tscn` (new):** a waiting room between menu and

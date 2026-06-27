@@ -32,16 +32,34 @@ signal connection_succeeded
 signal connection_failed
 ## Fired on a CLIENT if the host goes away mid-session.
 signal server_closed
+## Fired once a Steam lobby is created (host) or joined (client) and the peer is live.
+signal steam_lobby_ready(lobby_id: int)
+## Fired if creating or joining a Steam lobby fails (with a human-readable reason).
+signal steam_lobby_failed(reason: String)
 
 var _active_peer: MultiplayerPeer = null
+
+## Match setting chosen in the lobby (the host's choice, sent to everyone at start): use
+## the compact arena — smaller map + fewer NPCs, lighter for the host to simulate/serve.
+## Lives here (an autoload) so it survives the lobby → match scene change.
+var small_arena: bool = false
 
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.
 const STEAM_APP_ID := 480
+## Steam lobby visibility: 1 = friends-only (only your Steam friends / people you invite
+## can join — the safe choice while we share Valve's public test App ID 480). 2 = public.
+const STEAM_LOBBY_TYPE := 1
+## Steam success codes we check against: k_EResultOK and the lobby-enter "success" are both 1.
+const STEAM_RESULT_OK := 1
 ## The Steam singleton, fetched by NAME so this script still parses in stock Godot.
 var _steam: Object = null
 var _steam_ready: bool = false
 var _steam_status_text: String = "not initialised"
+## True while the live transport is the Steam relay (vs ENet/LAN).
+var _using_steam: bool = false
+## The Steam lobby we created or joined (0 = none). Doubles as the copy-paste join code.
+var _steam_lobby_id: int = 0
 
 
 func _ready() -> void:
@@ -92,16 +110,49 @@ func _init_steam() -> void:
 		if _steam.has_method("getPersonaName"):
 			persona = str(_steam.getPersonaName())
 		_steam_status_text = "ready as %s" % persona
+		_connect_steam_signals()
 	else:
 		_steam_status_text = "init failed — is the Steam client running and logged in? (%s)" % str(init_returned)
 	print("[Steam] %s" % _steam_status_text)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# Steam needs its callbacks pumped each frame (when not embedded). Guarded so it's a
 	# no-op without Steam.
 	if _steam != null and _steam.has_method("run_callbacks"):
 		_steam.run_callbacks()
+	_update_ping(delta)
+
+
+# === ping / round-trip time (diagnostics for the in-match debug overlay) =====
+var _ping_ms: float = 0.0
+var _ping_accumulator: float = 0.0
+
+func _update_ping(delta: float) -> void:
+	# Only clients measure: bounce a timestamp off the host twice a second.
+	if multiplayer.multiplayer_peer == null or multiplayer.is_server():
+		return
+	_ping_accumulator += delta
+	if _ping_accumulator >= 0.5:
+		_ping_accumulator = 0.0
+		_ping_request.rpc_id(1, Time.get_ticks_msec())
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func _ping_request(client_ticks: int) -> void:
+	# Host side: bounce the client's timestamp straight back to them.
+	_ping_reply.rpc_id(multiplayer.get_remote_sender_id(), client_ticks)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func _ping_reply(client_ticks: int) -> void:
+	# Client side: (now − sent) is the full round-trip time.
+	_ping_ms = float(Time.get_ticks_msec() - client_ticks)
+
+
+# Last measured round-trip time in milliseconds (0 on the host / before the first reply).
+func ping_ms() -> float:
+	return _ping_ms
 
 
 # True if Steam initialised successfully (relay play is possible).
@@ -112,6 +163,131 @@ func is_steam_ready() -> bool:
 # Human-readable Steam state for the menu.
 func steam_status() -> String:
 	return _steam_status_text
+
+
+# True while we're connected through Steam (so the lobby shows the Steam code + invite).
+func is_using_steam() -> bool:
+	return _using_steam
+
+
+# The lobby id as a copy-paste join code ("" when not in a Steam lobby).
+func steam_lobby_code() -> String:
+	return str(_steam_lobby_id) if _steam_lobby_id != 0 else ""
+
+
+# Our own Steam id (0 if Steam isn't up). Used to tell "I created this lobby" apart from
+# "I joined someone else's".
+func _my_steam_id() -> int:
+	if _steam != null and _steam.has_method("getSteamID"):
+		return int(_steam.getSteamID())
+	return 0
+
+
+# === Steam transport (relay play; mirrors the ENet host/join below) =========
+
+# Wire up the Steam lobby callbacks once, each guarded so a renamed signal in some
+# GodotSteam version just logs instead of crashing.
+func _connect_steam_signals() -> void:
+	_safe_connect_steam("lobby_created", _on_steam_lobby_created)
+	_safe_connect_steam("lobby_joined", _on_steam_lobby_joined)
+	_safe_connect_steam("join_requested", _on_steam_join_requested)
+
+
+func _safe_connect_steam(signal_name: String, callable: Callable) -> void:
+	if _steam == null:
+		return
+	if not _steam.has_signal(signal_name):
+		print("[Steam] note: signal '%s' not present in this build" % signal_name)
+		return
+	if not _steam.is_connected(signal_name, callable):
+		_steam.connect(signal_name, callable)
+
+
+# Builds a SteamMultiplayerPeer WITHOUT naming the class in code, so this script still
+# parses in stock Godot (where that class doesn't exist). Returns null if unavailable.
+func _make_steam_peer() -> Object:
+	if not ClassDB.class_exists("SteamMultiplayerPeer"):
+		return null
+	return ClassDB.instantiate("SteamMultiplayerPeer")
+
+
+# Become the host on Steam: create a friends-only lobby. The actual peer is built when
+# Steam confirms the lobby (the lobby_created callback). Returns false if Steam isn't ready.
+func host_steam() -> bool:
+	if not _steam_ready:
+		return false
+	# createLobby is asynchronous → continues in _on_steam_lobby_created.
+	_steam.createLobby(STEAM_LOBBY_TYPE, MAX_PLAYERS)
+	return true
+
+
+# Join a Steam lobby by its id (the copy-paste code). Async → continues in _on_steam_lobby_joined.
+func join_steam(lobby_id: int) -> bool:
+	if not _steam_ready or lobby_id == 0:
+		return false
+	_steam.joinLobby(lobby_id)
+	return true
+
+
+# Open the Steam overlay so the host can invite friends to the current lobby.
+func invite_friends() -> void:
+	if _using_steam and _steam != null and _steam_lobby_id != 0 \
+			and _steam.has_method("activateGameOverlayInviteDialog"):
+		_steam.activateGameOverlayInviteDialog(_steam_lobby_id)
+
+
+func _on_steam_lobby_created(result: int, lobby_id: int) -> void:
+	if result != STEAM_RESULT_OK:
+		steam_lobby_failed.emit("Steam couldn't create a lobby (code %d)." % result)
+		return
+	_steam_lobby_id = lobby_id
+	# Stamp our Steam id into the lobby so joiners can look up the host.
+	if _steam.has_method("setLobbyData") and _steam.has_method("getSteamID"):
+		_steam.setLobbyData(lobby_id, "host_steam_id", str(_steam.getSteamID()))
+	var peer := _make_steam_peer()
+	if peer == null:
+		steam_lobby_failed.emit("This build has no SteamMultiplayerPeer (relay unavailable).")
+		return
+	peer.call("create_host", 0)
+	multiplayer.multiplayer_peer = peer as MultiplayerPeer
+	_active_peer = peer as MultiplayerPeer
+	_using_steam = true
+	print("[Steam] hosting lobby %d" % lobby_id)
+	steam_lobby_ready.emit(lobby_id)
+
+
+func _on_steam_lobby_joined(lobby_id: int, _permissions: int, _locked: bool, response: int) -> void:
+	if response != STEAM_RESULT_OK:
+		steam_lobby_failed.emit("Steam couldn't join that lobby (response %d)." % response)
+		return
+	var owner_id := 0
+	if _steam.has_method("getLobbyOwner"):
+		owner_id = int(_steam.getLobbyOwner(lobby_id))
+	# Steam fires lobby_joined for the lobby's CREATOR too. We already built the host peer
+	# in _on_steam_lobby_created, so ignore our own auto-join — otherwise we'd overwrite the
+	# host peer with a client one and try to connect to ourselves.
+	if owner_id == _my_steam_id() and _my_steam_id() != 0:
+		return
+	if owner_id == 0:
+		steam_lobby_failed.emit("Couldn't find that lobby's host.")
+		return
+	_steam_lobby_id = lobby_id
+	var peer := _make_steam_peer()
+	if peer == null:
+		steam_lobby_failed.emit("This build has no SteamMultiplayerPeer (relay unavailable).")
+		return
+	peer.call("create_client", owner_id, 0)
+	multiplayer.multiplayer_peer = peer as MultiplayerPeer
+	_active_peer = peer as MultiplayerPeer
+	_using_steam = true
+	print("[Steam] joined lobby %d (host %d)" % [lobby_id, owner_id])
+	steam_lobby_ready.emit(lobby_id)
+
+
+# A friend accepted our invite (or clicked "Join Game") while their game was open.
+func _on_steam_join_requested(lobby_id: int, _friend_id: int) -> void:
+	print("[Steam] join requested for lobby %d" % lobby_id)
+	join_steam(lobby_id)
 
 
 # === public API (the menu calls these) =====================================
@@ -143,6 +319,11 @@ func join_game(address: String = "127.0.0.1", port: int = DEFAULT_PORT) -> bool:
 
 # Tear the session down and go back to "not networked".
 func leave() -> void:
+	# If we were in a Steam lobby, leave it too so we don't linger as a ghost member.
+	if _using_steam and _steam != null and _steam_lobby_id != 0 and _steam.has_method("leaveLobby"):
+		_steam.leaveLobby(_steam_lobby_id)
+	_steam_lobby_id = 0
+	_using_steam = false
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer = null
 	_active_peer = null

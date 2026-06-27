@@ -21,6 +21,7 @@ var _code_label: Label = null
 var _roster_label: Label = null
 var _status_label: Label = null
 var _start_button: Button = null
+var _small_arena_check: CheckBox = null
 
 
 func _ready() -> void:
@@ -66,6 +67,25 @@ func _build_ui() -> void:
 	panel.add_child(_roster_label)
 
 	if NetworkManager.is_host():
+		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.
+		if NetworkManager.is_using_steam():
+			var invite_button := Button.new()
+			invite_button.text = "Invite friends (Steam)"
+			invite_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			invite_button.pressed.connect(func() -> void: NetworkManager.invite_friends())
+			panel.add_child(invite_button)
+
+			var copy_button := Button.new()
+			copy_button.text = "Copy join code"
+			copy_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			copy_button.pressed.connect(_on_copy_code_pressed.bind(copy_button))
+			panel.add_child(copy_button)
+
+		# Host picks the arena: the compact one is lighter to host (smaller + fewer NPCs).
+		_small_arena_check = CheckBox.new()
+		_small_arena_check.text = "Compact arena (smoother when you host)"
+		panel.add_child(_small_arena_check)
+
 		_start_button = Button.new()
 		_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_start_button.pressed.connect(_on_start_pressed)
@@ -88,7 +108,10 @@ func _refresh() -> void:
 	_roster_label.text = "Players: %d / %d" % [count, NetworkManager.MAX_PLAYERS]
 
 	if NetworkManager.is_host():
-		_code_label.text = "LAN join code: %s\n(internet play via Steam — coming next)" % _host_code()
+		if NetworkManager.is_using_steam():
+			_code_label.text = "Steam join code:\n%s\n(or use Invite friends)" % NetworkManager.steam_lobby_code()
+		else:
+			_code_label.text = "LAN join code: %s\n(same-network play; use Host online for internet)" % _host_code()
 		if _start_button != null:
 			var enough := count >= MIN_PLAYERS_TO_START
 			_start_button.disabled = not enough
@@ -113,17 +136,27 @@ func _host_code() -> String:
 	return "127.0.0.1"
 
 
+func _on_copy_code_pressed(button: Button) -> void:
+	var code := NetworkManager.steam_lobby_code()
+	if code != "":
+		DisplayServer.clipboard_set(code)
+		button.text = "Copied!"
+
+
 func _on_start_pressed() -> void:
 	if _player_count() < MIN_PLAYERS_TO_START:
 		return
-	# Tell EVERY peer (including us) to load the match together.
-	_begin_match.rpc()
+	# Tell EVERY peer (including us) to load the match together, with the host's arena choice.
+	var compact := _small_arena_check != null and _small_arena_check.button_pressed
+	_begin_match.rpc(compact)
 
 
-# Sent by the host to all peers: load the match scene. The match's own ready handshake
-# then takes over (nobody is spawned until every client's scene is up).
+# Sent by the host to all peers: record the arena choice and load the match scene together.
+# The match's own ready handshake then takes over (nobody is spawned until every client's
+# scene is up).
 @rpc("authority", "call_local", "reliable")
-func _begin_match() -> void:
+func _begin_match(compact_arena: bool) -> void:
+	NetworkManager.small_arena = compact_arena
 	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
 
 

@@ -3,10 +3,11 @@ class_name TestMap01
 
 # test_map_01 — UNSEEN, playtest greybox (MAP_DESIGN_SPEC.md).
 #
-# A more VARIED souk-style layout: a grid of cells, each either a BUILDING or
-# OPEN. Scattered buildings carve an irregular network of alleys and small plazas
-# around a central open plaza — a "chunk" of a dense market town. The open cells
-# stay edge-connected so you can always route around (no dead ends).
+# A TIGHT-ALLEY souk layout: a grid of cells, each a BUILDING, OPEN street, or the
+# central FOUNTAIN. Chunky building blocks fill the quadrants; one-cell-wide alleys
+# and four cardinal streets bore through them into a WIDE open fountain plaza in the
+# dead centre. The open cells stay edge-connected so you can always route around
+# (no dead ends — verified by flood fill before this layout was committed).
 #
 # WHY GRID CELLS: the walkable area is the set of OPEN cells. Adjacent open cells
 # share exact edges, so the navigation system stitches them into one connected
@@ -17,14 +18,31 @@ class_name TestMap01
 #   - a trapdoor       (medium hop, small exposure tell)
 #   - an underground passage (free — pure map knowledge)
 
-# The layout. '#' = building, '.' = open street/plaza. Edit this to reshape the map.
+# The layout grid. '#' = building, '.' = open street/plaza, 'F' = the central
+# fountain (solid — you walk AROUND it). Edit this to reshape the map.
+#
+# The shape: a SOLID building ring hugs the outer wall (no wasted open border — you
+# meet buildings right away from the edge), an inner ring road runs just inside it,
+# and a tight one-cell alley grid carves chunky 2-wide building blocks. Only the
+# dead centre opens up — a WIDE fountain plaza/avenue. That contrast is the point.
 const LAYOUT := [
-	"..#.#..",
-	"#....#.",
-	"..#.#..",
-	".#.....",
-	"..#.#..",
+	"###############",
+	"#.............#",
+	"#.##.##.##.##.#",
+	"#.##.##.##.##.#",
+	"#.##.......##.#",
+	"#......F......#",
+	"#.##.......##.#",
+	"#.##.##.##.##.#",
+	"#.##.##.##.##.#",
+	"#.............#",
+	"###############",
 ]
+
+## Optional smaller/alternate layout. When non-empty, this is used INSTEAD of LAYOUT, so
+## a second map scene (e.g. a compact arena) can reuse this whole script just by setting
+## a different grid + smaller play_half_* in the Inspector. Empty = use LAYOUT above.
+@export var layout_override: Array[String] = []
 
 # ===== size / tuning =====
 ## Half-extents of the playable area. Enlarged so a bigger crowd spreads out instead
@@ -43,12 +61,19 @@ const LAYOUT := [
 @export var teleporter_cost: float = 20.0
 @export var trapdoor_cost: float = 8.0
 
+## Radius of the central fountain's solid collision (you route around it), in pixels.
+## Kept comfortably smaller than a plaza cell so actors never get pinched against it.
+@export var fountain_radius: float = 120.0
+
 # ===== colours =====
 @export var exposed_color: Color = Color(0.27, 0.20, 0.15)
 @export var density_color: Color = Color(0.15, 0.20, 0.30)
 @export var building_color: Color = Color(0.33, 0.31, 0.28)
 @export var wall_color: Color = Color(0.42, 0.40, 0.36)
 @export var grid_color: Color = Color(1, 1, 1, 0.04)
+## Fountain look: a stone basin ring with water inside.
+@export var fountain_stone_color: Color = Color(0.40, 0.42, 0.45)
+@export var fountain_water_color: Color = Color(0.20, 0.45, 0.65)
 
 @onready var navigation_region: NavigationRegion2D = $NavigationRegion2D
 
@@ -65,6 +90,7 @@ func _ready() -> void:
 	add_to_group("map")
 	_define_features()
 	_build_walls()
+	_build_fountain()
 	_build_navigation()
 	_spawn_portals()
 	queue_redraw()
@@ -126,7 +152,7 @@ func random_edge_walkable_point() -> Vector2:
 	for row in _rows():
 		for col in _cols():
 			var on_edge: bool = row == 0 or row == _rows() - 1 or col == 0 or col == _cols() - 1
-			if on_edge and not _is_building(col, row):
+			if on_edge and not _is_solid(col, row):
 				edge_cells.append(_cell_rect(col, row))
 	if edge_cells.is_empty():
 		return random_walkable_point()
@@ -146,17 +172,21 @@ func _is_point_walkable(point: Vector2) -> bool:
 	var row: int = int((point.y + play_half_height) / cell_h)
 	if col < 0 or col >= _cols() or row < 0 or row >= _rows():
 		return false
-	if _is_building(col, row):
+	if _is_solid(col, row):
 		return false
 	return _cell_rect(col, row).grow(-solid_clearance).has_point(point)
 
 
 # === grid maths ============================================================
+# The active grid: the override if one was set in the Inspector, else the default LAYOUT.
+func _layout() -> Array:
+	return layout_override if not layout_override.is_empty() else LAYOUT
+
 func _cols() -> int:
-	return (LAYOUT[0] as String).length()
+	return (_layout()[0] as String).length()
 
 func _rows() -> int:
-	return LAYOUT.size()
+	return _layout().size()
 
 func _cell_rect(col: int, row: int) -> Rect2:
 	var cell_w: float = (2.0 * play_half_width) / float(_cols())
@@ -169,13 +199,35 @@ func _cell_center(col: int, row: int) -> Vector2:
 	return _cell_rect(col, row).get_center()
 
 func _is_building(col: int, row: int) -> bool:
-	return (LAYOUT[row] as String)[col] == "#"
+	return (_layout()[row] as String)[col] == "#"
+
+func _is_fountain(col: int, row: int) -> bool:
+	return (_layout()[row] as String)[col] == "F"
+
+# Anything an actor cannot walk through: a building OR the fountain. Used for
+# navigation + walkability so nobody ever paths into the fountain basin.
+func _is_solid(col: int, row: int) -> bool:
+	return _is_building(col, row) or _is_fountain(col, row)
+
+func _has_fountain() -> bool:
+	for row in _rows():
+		for col in _cols():
+			if _is_fountain(col, row):
+				return true
+	return false
+
+func _fountain_center() -> Vector2:
+	for row in _rows():
+		for col in _cols():
+			if _is_fountain(col, row):
+				return _cell_center(col, row)
+	return Vector2.ZERO
 
 func _open_cells() -> Array:
 	var cells: Array = []
 	for row in _rows():
 		for col in _cols():
-			if not _is_building(col, row):
+			if not _is_solid(col, row):
 				cells.append(_cell_rect(col, row))
 	return cells
 
@@ -201,27 +253,28 @@ func _outer_wall_rects() -> Array:
 
 
 func _define_features() -> void:
-	# Spawns: the four corner cells (all open in the layout), far apart.
+	# Spawns: the four near-corner alley junctions (one cell in, since the corner cells
+	# are now part of the solid building ring), far apart.
 	_player_spawns = [
-		_cell_center(0, 0),
-		_cell_center(_cols() - 1, 0),
-		_cell_center(0, _rows() - 1),
-		_cell_center(_cols() - 1, _rows() - 1),
+		_cell_center(1, 1),
+		_cell_center(_cols() - 2, 1),
+		_cell_center(1, _rows() - 2),
+		_cell_center(_cols() - 2, _rows() - 2),
 	]
-	# Marks: two central open cells (the contract picks one per player).
+	# Marks: two open cells on the central N/S avenue, near the top and bottom inner
+	# ring roads (the contract picks one per player).
 	_mark_locations = [
-		_cell_center(3, 1),
-		_cell_center(3, 3),
+		_cell_center(_cols() / 2, 1),
+		_cell_center(_cols() / 2, _rows() - 2),
 	]
-	# Teleport pads: opposite mid-sides (the cross-map jump).
+	# Teleport pads: opposite mid-sides on the inner ring road (the cross-map jump).
 	_teleport_pads = [
-		_cell_center(0, 2),
-		_cell_center(_cols() - 1, 2),
+		_cell_center(1, _rows() / 2),
+		_cell_center(_cols() - 2, _rows() / 2),
 	]
-	# Density "market" zones (visual cover regions).
+	# Density "market" zone: the wide central plaza around the fountain (visual cover).
 	_density_zones = [
-		_cell_rect(3, 1).merge(_cell_rect(3, 3)),
-		_cell_rect(_cols() - 1, 3).merge(_cell_rect(_cols() - 1, 4)),
+		_cell_rect(4, 4).merge(_cell_rect(_cols() - 5, 6)),
 	]
 
 
@@ -250,6 +303,24 @@ func _build_walls() -> void:
 		_add_static_box(rect.get_center(), rect.size)
 
 
+# The central fountain is a round solid you walk around. Its whole grid cell is
+# already excluded from navigation, so this collision circle only ever sits inside
+# that empty cell — actors route around the cell and never pinch against the basin.
+func _build_fountain() -> void:
+	if not _has_fountain():
+		return
+	var body := StaticBody2D.new()
+	body.position = _fountain_center()
+	body.collision_layer = 1
+	body.collision_mask = 0
+	var collision := CollisionShape2D.new()
+	var shape := CircleShape2D.new()
+	shape.radius = fountain_radius
+	collision.shape = shape
+	body.add_child(collision)
+	add_child(body)
+
+
 func _add_static_box(center: Vector2, size: Vector2) -> void:
 	var body := StaticBody2D.new()
 	body.position = center
@@ -265,15 +336,21 @@ func _add_static_box(center: Vector2, size: Vector2) -> void:
 
 # === map-control features (Portal pairs, §8) ===============================
 func _spawn_portals() -> void:
-	# Teleporter pads — cross-map, exposure cost (teal).
+	# Teleporter pads — cross-map, exposure cost (teal). Opposite mid-sides.
 	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, 58.0)
 	# Trapdoor — a medium diagonal hop with a small exposure tell (orange).
-	_spawn_portal_pair(_cell_center(1, 1), _cell_center(5, 3), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0)
-	# Underground passage — free, traverses the centre vertically (grey).
-	_spawn_portal_pair(_cell_center(3, 0), _cell_center(3, 4), Color(0.55, 0.55, 0.62, 0.9), 0.0, 52.0)
+	_spawn_portal_pair(_cell_center(4, 2), _cell_center(_cols() - 5, _rows() - 3), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0)
+	# Underground passage — free, a cross-map diagonal under the building blocks (grey).
+	# NOTE: this is the plain passage; the single-occupancy outer-alley connectors
+	# (with "someone's in there" messaging) replace/extend it in the next increment.
+	_spawn_portal_pair(_cell_center(1, 2), _cell_center(_cols() - 2, _rows() - 3), Color(0.55, 0.55, 0.62, 0.9), 0.0, 52.0)
 
 
 func _spawn_portal_pair(a: Vector2, b: Vector2, color: Color, cost: float, radius: float) -> void:
+	# Skip a pair whose endpoint would land in a wall/building — keeps ANY layout safe
+	# (the compact map has no cell where the big map's trapdoor used to sit, for example).
+	if not _is_point_walkable(a) or not _is_point_walkable(b):
+		return
 	var portal_a := _make_portal(a, color, cost, radius)
 	var portal_b := _make_portal(b, color, cost, radius)
 	portal_a.link = portal_b
@@ -304,6 +381,20 @@ func _draw() -> void:
 		draw_rect(rect, building_color, true)
 	for rect in _outer_wall_rects():
 		draw_rect(rect, wall_color, true)
+	_draw_fountain()
+
+
+# Draws the central fountain on TOP of the plaza floor: a stone basin ring, water
+# inside, a soft rim highlight, and a little central spout. Greybox, but it reads
+# as a landmark so players can orient by the middle of the map.
+func _draw_fountain() -> void:
+	if not _has_fountain():
+		return
+	var c := _fountain_center()
+	draw_circle(c, fountain_radius, fountain_stone_color)
+	draw_circle(c, fountain_radius * 0.72, fountain_water_color)
+	draw_arc(c, fountain_radius, 0.0, TAU, 48, Color(1, 1, 1, 0.25), 4.0)
+	draw_circle(c, fountain_radius * 0.18, fountain_stone_color)
 
 
 func _draw_grid() -> void:
