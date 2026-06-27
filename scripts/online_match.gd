@@ -23,7 +23,11 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 const NUM_SHEETS := 5
 
 ## Size of the AI crowd the host simulates (the people you hide among).
-@export var npc_count: int = 90
+@export var npc_count: int = 180
+
+## Fraction of the crowd that CROSSES the map (spawn at an edge, long paths). The rest
+## are "homebodies" that mill around their spawn spot with short trips.
+@export var traveler_fraction: float = 0.25
 
 var _map: Node = null
 var _players_parent: Node2D = null
@@ -129,12 +133,17 @@ func _start_as_host() -> void:
 func _spawn_crowd() -> void:
 	var map := _map as TestMap01
 	for _i in npc_count:
+		# A minority cross the whole map (entering from an edge); most are homebodies
+		# that spawn wherever and potter around there.
+		var is_traveler := randf() < traveler_fraction
 		var spawn_position := Vector2.ZERO
 		if map != null:
-			spawn_position = map.random_walkable_point()
+			spawn_position = map.random_edge_walkable_point() if is_traveler else map.random_walkable_point()
 		var spawn_data := {
 			"pos": spawn_position,
 			"appearance": randi() % NUM_SHEETS,
+			"traveler": is_traveler,
+			"wander_radius": randf_range(250.0, 500.0),
 		}
 		_crowd_spawner.spawn(spawn_data)
 
@@ -282,6 +291,9 @@ func _create_networked_npc(spawn_data: Dictionary) -> Node:
 	npc.network_controlled = true
 	npc.appearance_index = int(spawn_data["appearance"])
 	npc.position = spawn_data["pos"]
+	npc.is_traveler = bool(spawn_data["traveler"])
+	npc.home_position = spawn_data["pos"]  # homebodies mill around where they spawned
+	npc.wander_radius = float(spawn_data["wander_radius"])
 	var visual := npc.get_node_or_null("CharacterVisual")
 	if visual != null:
 		visual.set("randomize_on_ready", false)

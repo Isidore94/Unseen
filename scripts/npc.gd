@@ -39,6 +39,14 @@ class_name Npc
 ## looks identical on every screen.
 @export var appearance_index: int = 0
 
+# === wander behaviour ======================================================
+## When true this NPC CROSSES the map (long paths, spawns at an edge); when false it's
+## a "homebody" that makes short trips around home_position. Set by the spawner.
+@export var is_traveler: bool = false
+## A homebody's anchor (usually its spawn spot) and how far it strays from it (pixels).
+@export var home_position: Vector2 = Vector2.ZERO
+@export var wander_radius: float = 350.0
+
 ## Emitted the moment this NPC is killed (before the death animation). The
 ## contract uses it to know a mark is down.
 signal died
@@ -64,6 +72,11 @@ func _ready() -> void:
 	# nearby NPCs, then hands it back via this signal — and THAT's the one we move
 	# with. This is what stops the crowd clumping into a single blob.
 	navigation_agent.velocity_computed.connect(_on_velocity_computed)
+
+	# A homebody anchors to wherever it spawned. Online sets this explicitly; offline
+	# NPCs leave it at zero, so default it to our spawn position here.
+	if home_position == Vector2.ZERO:
+		home_position = global_position
 
 	# Online: only the host runs AI; clients display a replicated puppet.
 	if network_controlled:
@@ -182,13 +195,21 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 # samples every open cell evenly, so the crowd actually fills the streets.
 func _pick_new_destination() -> void:
 	var map := _map_node()
-	if map != null and map.has_method("random_walkable_point"):
-		navigation_agent.target_position = map.random_walkable_point()
-	else:
+	if map == null:
 		# Fallback if the map isn't found for some reason.
 		navigation_agent.target_position = NavigationServer2D.map_get_random_point(
 			navigation_agent.get_navigation_map(), 1, true
 		)
+		return
+
+	if is_traveler:
+		# Crosses the map: a destination anywhere on it.
+		navigation_agent.target_position = map.random_walkable_point()
+	elif map.has_method("random_walkable_point_near"):
+		# Homebody: a short trip near home, so it stays in its own patch.
+		navigation_agent.target_position = map.random_walkable_point_near(home_position, wander_radius)
+	else:
+		navigation_agent.target_position = map.random_walkable_point()
 
 
 func _map_node() -> Node:

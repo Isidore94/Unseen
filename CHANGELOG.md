@@ -42,6 +42,12 @@ Short, session-by-session log so we never lose the thread between sessions.
   spreads out instead of clumping. Mini-map now draws the **teleporters/passages
   colour-coded** — each pair shares a colour with a thin line linking its two ends
   (`test_map_01.get_portal_links()` + mini-map drawing).
+- **6.1g crowd behaviour + 180 NPCs:** fixed the whole crowd drifting to the centre
+  (wander used the nav server's origin-biased random point → now uses the map's even
+  sampler). Added two NPC types: **homebodies** (most of the crowd) that make short
+  trips around their spawn (`random_walkable_point_near`), and **travelers**
+  (`traveler_fraction`, ~25%) that cross the map and spawn from the edges
+  (`random_edge_walkable_point`). Bumped `npc_count` to 180 (FPS headroom).
 - 6.1 complete pending verification → then merge `phase-6-online` to `main` + tag v0.6.1.
 
 ### Session: 6.0 loopback spike (ENet) + versioning

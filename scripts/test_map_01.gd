@@ -108,6 +108,49 @@ func random_walkable_point() -> Vector2:
 	return cells[0].get_center() if not cells.is_empty() else Vector2.ZERO
 
 
+# A random walkable point WITHIN `radius` of `center` — for "homebody" NPCs that mill
+# around a small area instead of crossing the whole map.
+func random_walkable_point_near(center: Vector2, radius: float) -> Vector2:
+	for _attempt in 12:
+		var angle: float = randf() * TAU
+		var distance: float = sqrt(randf()) * radius  # sqrt = even spread across the disk
+		var candidate: Vector2 = center + Vector2(cos(angle), sin(angle)) * distance
+		if _is_point_walkable(candidate):
+			return candidate
+	return center  # give up and stay put
+
+
+# A random walkable point in one of the EDGE cells — where map-crossing NPCs enter from.
+func random_edge_walkable_point() -> Vector2:
+	var edge_cells: Array = []
+	for row in _rows():
+		for col in _cols():
+			var on_edge: bool = row == 0 or row == _rows() - 1 or col == 0 or col == _cols() - 1
+			if on_edge and not _is_building(col, row):
+				edge_cells.append(_cell_rect(col, row))
+	if edge_cells.is_empty():
+		return random_walkable_point()
+	var cell: Rect2 = edge_cells[randi() % edge_cells.size()]
+	var inner: Rect2 = cell.grow(-solid_clearance)
+	if inner.size.x <= 0.0 or inner.size.y <= 0.0:
+		return cell.get_center()
+	return inner.position + Vector2(randf() * inner.size.x, randf() * inner.size.y)
+
+
+# True if a world point lies inside an OPEN cell (inset by the clearance), i.e. a spot
+# an actor can actually stand without clipping a wall.
+func _is_point_walkable(point: Vector2) -> bool:
+	var cell_w: float = (2.0 * play_half_width) / float(_cols())
+	var cell_h: float = (2.0 * play_half_height) / float(_rows())
+	var col: int = int((point.x + play_half_width) / cell_w)
+	var row: int = int((point.y + play_half_height) / cell_h)
+	if col < 0 or col >= _cols() or row < 0 or row >= _rows():
+		return false
+	if _is_building(col, row):
+		return false
+	return _cell_rect(col, row).grow(-solid_clearance).has_point(point)
+
+
 # === grid maths ============================================================
 func _cols() -> int:
 	return (LAYOUT[0] as String).length()
