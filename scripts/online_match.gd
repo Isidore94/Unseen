@@ -53,6 +53,26 @@ const NUM_SHEETS := 5
 ## ON so rooftops aren't a blind solo zone (a buildplan still-open decision — flip to taste).
 @export var rooftop_sees_rooftop: bool = true
 
+# === per-viewer crowd APPEARANCE (§0.3 — the hidden-identity PILLAR) ====================
+# Visibility (above) decides WHO you can see; this decides WHAT the crowd looks like to YOU.
+# On THIS screen the crowd is rebuilt from copies of the OTHER players' looks (so each real
+# opponent blends into a group of look-alikes) plus filler, with YOUR OWN look removed — you
+# are never shown a copy of yourself, and your look is never a tell. Local-only and frozen
+# once per match. It's keyed on the Loadout, so real cosmetics later flow through unchanged.
+## How many crowd NPCs are dressed as EACH other player. Higher = a real opponent hides in a
+## bigger group of look-alikes; lower = more crowd variety. Tune by feel (a healthy group is
+## what actually camouflages a player, so don't set this tiny).
+@export var look_copies_per_player: int = 14
+## Master switch for the per-viewer crowd reskin. Off = the crowd keeps the host's random
+## looks (the pre-pillar behaviour) — handy for an A/B comparison while tuning.
+@export var per_viewer_crowd_enabled: bool = true
+## TEMPORARY — placeholder-art era only. With no real cosmetics yet, every account defaults to
+## the SAME body, so the per-viewer crowd would be invisible (everyone identical). This forces
+## each player onto a DISTINCT body sheet at spawn so you can SEE the system work: you become
+## the only "you" on your screen while everyone else's crowd fills with copies of you. Turn
+## OFF the moment players pick real, distinct cosmetics — their chosen look is then used as-is.
+@export var placeholder_distinct_bodies: bool = true
+
 # === scoring (buildplan §7.5 — winner = most points; mirrors LocalMatchManager) ========
 # The match runs until ONE player is left alive (or time runs out); the WINNER is then
 # whoever has the most points — NOT necessarily the survivor. These tunables mirror the
@@ -151,6 +171,10 @@ var _hunt_phase: bool = false
 ## Client-side: re-asks the host to spawn us until our player appears (covers the rare
 ## case where our first request outran the host's scene during the lobby transition).
 var _spawn_retry_timer: float = 0.0
+## Per-viewer crowd reskin (§0.3) runs ONCE per match, after the whole crowd has replicated
+## in. This latch makes sure it never re-runs — a stable disguise pool, because an NPC that
+## changed clothes mid-match would be an obvious tell.
+var _crowd_appearance_done: bool = false
 
 # === Phase 7 online state (visibility / claim / items / reveals) =============
 # Layer ints mirrored from LayerComponent.Layer (kept decoupled, like CharacterVisual).
@@ -369,6 +393,11 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	# build a sensible default (a body from their spawn order + the DEFAULT items). Either
 	# way the spawner replicates it to everyone, so all peers render this player identically.
 	var loadout_payload := _loadout_for_peer(peer_id)
+	# Placeholder-era test aid (§0.3): with no real cosmetics every account defaults to the same
+	# body, so the per-viewer crowd would be invisible. Force a DISTINCT body per player so you
+	# can SEE it working. Drop this flag once players pick real, distinct cosmetics.
+	if placeholder_distinct_bodies:
+		loadout_payload = _with_body_index(loadout_payload, _next_spawn_index % NUM_SHEETS)
 	var spawn_data := {
 		"peer": peer_id,
 		"pos": _spawn_position_for_index(_next_spawn_index),
@@ -592,6 +621,14 @@ func _default_loadout_payload(body_index: int) -> Dictionary:
 # A random crowd look drawn from the global pool (the §4 config hook lives in the registry).
 func _random_npc_loadout_payload() -> Dictionary:
 	return Loadout.randomized(CosmeticRegistry.npc_pool_by_slot()).to_payload()
+
+
+# Return a copy of `payload` with its BODY slot forced to the given sheet index, leaving the
+# rest of the look untouched. Used only by the placeholder_distinct_bodies test aid.
+func _with_body_index(payload: Dictionary, body_index: int) -> Dictionary:
+	var loadout := Loadout.from_payload(payload)
+	loadout.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.body_id_for_index(body_index))
+	return loadout.to_payload()
 
 
 # Pull the body sheet index back out of a loadout payload, for the legacy `appearance`
@@ -1065,6 +1102,7 @@ func _process(delta: float) -> void:
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
+	_maybe_assign_crowd_appearances()
 	_update_visibility()
 	_update_debug_overlay()
 
@@ -1288,6 +1326,95 @@ func _can_local_player_see(my_layer: int, other: Node2D) -> bool:
 			return false  # can't see down into the sewer
 		_:  # GROUND
 			return other_layer == _LAYER_GROUND
+
+
+# === §0.3 — per-viewer crowd APPEARANCE (the hidden-identity pillar) ==========
+# Visibility (above) decides WHO you see; this decides WHAT they look like. On THIS screen the
+# crowd is rebuilt from copies of the OTHER players' looks (+ filler), with YOUR own look taken
+# out, so you're never shown a copy of yourself and each real opponent hides inside a group of
+# look-alikes. Local-only (it never touches the host's sim or replication) and run ONCE, frozen
+# — a stable disguise pool. Keyed on the Loadout, so real cosmetics later flow through unchanged.
+
+# Run the reskin once, as soon as it's safe: our own player exists AND the whole crowd has
+# replicated in (NPCs arrive over several frames on a client). Latched so it never repeats.
+func _maybe_assign_crowd_appearances() -> void:
+	if _crowd_appearance_done or not per_viewer_crowd_enabled:
+		return
+	if _local_player == null or _crowd_parent == null:
+		return
+	# Every peer can compute the crowd size itself (it knows the same lobby choice), so a client
+	# can tell when its crowd is fully here without any extra network message.
+	var expected_crowd := compact_npc_count if NetworkManager.small_arena else npc_count
+	if _crowd_parent.get_child_count() < expected_crowd:
+		return  # still arriving — wait for the last NPC so the dupe/filler counts come out right
+	_crowd_appearance_done = true
+	_assign_crowd_appearances()
+
+
+# Rebuild every crowd NPC's look on THIS machine from the per-viewer pool (§0.3).
+func _assign_crowd_appearances() -> void:
+	# Our own look — the one thing that must NEVER appear out in our crowd.
+	var my_key := _look_key(_loadout_of_player(_local_player))
+
+	# The looks we DUPLICATE into the crowd: every OTHER player's loadout (never our own).
+	var other_looks: Array = []  # Array[Loadout]
+	for child in _players_parent.get_children():
+		var other := child as Player
+		if other != null and other != _local_player:
+			other_looks.append(_loadout_of_player(other))
+
+	# The crowd NPCs on THIS machine (marks included — they're ordinary crowd folk to look at).
+	var npcs: Array = []
+	for child in _crowd_parent.get_children():
+		if child is Npc:
+			npcs.append(child)
+	if npcs.is_empty():
+		return
+
+	# Build a look for each NPC: first the player-dupes (a healthy group per opponent), then
+	# filler base looks for the rest — re-rolling any filler that would match OUR look.
+	var looks: Array = []  # Array[Loadout]
+	for look in other_looks:
+		for _i in look_copies_per_player:
+			looks.append(look)
+	var pool := CosmeticRegistry.npc_pool_by_slot()
+	var guard := 0  # stop a pathological pool (e.g. a single body) from looping forever
+	while looks.size() < npcs.size():
+		var filler := Loadout.randomized(pool)
+		if _look_key(filler) != my_key or guard > npcs.size() * 8:
+			looks.append(filler)
+		guard += 1
+	# More dupes than NPCs (many players, tiny crowd) → keep what fits.
+	if looks.size() > npcs.size():
+		looks.resize(npcs.size())
+	# Scatter the dupes through the crowd instead of clumping one player's look together.
+	looks.shuffle()
+
+	for i in npcs.size():
+		var visual := (npcs[i] as Node).get_node_or_null("CharacterVisual")
+		if visual != null and visual.has_method("apply_loadout"):
+			visual.call("apply_loadout", (looks[i] as Loadout).duplicate_loadout())
+
+
+# A character's VISIBLE identity, used to keep our own look out of the crowd. Today only the
+# BODY layer is painted (outfit/head/weapon are art-less placeholders), so the body sheet IS
+# the visible identity. THIS is the seam: when overlay art lands, fold the other slot ids in
+# here and the "never see myself" rule sharpens automatically — every caller routes through it.
+func _look_key(loadout: Loadout) -> StringName:
+	return loadout.get_item(CosmeticItem.Slot.BODY) if loadout != null else &""
+
+
+# Read a spawned character's equipped look back out as a Loadout — its host-assigned payload,
+# or the legacy body index as a fallback. Used to source the per-viewer crowd from the players.
+func _loadout_of_player(character: Node) -> Loadout:
+	if character == null:
+		return Loadout.new()
+	var payload: Dictionary = character.get("loadout_payload")
+	if payload != null and not payload.is_empty():
+		return Loadout.from_payload(payload)
+	var loadout := Loadout.new()
+	loadout.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.body_id_for_index(int(character.get("appearance_index"))))
+	return loadout
 
 
 # Build the sewer screen overlay and wire it (+ the arrow's 100% uptime) to OUR layer.

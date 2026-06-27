@@ -2,6 +2,35 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+### Session: 8-per-viewer-appearance — the §0.3 hidden-identity pillar (crowd = copies of the OTHER players)
+Phase 8 built the cosmetic *plumbing*; this lands the gameplay pillar it exists for (`buildplan.md`
+§0.3): **on your screen you never see your own look in the crowd.** Visibility (Slice B) already
+decided WHO you can see; this decides WHAT the crowd looks like to YOU. All local-only — it never
+touches the host sim or replication, so it stays a true per-machine hidden view.
+- **Per-viewer crowd reskin (`_assign_crowd_appearances`, online_match.gd).** Once per match, after
+  the whole crowd has replicated in, each machine rebuilds every crowd NPC's look from a per-viewer
+  pool: `look_copies_per_player` (default 14) dupes of **each OTHER player's** exact loadout — so a
+  real opponent hides inside a group of look-alikes — plus filler base looks for the rest, with the
+  **local player's own look removed** (filler that would match it is re-rolled). Run once and frozen
+  (`_crowd_appearance_done`): an NPC that changed clothes mid-match would be a tell.
+- **Why no new netcode:** it's built on the loadouts that already replicate (Phase 8 §5). Each peer
+  reads the players' looks off the spawned player nodes and computes its own crowd locally; the look
+  an NPC shows can differ per machine because no one compares screens. Each peer also knows the crowd
+  size from the shared lobby choice, so a client can tell when its crowd is fully present with no extra
+  message. The host's random NPC looks remain as the fallback when the reskin is off.
+- **Built on loadouts, future-proof (the COSMETIC_SYSTEM_SPEC success test).** `_look_key()` is the one
+  seam that defines "same visible identity" — today it's the BODY sheet (the only painted layer while
+  overlays are art-less), and when real overlay art lands you fold the other slot ids in there and the
+  "never see myself" rule sharpens automatically. Real cosmetics flow through unchanged: no code edits,
+  just content.
+- **Placeholder test aid (`placeholder_distinct_bodies`, default ON).** With no real cosmetics every
+  account defaults to the same body, which would make the per-viewer crowd invisible. This forces each
+  player onto a DISTINCT body sheet at spawn so you can SEE it work — you become the only "you" on your
+  screen while everyone else's crowd fills with copies of you. **Flip it OFF once players pick real,
+  distinct cosmetics**, and their chosen look is used as-is.
+- **Tunables (all `@export`, no magic numbers):** `look_copies_per_player`, `per_viewer_crowd_enabled`
+  (master switch / A-B compare), `placeholder_distinct_bodies`.
+
 ## Phase 8 — Cosmetic & identity foundation (monetization plumbing)  ·  COSMETIC_SYSTEM_SPEC.md  ·  v0.8.0
 
 The architecture cosmetics/monetization later sit on. **Plumbing only — no shop, no currency,
