@@ -2,6 +2,25 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 11 — Art pipeline (PixelLab as the asset backbone)  ·  branch `phase-11-art-pipeline`  ·  ART_PIPELINE.md
+
+Hardlines **PixelLab** as the canonical art source for **sprites AND maps**. Integrates after Phase 10
+(order 7→8→9→10→11→main). This phase locks the **foundations + scaffolding only** — the big SVG→TileMap
+map migration is sequenced *later*, district by district (ART_PIPELINE.md §7), not in this integration.
+- **`ART_PIPELINE.md`** committed as the canonical spec, with an adaptation note: the doc's
+  "MapBuilder/DISTRICTS layout authority" ≙ this repo's **`test_map_01.gd` grid layout**; the migration
+  target is to keep that grid as authority and swap only the *render* layer (code-built boxes → a Godot
+  `TileMap` from a PixelLab `TileSet`).
+- **Project-wide pixel import default** — `project.godot` now sets `default_texture_filter=0` (Nearest),
+  so all 2D art renders crisp instead of blurry (§2/§3).
+- **Pipeline infrastructure (§4):** `assets/source/` (raw PixelLab) ↔ `assets/finished/` split;
+  `assets/generation_manifest.csv` (per-asset reproducibility + PixelLab spend + Steam AI-disclosure log);
+  `tools/ingest_sprite.py` (Pillow scaffold: trim → palette-enforce → pivot-at-feet → pack to the 32×32 /
+  4×4 sheet the rig expects — master palette + frame-naming marked TODO).
+- **Still to do after integration (the §7 rollout):** lock the master palette + tile view-angle, pilot ONE
+  map's floor as a TileSet/TileMap, migrate characters/NPCs onto the ingest pipeline, then cosmetics, then
+  the full map, UI last. The style bible (`assets/style_bible/`) arrives from Phase 8 on re-sync.
+
 ## Phase 10 — Maps  ·  branch `phase-10-maps` (stacks on Phase 9)
 
 A phase purely for maps. Integrates after Phase 9 (order: 7 → 8 → 9 → 10 → main); the same
