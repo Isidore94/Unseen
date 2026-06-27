@@ -4,6 +4,33 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7.2–7.6 — layers, items, claim/cooldown, match flow, reveals (v0.7.0)
+A full methodical pass over the rest of the Phase 7 plan. Built logic-first and committed
+phase-by-phase; **all of it is UNTESTED in-editor** (no Godot on the build machine) — the
+next step is a play-test. New reusable components per "components, not god-scripts."
+
+- **7.0 (rest):** `marks_per_player` → 2; ContractManager forces marks HOMEBODY when tagged
+  and picks them `mark_min_separation` (~2 screens) apart.
+- **7.2 layers — rooftops & sewers (`LayerComponent`, `AccessPoint`):** GROUND/ROOFTOP/SEWER
+  per character; stairs/entrances spawned by the map; `interact` climbs/enters, `drop_down`
+  leaves a rooftop. Kill rules = same-layer only, sewer = no-kill. Sewer = 100% arrow uptime
+  + a darkened own-view overlay. Bodies tinted per layer. New Input Map actions (interact/
+  drop_down/item_primary/item_secondary, base+p1+p2, keyboard+gamepad). **Built with tints,
+  NOT real per-viewport culling** — that's the deferred rendering pass (build plan step 2).
+- **7.3 claim + cooldown:** access points + the teleporter pair share a 15s global lockout;
+  `action_secondary` claims a point for the match (pays 20% committed exposure). Offline.
+- **7.4 reveals + faceplates (`FaceplateRow`):** red plate = your target's look (first to
+  finish marks), blue plates = opponents who hit 100% exposure.
+- **7.5 match flow:** winner = MOST POINTS (a death only ends the round); tie-break = lowest
+  average exposure. `win_bonus` → `contract_bonus` (no longer circular). "Rematch" button.
+- **7.6 items (`ItemComponent`):** 2 charge-based slots — smoke grenade (fade + can't attack)
+  and cloaking device (kills the opponent's hunt arrow on you; exposure arrow still fires).
+- **Bumped `config/version` → 0.7.0.**
+- **Known limitations / TODO (be honest with the play-test):** real per-viewer visibility
+  culling (§0.3/§7.2 step 2) is NOT built — smoke/sewer/rooftop use shared-world tints, so
+  both viewers see them; ONLINE paths for claim, items, and N-player last-standing are stubs/
+  TODOs (offline local co-op is the tested surface). Everything is `@export`-tunable.
+
 ### Session: 7.1 — the four-zone main map + first quick wins
 - **`scripts/test_map_01.gd` reworked into the FOUR-ZONE main map** (buildplan §7.1,
   incorporating the concept I mocked up). The default map is now a tight city arena
