@@ -2,6 +2,30 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 10 — Maps  ·  branch `phase-10-maps` (stacks on Phase 9)
+
+A phase purely for maps. Integrates after Phase 9 (order: 7 → 8 → 9 → 10 → main); the same
+forward-propagation contract applies (it edits `online_match.gd`, `lobby.gd`, `network_manager.gd`,
+`test_map_01.gd`).
+
+### Rome — a small street-only map, lobby-selectable
+- **`maps/rome.tscn`** — a new map the **same play size as the compact arena** (1440×1120) but on a
+  denser **19×15** grid: a warren of **tight 1-cell lanes** between Roman insulae blocks, a central
+  fountain piazza, and two small market squares. **No rooftops, no sewers, no portals** — just roads.
+  It **reuses the whole `test_map_01.gd` generator** (the proven grid + nav + flood-fill approach);
+  only the grid, size, feature counts, the new portal toggle, and a warm Roman palette change. Layout
+  flood-fill verified before commit (`scratchpad/gen_rome.py`): 148 open cells, all reachable, all four
+  spawn corners open.
+- **`test_map_01.gd`**: added `@export var enable_portals` (default true). Rome sets it false so the
+  generator spawns no teleporters/trapdoor/passage. Rooftop/sewer access points are already off via the
+  existing per-zone counts (set to 0). Existing maps are unchanged (default keeps portals on).
+- **Lobby map picker (`lobby.gd`)**: the old "Compact arena" checkbox is now an **OptionButton** with
+  three choices — Four Zones (full), Compact Arena, **Rome**. The host's pick is sent to every peer.
+- **Selection plumbing**: `NetworkManager` gains `enum Map { FOUR_ZONE, COMPACT, ROME }` + `selected_map`
+  (survives the lobby→match scene change). `_begin_match` now carries the map id and derives `small_arena`
+  (true for both small maps, so the compact crowd-count logic is untouched). `online_match._build_world`
+  loads the scene by `selected_map`. Server-authoritative: the host chooses, every peer loads the same map.
+
 ## Phase 9 — Hidden-identity pillar (§0.3) + endgame experiments  ·  PHASE_9_EXPERIMENTS.md
 
 > **Phase 9 = everything on the `…/post-integration-checklist-…` branch beyond the Phase 8 tip:** the

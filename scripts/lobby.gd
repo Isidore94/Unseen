@@ -21,7 +21,7 @@ var _code_label: Label = null
 var _roster_label: Label = null
 var _status_label: Label = null
 var _start_button: Button = null
-var _small_arena_check: CheckBox = null
+var _map_picker: OptionButton = null
 
 
 func _ready() -> void:
@@ -81,10 +81,18 @@ func _build_ui() -> void:
 			copy_button.pressed.connect(_on_copy_code_pressed.bind(copy_button))
 			panel.add_child(copy_button)
 
-		# Host picks the arena: the compact one is lighter to host (smaller + fewer NPCs).
-		_small_arena_check = CheckBox.new()
-		_small_arena_check.text = "Compact arena (smoother when you host)"
-		panel.add_child(_small_arena_check)
+		# Host picks the MAP (Phase 10). Item order MUST match NetworkManager.Map so the
+		# selected index IS the map id we send. The two small maps are lighter to host.
+		var map_label := Label.new()
+		map_label.text = "Map"
+		panel.add_child(map_label)
+		_map_picker = OptionButton.new()
+		_map_picker.add_item("Four Zones (full — rooftops & sewers)", NetworkManager.Map.FOUR_ZONE)
+		_map_picker.add_item("Compact Arena (small)", NetworkManager.Map.COMPACT)
+		_map_picker.add_item("Rome (small — tight streets, no verticality)", NetworkManager.Map.ROME)
+		_map_picker.selected = NetworkManager.Map.FOUR_ZONE
+		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		panel.add_child(_map_picker)
 
 		_start_button = Button.new()
 		_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -146,17 +154,18 @@ func _on_copy_code_pressed(button: Button) -> void:
 func _on_start_pressed() -> void:
 	if _player_count() < MIN_PLAYERS_TO_START:
 		return
-	# Tell EVERY peer (including us) to load the match together, with the host's arena choice.
-	var compact := _small_arena_check != null and _small_arena_check.button_pressed
-	_begin_match.rpc(compact)
+	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice.
+	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.FOUR_ZONE
+	_begin_match.rpc(map_id)
 
 
-# Sent by the host to all peers: record the arena choice and load the match scene together.
+# Sent by the host to all peers: record the MAP choice and load the match scene together.
 # The match's own ready handshake then takes over (nobody is spawned until every client's
-# scene is up).
+# scene is up). small_arena is derived so the existing compact-crowd logic keeps working.
 @rpc("authority", "call_local", "reliable")
-func _begin_match(compact_arena: bool) -> void:
-	NetworkManager.small_arena = compact_arena
+func _begin_match(map_id: int) -> void:
+	NetworkManager.selected_map = map_id
+	NetworkManager.small_arena = map_id != NetworkManager.Map.FOUR_ZONE
 	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
 
 

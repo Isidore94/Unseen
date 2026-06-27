@@ -41,8 +41,16 @@ var _active_peer: MultiplayerPeer = null
 
 ## Match setting chosen in the lobby (the host's choice, sent to everyone at start): use
 ## the compact arena — smaller map + fewer NPCs, lighter for the host to simulate/serve.
-## Lives here (an autoload) so it survives the lobby → match scene change.
+## Lives here (an autoload) so it survives the lobby → match scene change. Kept as the
+## "is this a small map?" flag (drives the compact crowd count); the SCENE is now chosen by
+## `selected_map` below, and the lobby sets both together.
 var small_arena: bool = false
+
+## Which map the lobby picked (Phase 10). Index into the lobby's map list — the match reads
+## it to load the right scene. FOUR_ZONE is the full main map; COMPACT and ROME are small
+## (so they also set small_arena = true for the lighter crowd). Survives the scene change.
+enum Map { FOUR_ZONE, COMPACT, ROME }
+var selected_map: int = Map.FOUR_ZONE
 
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.

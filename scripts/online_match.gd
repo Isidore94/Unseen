@@ -14,6 +14,7 @@ class_name OnlineMatch
 
 const MAP_SCENE := preload("res://maps/test_map_01.tscn")
 const SMALL_MAP_SCENE := preload("res://maps/test_map_02.tscn")
+const ROME_SCENE := preload("res://maps/rome.tscn")  # Phase 10 — street-only small map
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
@@ -235,8 +236,16 @@ func _ready() -> void:
 
 
 func _build_world() -> void:
-	# The host's lobby choice (compact vs full) reaches every peer via NetworkManager.
-	var map_scene: PackedScene = SMALL_MAP_SCENE if NetworkManager.small_arena else MAP_SCENE
+	# The host's lobby map choice reaches every peer via NetworkManager (Phase 10). The crowd
+	# size still keys off small_arena below (COMPACT and ROME are both small).
+	var map_scene: PackedScene = MAP_SCENE
+	match NetworkManager.selected_map:
+		NetworkManager.Map.COMPACT:
+			map_scene = SMALL_MAP_SCENE
+		NetworkManager.Map.ROME:
+			map_scene = ROME_SCENE
+		_:
+			map_scene = MAP_SCENE
 	_map = map_scene.instantiate()
 	_map.name = "Map"
 	add_child(_map)
