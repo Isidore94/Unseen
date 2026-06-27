@@ -21,16 +21,18 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 ## Reloaded on a rematch (re-runs the whole start handshake with everyone still connected).
 const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 
-## Crowd size for the COMPACT arena (the lobby's "compact" toggle uses this instead of
-## npc_count — roughly two-thirds, to lighten the host).
-@export var compact_npc_count: int = 120
+## Crowd size for the COMPACT/Rome arenas (the lobby's small maps use this instead of npc_count).
+## Tighter crowd (Phase 9 decision): a smaller, readable haystack. At clone_crowd_fraction = 0.25
+## this is ~10 clones + ~30 filler. Raise it (or the fraction) if hiding feels too easy.
+@export var compact_npc_count: int = 40
 
 ## How many sprite sheets exist (assets/sprites). Characters cycle through them so a
 ## small match still looks varied. Keep in sync with CharacterVisual's sheet list.
 const NUM_SHEETS := 5
 
-## Size of the AI crowd the host simulates (the people you hide among).
-@export var npc_count: int = 180
+## Size of the AI crowd the host simulates (the people you hide among). Tightened in Phase 9 to a
+## smaller, readable crowd; at clone_crowd_fraction = 0.25 that's ~15 clones + ~45 filler.
+@export var npc_count: int = 60
 
 ## Fraction of the crowd that CROSSES the map (spawn at an edge, long paths). The rest
 ## are "homebodies" that mill around their spawn spot with short trips.
