@@ -1,3 +1,10 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# Secrets — NEVER commit API keys / tokens. Put real values in a local .env (ignored)
+# or a real environment variable. .env.example (a no-secret template) stays tracked.
+.env
+.env.local
+.env.*.local
+.claude/settings.local.json
