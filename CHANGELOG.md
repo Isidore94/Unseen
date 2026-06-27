@@ -2,6 +2,26 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+### Session: 8-monetization — taxonomy + PixelLab art pipeline + style-bible anchor
+Integrated `PHASE_8_MONETIZATION.md` (the monetization + PixelLab spec) into the repo and made the
+code/art coherent with it. Much of its "what to do" already exists (data model, equip, ownership gate
+here; the §2A player-derived clone crowd as the Phase 9 per-viewer system — `clones_per_player` ≙
+`look_copies_per_player`). This session adds the parts the doc introduces:
+- **Crowd-safe taxonomy in the data model (`CosmeticItem`).** New `Bucket { CROWD_SAFE, REVEAL_MOMENT,
+  OUT_OF_MATCH }` (the §0 veto: only crowd-safe items may touch the in-match civilian silhouette), plus
+  `Rarity` and `season` (§4.1, for battle-pass/store sorting). `make()` auto-assigns the bucket from the
+  slot via `bucket_for_slot()` (visual layers → crowd-safe, anim → reveal-moment, profile → out-of-match),
+  and `is_crowd_safe()` is the one-call veto downstream equip/store code gates on. Additive — existing
+  rows get the right bucket for free.
+- **Art pipeline scaffolding.** `assets/style_bible/` (the immovable anchor) with a README that fixes the
+  art direction (ONE base civilian; cosmetics differentiate; crowd-safe silhouette), the exact rig format
+  (32×32, 4×4 sheet, locked feet/centre origin), the **base-civilian PixelLab recipe** (PixFlux concept →
+  BitForge style-lock → hand-finish → rotate 4-dir → animate), palette discipline, the §7.9 naming
+  conventions, and the AI/Steam disclosure reminders. Plus `assets/cosmetics/` for generated art.
+- **Still to build per §4 (sequenced after the crowd is proven fun):** battle-pass backend (XP/track,
+  free vs premium, claim), store/entitlements, Steam MTX. Not built speculatively — the doc itself gates
+  them behind a proven crowd.
+
 ## Phase 8 — Cosmetic & identity foundation (monetization plumbing)  ·  COSMETIC_SYSTEM_SPEC.md  ·  v0.8.0
 
 The architecture cosmetics/monetization later sit on. **Plumbing only — no shop, no currency,
