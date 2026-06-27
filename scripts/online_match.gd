@@ -919,6 +919,17 @@ func _play_local_win_animation() -> void:
 			return
 
 
+# The local account's profile identity label ("Badge · Title"), or "" if none / no
+# inventory. Display hook for §7 — guarded so play still works without the inventory autoload.
+func _local_profile_label() -> String:
+	var inv := get_node_or_null("/root/CosmeticInventory")
+	if inv != null and inv.has_method("profile"):
+		var profile = inv.call("profile")
+		if profile != null:
+			return profile.label()
+	return ""
+
+
 func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	var my_id := multiplayer.get_unique_id()
 	var overlay := CanvasLayer.new()
@@ -949,6 +960,17 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	sub.text = "Last assassin standing — most points wins" if reason == "last_standing" else "Time up — most points wins"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(sub)
+
+	# IDENTITY DISPLAY HOOK (§7): surface THIS account's profile (badge · title) on the
+	# results screen — one of the places account identity shows (scoreboard / results /
+	# name tag). Placeholder text today; real banner/badge art reads the same ids later.
+	var identity := _local_profile_label()
+	if identity != "":
+		var identity_label := Label.new()
+		identity_label.text = identity
+		identity_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		identity_label.modulate = Color(0.8, 0.85, 1.0)
+		box.add_child(identity_label)
 
 	# One line per player, already sorted highest-first.
 	for row in rows:

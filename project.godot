@@ -20,6 +20,7 @@ config/icon="res://icon.svg"
 
 NetworkManager="*res://scripts/net/network_manager.gd"
 CosmeticRegistry="*res://scripts/cosmetics/cosmetic_registry.gd"
+CosmeticInventory="*res://scripts/cosmetics/cosmetic_inventory.gd"
 
 [display]
 
