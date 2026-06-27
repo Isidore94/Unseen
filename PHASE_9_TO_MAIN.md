@@ -66,8 +66,9 @@ phase **rewrote or newly added**. So after the merge, for every earlier-phase fi
    pattern — the merge won't catch that. Search for it and re-apply by hand.
 3. **Record it in `CHANGELOG.md`** so the chain is traceable.
 
-This is the last phase, so there's nothing downstream to hand off to — but if you fix anything *here*,
-tell Aaron, since it may need to be reflected on `main` directly.
+**And hand it forward:** Phase 10 (`PHASE_10_TO_MAIN.md` on the `phase-10-maps` branch) stacks on Phase 9
+and does the same `git merge main` re-sync before it's tested — it also edits `online_match.gd`. When you
+finish this phase, tell Aaron exactly what was fixed so the Phase 10 pass knows to look for it too.
 
 ---
 
