@@ -62,10 +62,14 @@ decided WHO you can see; this decides WHAT the crowd looks like to YOU. All loca
 touches the host sim or replication, so it stays a true per-machine hidden view.
 - **Per-viewer crowd reskin (`_assign_crowd_appearances`, online_match.gd).** Once per match, after
   the whole crowd has replicated in, each machine rebuilds every crowd NPC's look from a per-viewer
-  pool: `look_copies_per_player` (default 14) dupes of **each OTHER player's** exact loadout — so a
-  real opponent hides inside a group of look-alikes — plus filler base looks for the rest, with the
-  **local player's own look removed** (filler that would match it is re-rolled). Run once and frozen
-  (`_crowd_appearance_done`): an NPC that changed clothes mid-match would be a tell.
+  pool: a tunable fraction (`clone_crowd_fraction`, default **0.25**) of the crowd are CLONES of the
+  OTHER players' exact loadouts — split evenly so each opponent hides in a pocket of look-alikes —
+  and the **rest is generic filler** civilians, with the **local player's own look removed** (filler
+  that would match it is re-rolled). Run once and frozen (`_crowd_appearance_done`): an NPC that
+  changed clothes mid-match would be a tell. *(Decision: the CLONES+FILLER combo — a believable
+  filler-majority crowd, clones ~25% and tunable up — over the monetization doc's strict pure-clone
+  §2A; reconciles buildplan §0.3 with `PHASE_8_MONETIZATION.md`. Knob renamed from the earlier
+  `look_copies_per_player` to a fraction.)*
 - **Why no new netcode:** it's built on the loadouts that already replicate (Phase 8 §5). Each peer
   reads the players' looks off the spawned player nodes and computes its own crowd locally; the look
   an NPC shows can differ per machine because no one compares screens. Each peer also knows the crowd
@@ -81,7 +85,7 @@ touches the host sim or replication, so it stays a true per-machine hidden view.
   player onto a DISTINCT body sheet at spawn so you can SEE it work — you become the only "you" on your
   screen while everyone else's crowd fills with copies of you. **Flip it OFF once players pick real,
   distinct cosmetics**, and their chosen look is used as-is.
-- **Tunables (all `@export`, no magic numbers):** `look_copies_per_player`, `per_viewer_crowd_enabled`
+- **Tunables (all `@export`, no magic numbers):** `clone_crowd_fraction`, `per_viewer_crowd_enabled`
   (master switch / A-B compare), `placeholder_distinct_bodies`.
 
 ## Phase 8 — Cosmetic & identity foundation (monetization plumbing)  ·  COSMETIC_SYSTEM_SPEC.md  ·  v0.8.0

@@ -59,10 +59,13 @@ const NUM_SHEETS := 5
 # opponent blends into a group of look-alikes) plus filler, with YOUR OWN look removed — you
 # are never shown a copy of yourself, and your look is never a tell. Local-only and frozen
 # once per match. It's keyed on the Loadout, so real cosmetics later flow through unchanged.
-## How many crowd NPCs are dressed as EACH other player. Higher = a real opponent hides in a
-## bigger group of look-alikes; lower = more crowd variety. Tune by feel (a healthy group is
-## what actually camouflages a player, so don't set this tiny).
-@export var look_copies_per_player: int = 14
+## CLONES + FILLER mix (the chosen combo: buildplan §0.3 + PHASE_8_MONETIZATION.md §2A). The crowd
+## is mostly generic FILLER civilians with player-CLONES mixed in. This is the fraction of the crowd
+## that is clones (copies of the OTHER players' looks, split evenly across opponents); the rest is
+## filler. 0.25 = clones are ~a quarter of the crowd — a believable townsfolk crowd with each
+## opponent hidden in a pocket of look-alikes. Raise it for a stronger blend / cosmetic showcase.
+## Your own look is NEVER in the crowd. (Total crowd size is the host's npc_count / compact_npc_count.)
+@export_range(0.0, 1.0, 0.05) var clone_crowd_fraction: float = 0.25
 ## Master switch for the per-viewer crowd reskin. Off = the crowd keeps the host's random
 ## looks (the pre-pillar behaviour) — handy for an A/B comparison while tuning.
 @export var per_viewer_crowd_enabled: bool = true
@@ -1379,24 +1382,27 @@ func _assign_crowd_appearances() -> void:
 			npcs.append(child)
 	if npcs.is_empty():
 		return
+	var crowd_size := npcs.size()
 
-	# Build a look for each NPC: first the player-dupes (a healthy group per opponent), then
-	# filler base looks for the rest — re-rolling any filler that would match OUR look.
+	# CLONES + FILLER. Most of the crowd is generic filler civilians; a tunable fraction
+	# (clone_crowd_fraction) are CLONES of the OTHER players, split evenly across opponents so each
+	# is hidden in a pocket of look-alikes (§2A). Your own look never appears. With no opponents yet
+	# the crowd is all filler.
 	var looks: Array = []  # Array[Loadout]
-	for look in other_looks:
-		for _i in look_copies_per_player:
-			looks.append(look)
+	var clone_total := 0
+	if not other_looks.is_empty():
+		clone_total = int(round(crowd_size * clampf(clone_crowd_fraction, 0.0, 1.0)))
+	for i in clone_total:
+		looks.append(other_looks[i % other_looks.size()])  # round-robin = balanced groups
+	# Fill the rest with filler base looks, re-rolling any that would match OUR look.
 	var pool := CosmeticRegistry.npc_pool_by_slot()
 	var guard := 0  # stop a pathological pool (e.g. a single body) from looping forever
-	while looks.size() < npcs.size():
+	while looks.size() < crowd_size:
 		var filler := Loadout.randomized(pool)
-		if _look_key(filler) != my_key or guard > npcs.size() * 8:
-			looks.append(filler)
 		guard += 1
-	# More dupes than NPCs (many players, tiny crowd) → keep what fits.
-	if looks.size() > npcs.size():
-		looks.resize(npcs.size())
-	# Scatter the dupes through the crowd instead of clumping one player's look together.
+		if _look_key(filler) != my_key or guard > crowd_size * 8:
+			looks.append(filler)
+	# Scatter the clones through the crowd instead of clumping one player's look together.
 	looks.shuffle()
 
 	for i in npcs.size():
