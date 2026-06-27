@@ -4,6 +4,19 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7-online — offline mode is now single-player only (split-screen retired)
+Online (Steam relay) is the real playtest surface — on one screen you can just see each other,
+so split-screen never actually tested the social-stealth read. Offline now exists only to check
+basic feel, so it's one human vs a bot:
+- **New `scripts/single_player_game.gd`** (`main.tscn` now points here): spawns one player with
+  its own full-screen camera, the crowd, a bot HUNTER (master_plan §5 — a bot stands in for a
+  human), one ContractManager (kill your marks → the hunter becomes your target), and the HUD
+  (exposure bar, contract label, hunt arrow, mini-map, lock cue, item readout, sewer overlay,
+  faceplates). Scored by the existing `RoundManager`. Everything self-wires through groups.
+- **Removed** `scripts/local_coop_game.gd` + `scripts/local_match_manager.gd` (the 2-player
+  split-screen shell) — no longer referenced by any scene or script.
+- Menu: "Local AI test (split screen)" → **"Single-player (offline)"**.
+
 ### Session: 7-online — up-to-4-player online (lobby + last-standing + points)  ·  v0.7.1
 Brought the offline match model (notes 6 & 7 / §7.5) onto the ONLINE path. `online_match.gd`
 was the only place still hard-wired to 2 players; the lobby + ENet/Steam transport already

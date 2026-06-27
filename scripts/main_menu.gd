@@ -9,13 +9,13 @@ class_name MainMenu
 #       an exported build with Steam running).
 #   HOST (LAN) / JOIN IP               — direct ENet on your network, for quick local
 #       testing (this is also what works without Steam).
-#   LOCAL AI TEST                      — the offline split-screen scene.
+#   SINGLE-PLAYER                      — the offline test harness (1 human vs a bot hunter).
 #
 # The UI is built in code (same style as the rest of the project). All connectivity is
 # delegated to the NetworkManager autoload, so this screen never touches the raw network.
 
 const LOBBY_SCENE := "res://scenes/lobby.tscn"
-const LOCAL_COOP_SCENE := "res://scenes/main.tscn"  # the kept split-screen test harness
+const SINGLE_PLAYER_SCENE := "res://scenes/main.tscn"  # offline single-player test harness
 
 var _ip_field: LineEdit = null
 var _code_field: LineEdit = null
@@ -84,7 +84,7 @@ func _build_ui() -> void:
 	join_ip_button.pressed.connect(_on_join_pressed)
 	ip_row.add_child(join_ip_button)
 
-	var local_button := _add_button(panel, "Local AI test (split screen)")
+	var local_button := _add_button(panel, "Single-player (offline)")
 	local_button.pressed.connect(_on_local_test_pressed)
 
 	_status_label = Label.new()
@@ -185,4 +185,4 @@ func _on_join_pressed() -> void:
 
 
 func _on_local_test_pressed() -> void:
-	get_tree().change_scene_to_file(LOCAL_COOP_SCENE)
+	get_tree().change_scene_to_file(SINGLE_PLAYER_SCENE)

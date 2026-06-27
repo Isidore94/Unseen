@@ -54,7 +54,7 @@ class_name Player
 ## (Online) Zoom of YOUR OWN camera. Greater than 1 tightens the view (zoom IN); ~1.1
 ## shows roughly three-quarters of the old span so the tight four-zone map reads better
 ## (buildplan §7.0, note 1). Only affects the online local camera — offline play uses its
-## own follow camera (local_coop_game.camera_zoom), so this leaves split-screen unchanged.
+## own camera (single_player_game.camera_zoom), so this leaves offline play unchanged.
 @export var network_camera_zoom: Vector2 = Vector2(1.1, 1.1)
 ## (Online) Which sprite sheet (0-4) this character wears. The host assigns it; every
 ## peer receives the same value at spawn, so the crowd looks identical on all screens.

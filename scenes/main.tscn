@@ -1,10 +1,10 @@
 [gd_scene load_steps=2 format=3 uid="uid://d317rgsg1mww6"]
 
-[ext_resource type="Script" path="res://scripts/local_coop_game.gd" id="1_local_coop"]
+[ext_resource type="Script" path="res://scripts/single_player_game.gd" id="1_single_player"]
 
-[node name="LocalCoopGame" type="Control"]
+[node name="SinglePlayerGame" type="Control"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-script = ExtResource("1_local_coop")
+script = ExtResource("1_single_player")
