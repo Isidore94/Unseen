@@ -115,6 +115,8 @@ func request_kill(target_path: NodePath) -> void:
 	var distance := _body.global_position.distance_to(target.global_position)
 	if distance > kill_range:
 		return
+	if not _layers_allow_kill(target):
+		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
 
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
@@ -165,6 +167,8 @@ func _clear_lock() -> void:
 
 
 func _resolve_on(target: Node2D) -> void:
+	if not _layers_allow_kill(target):
+		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
 	_play_strike()
 	if target.is_in_group("player") or target.is_in_group(valid_target_group_name):
 		# A real player (always fair game) or your mark — clean kill (full permanent
@@ -193,6 +197,10 @@ func _best_suspect_in_front() -> Node2D:
 	query.collision_mask = 6  # player (layer 2) + npc (layer 4)
 	query.collide_with_bodies = true
 
+	var my_layer: int = _layer_of(_body)
+	if my_layer == LayerComponent.Layer.SEWER:
+		return null  # the sewer is a strict no-kill zone — nothing is targetable here
+
 	var cos_limit: float = cos(deg_to_rad(prime_cone_degrees))
 	var best: Node2D = null
 	var best_score: float = -INF
@@ -200,6 +208,8 @@ func _best_suspect_in_front() -> Node2D:
 		var collider := result.get("collider") as Node2D
 		if collider == null or collider == _body or not (collider is CharacterBody2D):
 			continue
+		if _layer_of(collider) != my_layer:
+			continue  # you can only target someone on your own plane (ground/rooftop)
 		var to_target: Vector2 = collider.global_position - _body.global_position
 		var distance: float = to_target.length()
 		if distance < 1.0:
@@ -213,6 +223,23 @@ func _best_suspect_in_front() -> Node2D:
 			best_score = score
 			best = collider
 	return best
+
+
+# Which plane a character is on. Anything without a LayerComponent (every NPC) is
+# treated as GROUND, so the crowd is always killable from the ground as before.
+func _layer_of(node: Node) -> int:
+	var component := node.get_node_or_null("LayerComponent")
+	if component != null:
+		return int(component.current_layer)
+	return LayerComponent.Layer.GROUND
+
+
+# Kills only land on your OWN plane, and never while you're in the sewer (§7.2c).
+func _layers_allow_kill(target: Node) -> bool:
+	var my_layer: int = _layer_of(_body)
+	if my_layer == LayerComponent.Layer.SEWER:
+		return false
+	return _layer_of(target) == my_layer
 
 
 # A quick "strike" pop on our body so the resolve reads as an action. The visual

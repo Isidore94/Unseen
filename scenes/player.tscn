@@ -1,9 +1,10 @@
-[gd_scene load_steps=5 format=3 uid="uid://b814hbyosce2c"]
+[gd_scene load_steps=6 format=3 uid="uid://b814hbyosce2c"]
 
 [ext_resource type="Script" uid="uid://cfvngrw8q8krq" path="res://scripts/player.gd" id="1_player"]
 [ext_resource type="Script" uid="uid://dr5nj6w7uwien" path="res://components/exposure_component.gd" id="2_exposure"]
 [ext_resource type="PackedScene" uid="uid://f287ld01dvlg" path="res://scenes/character_visual.tscn" id="3_visual"]
 [ext_resource type="Script" path="res://components/kill_component.gd" id="4_kill"]
+[ext_resource type="Script" path="res://components/layer_component.gd" id="5_layer"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_player"]
 size = Vector2(71, 67.5)
@@ -28,3 +29,6 @@ script = ExtResource("2_exposure")
 
 [node name="KillComponent" type="Node" parent="."]
 script = ExtResource("4_kill")
+
+[node name="LayerComponent" type="Node" parent="."]
+script = ExtResource("5_layer")

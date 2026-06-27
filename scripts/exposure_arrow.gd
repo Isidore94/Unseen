@@ -47,6 +47,11 @@ class_name ExposureArrow
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
 
+## When true (the owner is in a SEWER), the arrow points at the target at FULL strength,
+## ignoring the exposure threshold AND the on-screen gate (buildplan §7.2d — you trade
+## sight for a perfect bearing). Toggled by the owner's LayerComponent.
+var _sewer_mode: bool = false
+
 var _alpha: float = 0.0
 var _offscreen_timer: float = 0.0
 var _flash_timer: float = 0.0
@@ -56,11 +61,27 @@ var _arrow_dir: Vector2 = Vector2.RIGHT
 
 func _process(delta: float) -> void:
 	_acquire_target()
-	if flashing_mode:
+	if _sewer_mode:
+		_process_sewer()
+	elif flashing_mode:
 		_process_flashing(delta)
 	else:
 		_process_exposure(delta)
 	queue_redraw()
+
+
+# SEWER STYLE — 100% uptime: a full-strength bearing on the target at all times, ignoring
+# both exposure and the on-screen gate (you can't see the world down here anyway).
+func _process_sewer() -> void:
+	_alpha = 1.0 if _compute_offscreen_arrow(true) else 0.0
+
+
+# The owner's LayerComponent flips this when entering/leaving the sewer.
+func set_sewer_mode(on: bool) -> void:
+	_sewer_mode = on
+	if not on:
+		_offscreen_timer = 0.0
+		_alpha = 0.0
 
 
 func track_target(target: Node2D) -> void:
@@ -107,7 +128,7 @@ func _process_flashing(delta: float) -> void:
 
 # Works out whether the target is valid, alive, and OFF-screen — and if so, where on
 # the screen edge the arrow sits and which way it points. No exposure check here.
-func _compute_offscreen_arrow() -> bool:
+func _compute_offscreen_arrow(ignore_onscreen: bool = false) -> bool:
 	if _target == null or not is_instance_valid(_target):
 		return false
 	if _target.has_method("is_dead") and _target.is_dead():
@@ -121,8 +142,8 @@ func _compute_offscreen_arrow() -> bool:
 	var camera_center: Vector2 = camera.get_screen_center_position()
 	var visible_half: Vector2 = viewport_size * 0.5 / camera.zoom
 	var view_rect := Rect2(camera_center - visible_half, visible_half * 2.0)
-	if view_rect.has_point(_target.global_position):
-		return false  # on-screen: you can see them, no arrow
+	if not ignore_onscreen and view_rect.has_point(_target.global_position):
+		return false  # on-screen: you can see them, no arrow (sewer mode ignores this)
 
 	var screen_center: Vector2 = viewport_size * 0.5
 	var target_on_screen: Vector2 = (_target.global_position - camera_center) * camera.zoom + screen_center

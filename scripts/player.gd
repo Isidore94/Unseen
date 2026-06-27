@@ -31,6 +31,12 @@ class_name Player
 @export var move_up_action: String = "move_up"
 @export var move_down_action: String = "move_down"
 @export var run_action: String = "run"
+## Use the access point you're standing on (climb a rooftop stair / enter-exit a sewer).
+@export var interact_action: String = "interact"
+## Drop off a rooftop back to the ground (to commit a kill). buildplan §7.2.
+@export var drop_down_action: String = "drop_down"
+## Per-player debounce (seconds) between access-point uses, so a press can't flip-flop you.
+@export var access_reuse_cooldown: float = 0.8
 
 # === networking (Phase 6 — see MULTIPLAYER_PLAN.md) =========================
 ## When true, this character runs in ONLINE mode: instead of moving itself, the
@@ -86,6 +92,16 @@ var _server_latest_seq: int = 0
 ## @onready grabs it once the scene is live. $ExposureComponent = the child node
 ## of that name. We hand it our movement state each frame; it does the math.
 @onready var exposure_component: ExposureComponent = $ExposureComponent
+
+## Which plane we're on (GROUND/ROOFTOP/SEWER). Optional child — if the scene has no
+## LayerComponent, all the layer features simply no-op and play is unchanged.
+@onready var layer_component: LayerComponent = get_node_or_null("LayerComponent") as LayerComponent
+
+## (Online) The host's authoritative layer, replicated to every machine. The controlling
+## client asks the host to change it; the host sets the LayerComponent + this mirror.
+var _net_layer: int = 0
+## Counts down the per-player access-point debounce (see access_reuse_cooldown).
+var _access_reuse_timer: float = 0.0
 
 ## Emitted when the player is caught and killed (the round-loss trigger).
 signal died
@@ -155,6 +171,7 @@ func _build_position_synchronizer() -> void:
 	replication.add_property(NodePath(".:_net_position"))
 	replication.add_property(NodePath(".:_net_velocity"))
 	replication.add_property(NodePath(".:_net_ack_seq"))
+	replication.add_property(NodePath(".:_net_layer"))
 	var synchronizer := MultiplayerSynchronizer.new()
 	synchronizer.name = "NetSync"
 	synchronizer.replication_config = replication
@@ -200,6 +217,7 @@ func _offline_physics(delta: float) -> void:
 	)
 	var is_run_held: bool = Input.is_action_pressed(run_action)
 	_apply_movement(direction, is_run_held, delta)
+	_handle_layer_input(delta)
 
 
 # ONLINE: three roles, decided per character on each machine.
@@ -211,6 +229,14 @@ func _offline_physics(delta: float) -> void:
 # (MULTIPLAYER_PLAN.md §2 — the server stays authoritative; prediction is purely local, so
 # it reveals nothing about who is human.)
 func _network_physics(delta: float) -> void:
+	# Only the human at this machine reads input to change their own layer.
+	if _is_locally_controlled:
+		_handle_layer_input(delta)
+	# On a CLIENT, the host's replicated layer is the truth for EVERY character — including
+	# our own (we asked the host in _request_layer and the result arrives here as _net_layer).
+	if not multiplayer.is_server() and layer_component != null and layer_component.current_layer != _net_layer:
+		layer_component.set_layer(_net_layer)
+
 	if multiplayer.is_server():
 		# The host is the authority for EVERY character. If it also controls this one, it
 		# samples + sends its own input (call_local feeds the line below). Then it moves
@@ -321,6 +347,76 @@ func _move_with(direction: Vector2, run_held: bool) -> void:
 	# move_and_slide() reads `velocity`, moves the body, and resolves wall collisions.
 	# Motion Mode is Floating (no gravity) — correct for a top-down game.
 	move_and_slide()
+
+
+# === layers: rooftops & sewers (buildplan §7.2) ============================
+# Read this player's own input to climb/drop/enter/exit. Called only for the human at
+# this machine (offline: always; online: only for the locally-controlled character).
+func _handle_layer_input(delta: float) -> void:
+	if layer_component == null:
+		return
+	if _access_reuse_timer > 0.0:
+		_access_reuse_timer -= delta
+
+	# Drop down from a rooftop, anywhere, to come back to the ground and commit a kill.
+	if Input.is_action_just_pressed(drop_down_action) and layer_component.is_rooftop():
+		_request_layer(LayerComponent.Layer.GROUND)
+		return
+
+	if not Input.is_action_just_pressed(interact_action) or _access_reuse_timer > 0.0:
+		return
+	var point := _nearest_access_point()
+	if point == null:
+		return
+	if point.is_rooftop_stair() and layer_component.is_ground():
+		_request_layer(LayerComponent.Layer.ROOFTOP)
+	elif point.is_sewer_entrance():
+		# At a sewer entrance: drop in from the ground, or surface back from the sewer.
+		if layer_component.is_ground():
+			_request_layer(LayerComponent.Layer.SEWER)
+		elif layer_component.is_sewer():
+			_request_layer(LayerComponent.Layer.GROUND)
+
+
+# The closest access point we're standing on (within its use radius), or null.
+func _nearest_access_point() -> AccessPoint:
+	var best: AccessPoint = null
+	var best_distance: float = INF
+	for node in get_tree().get_nodes_in_group("access_point"):
+		var point := node as AccessPoint
+		if point == null:
+			continue
+		var distance: float = global_position.distance_to(point.global_position)
+		if distance <= point.use_radius and distance < best_distance:
+			best_distance = distance
+			best = point
+	return best
+
+
+# Apply a layer change. Offline we set it directly; online we ask the host (kept
+# server-authoritative — the host owns the truth and replicates it to everyone).
+func _request_layer(layer: int) -> void:
+	_access_reuse_timer = access_reuse_cooldown
+	if network_controlled:
+		_request_set_layer.rpc_id(1, layer)
+	elif layer_component != null:
+		layer_component.set_layer(layer)
+
+
+# HOST-ONLY: a controlling client asks to change its layer. We verify the request came
+# from the peer that controls this character, then set the LayerComponent + the
+# replicated mirror so every machine updates.
+@rpc("any_peer", "call_local", "reliable")
+func _request_set_layer(layer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
+	if effective_sender != controlling_peer_id:
+		return
+	if layer_component != null:
+		layer_component.set_layer(layer)
+	_net_layer = layer
 
 
 func _remove_killable_groups() -> void:

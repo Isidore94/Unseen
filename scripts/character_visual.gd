@@ -42,6 +42,12 @@ const ROW_RIGHT := 3
 
 const STRIKE_DURATION := 0.22
 
+# Layer ints, kept in sync with LayerComponent.Layer (we don't depend on that class here,
+# we just mirror the same order — Principle #1, visuals stay decoupled from gameplay).
+const LAYER_GROUND := 0
+const LAYER_ROOFTOP := 1
+const LAYER_SEWER := 2
+
 ## On-screen height of the character in pixels (the 32px art is scaled up to this).
 @export var display_height: float = 80.0
 ## Nudges the sprite relative to the body centre (e.g. to sit the feet right).
@@ -68,6 +74,8 @@ var _walk_time: float = 0.0       ## Drives which walk-cycle column we show.
 var _strike_timer: float = 0.0    ## Counts down a quick "I just struck" pop.
 var _highlighted: bool = false    ## Draw the mark ring this frame?
 var _highlight_pulse: float = 0.0 ## Animates the ring so it reads as "alive".
+## Per-layer tint multiplied into the sprite each frame (set by set_layer_visual).
+var _layer_tint: Color = Color(1, 1, 1, 1)
 
 
 func _ready() -> void:
@@ -116,6 +124,18 @@ func play_strike() -> void:
 	_strike_timer = STRIKE_DURATION
 
 
+# Tint the body to read its current layer (buildplan §7.2). The LayerComponent calls this.
+# Folded into the per-frame modulate (see _process) so it coexists with the strike pop.
+func set_layer_visual(layer: int) -> void:
+	match layer:
+		LAYER_ROOFTOP:
+			_layer_tint = Color(0.85, 0.95, 1.15, 1.0)   # up high: brighter, cool
+		LAYER_SEWER:
+			_layer_tint = Color(0.45, 0.50, 0.55, 0.55)  # underground: dim + translucent
+		_:
+			_layer_tint = Color(1, 1, 1, 1)              # ground: normal
+
+
 func _process(delta: float) -> void:
 	var velocity := _parent_velocity()
 	var is_moving := velocity.length() > moving_threshold
@@ -142,7 +162,12 @@ func _process(delta: float) -> void:
 	scale = Vector2.ONE * (1.0 + strike_ratio * 0.30)
 	if _sprite != null:
 		var brighten := 1.0 + strike_ratio * 0.9
-		_sprite.modulate = Color(brighten, brighten, brighten, 1.0)
+		# Fold the strike brighten over the layer tint, so both read at once.
+		_sprite.modulate = Color(
+			brighten * _layer_tint.r,
+			brighten * _layer_tint.g,
+			brighten * _layer_tint.b,
+			_layer_tint.a)
 
 	# Keep the highlight ring animating while it's on.
 	if _highlighted:

@@ -109,9 +109,6 @@ enum Zone { NW, NE, SW, SE, HUB }
 ## Fountain look: a stone basin ring with water inside.
 @export var fountain_stone_color: Color = Color(0.40, 0.42, 0.45)
 @export var fountain_water_color: Color = Color(0.20, 0.45, 0.65)
-## Access-point markers (greybox placeholders).
-@export var rooftop_marker_color: Color = Color(0.91, 0.56, 0.18)  # orange ▲
-@export var sewer_marker_color: Color = Color(0.30, 0.62, 0.36)    # green grate
 
 @onready var navigation_region: NavigationRegion2D = $NavigationRegion2D
 
@@ -134,6 +131,7 @@ func _ready() -> void:
 	_build_fountain()
 	_build_navigation()
 	_spawn_portals()
+	_spawn_access_points()
 	_verify_connectivity()
 	queue_redraw()
 
@@ -573,7 +571,6 @@ func _draw() -> void:
 	for rect in _outer_wall_rects():
 		draw_rect(rect, wall_color, true)
 	_draw_fountain()
-	_draw_access_markers()
 
 
 # Draws the central fountain on TOP of the plaza floor: a stone basin ring, water
@@ -588,22 +585,21 @@ func _draw_fountain() -> void:
 	draw_circle(c, fountain_radius * 0.18, fountain_stone_color)
 
 
-# Greybox markers for the access points (no mechanics yet — §7.2 mounts those here):
-# an orange ▲ for rooftop stairs, a green grate for sewer entrances.
-func _draw_access_markers() -> void:
+# Spawn an AccessPoint node at each rooftop-stair / sewer-entrance location. They draw
+# their own marker (orange ▲ / green grate) and join the "access_point" group so a nearby
+# player can use them (the layer mechanics live on the player + LayerComponent, §7.2).
+func _spawn_access_points() -> void:
 	for pos in _rooftop_stairs:
-		var size := 30.0
-		var apex := pos + Vector2(0, -size)
-		var left := pos + Vector2(-size * 0.9, size * 0.7)
-		var right := pos + Vector2(size * 0.9, size * 0.7)
-		draw_colored_polygon(PackedVector2Array([apex, left, right]), rooftop_marker_color)
-		# Closed outline (apex -> left -> right -> back to apex) so the triangle reads.
-		draw_polyline(PackedVector2Array([apex, left, right, apex]), Color(0, 0, 0, 0.6), 3.0)
+		_make_access_point(pos, AccessPoint.Kind.ROOFTOP_STAIR)
 	for pos in _sewer_entrances:
-		draw_circle(pos, 26.0, sewer_marker_color)
-		draw_arc(pos, 26.0, 0.0, TAU, 20, Color(0, 0, 0, 0.5), 3.0)
-		for offset in [-12.0, 0.0, 12.0]:
-			draw_line(pos + Vector2(offset, -18), pos + Vector2(offset, 18), Color(0.05, 0.15, 0.08), 4.0)
+		_make_access_point(pos, AccessPoint.Kind.SEWER_ENTRANCE)
+
+
+func _make_access_point(pos: Vector2, kind: int) -> void:
+	var point := AccessPoint.new()
+	point.position = pos
+	point.kind = kind
+	add_child(point)
 
 
 func _draw_grid() -> void:

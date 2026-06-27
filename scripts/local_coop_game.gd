@@ -107,6 +107,11 @@ func _build_local_match(map: TestMap01) -> void:
 	_add_lock_label(p1_hud_data["hud"] as CanvasLayer, player_one)
 	_add_lock_label(p2_hud_data["hud"] as CanvasLayer, player_two)
 
+	# Layer feedback (buildplan §7.2): in the sewer, darken that player's view and give
+	# their arrow 100% uptime; the tint on the bodies already shows rooftop vs sewer.
+	_wire_layer_feedback(player_one, p1_hud_data["hud"] as CanvasLayer, p1_hud_data["arrow"] as ExposureArrow)
+	_wire_layer_feedback(player_two, p2_hud_data["hud"] as CanvasLayer, p2_hud_data["arrow"] as ExposureArrow)
+
 	_end_screen = END_SCREEN_SCENE.instantiate() as EndScreen
 	add_child(_end_screen)
 
@@ -122,6 +127,8 @@ func _spawn_player(player_id: int, spawn_position: Vector2, action_prefix: Strin
 	player.move_up_action = "%s_move_up" % action_prefix
 	player.move_down_action = "%s_move_down" % action_prefix
 	player.run_action = "%s_run" % action_prefix
+	player.interact_action = "%s_interact" % action_prefix
+	player.drop_down_action = "%s_drop_down" % action_prefix
 
 	var embedded_camera := player.get_node_or_null("Camera2D") as Camera2D
 	if embedded_camera != null:
@@ -238,6 +245,29 @@ func _add_lock_label(hud: CanvasLayer, player: Player) -> void:
 	if kill_component != null:
 		kill_component.lock_changed.connect(
 			func(is_locked: bool) -> void: label.text = "SUSPECT LOCKED" if is_locked else ""
+		)
+
+
+# When this player drops into a sewer, darken ONLY their view (a back-of-HUD overlay, so
+# their own bars/arrow stay readable) and switch their arrow to 100% uptime. Rooftop/ground
+# need no overlay — the body tint already reads the layer.
+func _wire_layer_feedback(player: Player, hud: CanvasLayer, arrow: ExposureArrow) -> void:
+	var overlay := ColorRect.new()
+	overlay.name = "SewerOverlay"
+	overlay.color = Color(0.02, 0.03, 0.04, 0.82)
+	overlay.size = Vector2(954.0, 1080.0)
+	overlay.visible = false
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hud.add_child(overlay)
+	# Push it behind the other HUD nodes so it only dims the WORLD, not your own HUD.
+	hud.move_child(overlay, 0)
+
+	var layer_comp := player.get_node_or_null("LayerComponent") as LayerComponent
+	if layer_comp != null:
+		layer_comp.layer_changed.connect(func(new_layer: int) -> void:
+			var in_sewer: bool = new_layer == LayerComponent.Layer.SEWER
+			arrow.set_sewer_mode(in_sewer)
+			overlay.visible = in_sewer
 		)
 
 
