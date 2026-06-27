@@ -38,6 +38,39 @@ branch). Do not proceed.
 
 ---
 
+## 1.5 Re-sync this branch with `main` FIRST (absorb Phase 7/8 fixes)  ·  **do not skip**
+
+These branches are **stacked**: this Phase 9 branch contains a FROZEN copy of the Phase 7 and Phase 8 code
+as it was when this branch was cut. Any fix made to Phase 7 or Phase 8 during *their* integration now lives
+on `main` but is **NOT** in this branch yet. Pull it in and resolve before you test, so what you test is
+what will actually land:
+
+```bash
+git checkout claude/post-integration-checklist-ig0la4
+git merge main          # absorb every Phase 7/8 fix that reached main
+tools/validate.sh       # re-verify after the merge
+git push origin claude/post-integration-checklist-ig0la4
+```
+Resolve any conflict by **keeping the fix** from `main`. Expect conflicts in files this phase also edited —
+most likely **`online_match.gd`** (Phase 7 created it; Phase 9 adds the per-viewer crowd + experiment
+loader to it) and `npc.gd` / `kill_component.gd` (Phase 9 added hooks). See §1.6 before resolving.
+
+## 1.6 Forward-propagation of fixes (the contract that keeps stacked branches correct)
+
+A `git merge main` carries a fix into code this phase left **unchanged** — but it does **not** fix code this
+phase **rewrote or newly added**. So after the merge, for every earlier-phase fix:
+
+1. **Keep the fix** when resolving conflicts (don't let this branch's older version win).
+2. **Consciously re-check this phase's own code for the SAME bug.** Example: if Phase 7 fixed a logic error
+   in `online_match.gd`, the per-viewer/experiment code Phase 9 added to that same file may repeat the
+   pattern — the merge won't catch that. Search for it and re-apply by hand.
+3. **Record it in `CHANGELOG.md`** so the chain is traceable.
+
+This is the last phase, so there's nothing downstream to hand off to — but if you fix anything *here*,
+tell Aaron, since it may need to be reflected on `main` directly.
+
+---
+
 ## 2. Golden rules
 
 1. **`tools/validate.sh` passes before you advance main** (compile gate the author couldn't run).
