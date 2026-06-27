@@ -445,7 +445,11 @@ func _request_claim() -> void:
 	if effective_sender != controlling_peer_id:
 		return
 	var point := _nearest_access_point()
-	if point == null or point.is_claimed() or not point.is_available_to(player_id):
+	# Claiming is independent of the transit cooldown (your design): the 15s lockout only
+	# governs UNCLAIMED pass-through (anti-spam); claiming is permanent ownership bought with
+	# exposure, so you can claim a point you just used. We only refuse if someone already owns
+	# it. (This matches the offline _try_claim path, which never checked the cooldown.)
+	if point == null or point.is_claimed():
 		return
 	point.claim(player_id)
 	if exposure_component != null:

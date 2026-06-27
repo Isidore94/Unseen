@@ -4,6 +4,20 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7-online — verifying the integration (two server-authority fixes)
+Reviewed the online port (slices A–E) for server-authority + hidden-identity correctness. The
+architecture held up; found and fixed two authority gaps:
+- **Smoke now actually stops a CLIENT from killing (§7.6).** Smoke sets `attacks_disabled` on the
+  HOST's copy of the killer's `KillComponent`, but that flag isn't replicated, so a client's own
+  copy never learned it — and the host's `KillComponent.request_kill` never re-checked it. A smoked
+  client could still land a kill. Fix: `request_kill` now refuses while `attacks_disabled` (one
+  guard, on the only machine whose answer counts). Offline + host-player paths were already correct.
+- **Claiming an access point is now independent of the transit cooldown (§7.3, note 5b).** The
+  offline `_try_claim` only blocked if a point was already owned, but the online `_request_claim`
+  also rejected points on their 15s global cooldown — so you couldn't claim a point right after
+  using it. Made online match offline: the 15s lockout governs UNCLAIMED pass-through only; claiming
+  is permanent ownership bought with exposure and ignores the cooldown.
+
 ### Session: 7-online — porting Phase 7 onto the ONLINE match (server-authoritative)
 Phase 7 was built/tested on the OFFLINE split-screen path; online (`online_match.gd`) was
 still Phase 6. Online is the primary test surface (each player on a separate machine = a true
