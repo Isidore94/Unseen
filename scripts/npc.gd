@@ -51,6 +51,10 @@ var _pause_timer: float = 0.0
 ## Set once killed, so we stop behaving and can't be killed twice.
 var _dead: bool = false
 
+## Cached reference to the map, used to pick wander destinations spread evenly across
+## the WHOLE walkable area (so the crowd fills the map instead of bunching).
+var _map_ref: Node = null
+
 
 func _ready() -> void:
 	# Join "npc" so the contract can pick a random civilian to be a mark.
@@ -170,12 +174,27 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	move_and_slide()
 
 
-# Picks a random reachable point anywhere on the walkable floor and tells the
-# agent to route there. The agent then figures out the path for us.
+# Picks a random destination spread EVENLY across the whole map and routes there.
+#
+# WHY NOT the navigation server's map_get_random_point: it can bias toward the map
+# origin (and returns the origin outright if the nav map isn't fully synced yet), which
+# made the entire crowd drift into the middle. The map's own random_walkable_point()
+# samples every open cell evenly, so the crowd actually fills the streets.
 func _pick_new_destination() -> void:
-	var navigation_map: RID = navigation_agent.get_navigation_map()
-	var random_point: Vector2 = NavigationServer2D.map_get_random_point(navigation_map, 1, true)
-	navigation_agent.target_position = random_point
+	var map := _map_node()
+	if map != null and map.has_method("random_walkable_point"):
+		navigation_agent.target_position = map.random_walkable_point()
+	else:
+		# Fallback if the map isn't found for some reason.
+		navigation_agent.target_position = NavigationServer2D.map_get_random_point(
+			navigation_agent.get_navigation_map(), 1, true
+		)
+
+
+func _map_node() -> Node:
+	if _map_ref == null or not is_instance_valid(_map_ref):
+		_map_ref = get_tree().get_first_node_in_group("map")
+	return _map_ref
 
 
 func _remove_killable_groups() -> void:
