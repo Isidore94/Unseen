@@ -51,6 +51,11 @@ class_name Player
 ## in 6.0 this value is visible to all peers — fine while there's no crowd to hide
 ## in; it becomes host-only (owner secret) in 6.1 when NPCs arrive.
 @export var controlling_peer_id: int = 0
+## (Online) Zoom of YOUR OWN camera. Greater than 1 tightens the view (zoom IN); ~1.1
+## shows roughly three-quarters of the old span so the tight four-zone map reads better
+## (buildplan §7.0, note 1). Only affects the online local camera — offline play uses its
+## own follow camera (local_coop_game.camera_zoom), so this leaves split-screen unchanged.
+@export var network_camera_zoom: Vector2 = Vector2(1.1, 1.1)
 ## (Online) Which sprite sheet (0-4) this character wears. The host assigns it; every
 ## peer receives the same value at spawn, so the crowd looks identical on all screens.
 @export var appearance_index: int = 0
@@ -102,6 +107,10 @@ var _server_latest_seq: int = 0
 ## (Online) The host's authoritative layer, replicated to every machine. The controlling
 ## client asks the host to change it; the host sets the LayerComponent + this mirror.
 var _net_layer: int = 0
+## (Online) Host-authoritative "is this player hidden by a smoke grenade?" flag, replicated
+## to everyone. Other machines use it to hide this character via the per-viewer visibility
+## system (buildplan §7.6) — the smoker still sees themselves normally.
+var _net_smoked: bool = false
 ## Counts down the per-player access-point debounce (see access_reuse_cooldown).
 var _access_reuse_timer: float = 0.0
 
@@ -141,6 +150,7 @@ func _setup_network_role() -> void:
 	if camera != null:
 		camera.enabled = _is_locally_controlled
 		if _is_locally_controlled:
+			camera.zoom = network_camera_zoom  # tighter view for the four-zone map (§7.0)
 			camera.make_current()
 
 	# Kills are server-validated (MULTIPLAYER_PLAN.md §4). The kill component runs ONLY
@@ -154,11 +164,18 @@ func _setup_network_role() -> void:
 		else:
 			kill_component.set_physics_process(false)
 
-	# Items read local input too: only the controlling machine runs them (§7.6). Online
-	# effects aren't host-validated yet — that's a TODO, like claiming.
-	var item_component := get_node_or_null("ItemComponent")
-	if item_component != null and not _is_locally_controlled:
-		item_component.set_physics_process(false)
+	# Items are now server-authoritative (§7.6): the controlling client only READS its keys
+	# and sends a request; the HOST owns every player's charges + effect timers and applies
+	# them. So this copy ticks effects if we're the host, reads input if we control it, and
+	# the controlling client relays each press to the host as a request.
+	var item_component := get_node_or_null("ItemComponent") as ItemComponent
+	if item_component != null:
+		item_component.network_mode = true
+		item_component.server_authoritative = multiplayer.is_server()
+		item_component.local_input = _is_locally_controlled
+		item_component.set_physics_process(item_component.server_authoritative or item_component.local_input)
+		if _is_locally_controlled and not multiplayer.is_server():
+			item_component.item_requested.connect(_on_item_requested)
 
 	# Start the prediction/follow target at our spawn position (the spawn function set it
 	# on every machine), so nothing lurches from (0,0) on the first frame.
@@ -180,6 +197,7 @@ func _build_position_synchronizer() -> void:
 	replication.add_property(NodePath(".:_net_velocity"))
 	replication.add_property(NodePath(".:_net_ack_seq"))
 	replication.add_property(NodePath(".:_net_layer"))
+	replication.add_property(NodePath(".:_net_smoked"))
 	var synchronizer := MultiplayerSynchronizer.new()
 	synchronizer.name = "NetSync"
 	synchronizer.replication_config = replication
@@ -393,14 +411,41 @@ func _handle_layer_input(delta: float) -> void:
 		elif layer_component.is_sewer():
 			_request_layer(LayerComponent.Layer.GROUND)
 			used = true
-	if used:
-		point.mark_used()  # start the 15s global lockout so it can't be chained
+	if used and not network_controlled:
+		# Offline: start the 15s global lockout here. Online the HOST owns the cooldown
+		# (it marks the point in _request_set_layer and replicates it), so we don't.
+		point.mark_used()
 
 
 # Claim an access point for the rest of the match, paying its exposure cost (§7.3).
-# Offline only for now; online claim needs the same host validation as layers (TODO).
+# Offline we claim directly; online we ask the host (server-authoritative, like layers).
 func _try_claim(point: AccessPoint) -> void:
-	if network_controlled or point.is_claimed():
+	if point == null:
+		return
+	if network_controlled:
+		_request_claim.rpc_id(1)  # the host finds the point WE'RE standing on and validates
+		return
+	if point.is_claimed():
+		return
+	point.claim(player_id)
+	if exposure_component != null:
+		exposure_component.add_exposure(point.claim_exposure_cost, "claim_access")
+
+
+# HOST-ONLY: a controlling client asks to claim the access point it's standing on. We verify
+# the sender, find the point nearest the player's authoritative position, and (if it's free
+# and off cooldown) claim it + charge the 20% committed exposure. The claim replicates via
+# the AccessPoint's claim_changed signal (OnlineMatch broadcasts it to every client).
+@rpc("any_peer", "call_local", "reliable")
+func _request_claim() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
+	if effective_sender != controlling_peer_id:
+		return
+	var point := _nearest_access_point()
+	if point == null or point.is_claimed() or not point.is_available_to(player_id):
 		return
 	point.claim(player_id)
 	if exposure_component != null:
@@ -433,7 +478,9 @@ func _request_layer(layer: int) -> void:
 
 
 # HOST-ONLY: a controlling client asks to change its layer. We verify the request came
-# from the peer that controls this character, then set the LayerComponent + the
+# from the peer that controls this character, validate it against the access points (a
+# rooftop enter / sewer enter+exit must happen at an available point; dropping off a roof
+# is free anywhere), start the point's global cooldown, then set the LayerComponent + the
 # replicated mirror so every machine updates.
 @rpc("any_peer", "call_local", "reliable")
 func _request_set_layer(layer: int) -> void:
@@ -443,9 +490,47 @@ func _request_set_layer(layer: int) -> void:
 	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
 	if effective_sender != controlling_peer_id:
 		return
-	if layer_component != null:
-		layer_component.set_layer(layer)
+	if layer_component == null:
+		return
+	var from_layer: int = layer_component.current_layer
+	# Dropping from a rooftop back to the ground is free and works anywhere (commit a kill).
+	var is_free_drop: bool = from_layer == LayerComponent.Layer.ROOFTOP and layer == LayerComponent.Layer.GROUND
+	if not is_free_drop:
+		var point := _nearest_access_point()
+		if point == null or not point.is_available_to(player_id):
+			return  # reject: no usable access point here (on cooldown / claimed by another)
+		var transition_ok: bool = false
+		if layer == LayerComponent.Layer.ROOFTOP and point.is_rooftop_stair() and from_layer == LayerComponent.Layer.GROUND:
+			transition_ok = true
+		elif layer == LayerComponent.Layer.SEWER and point.is_sewer_entrance() and from_layer == LayerComponent.Layer.GROUND:
+			transition_ok = true
+		elif layer == LayerComponent.Layer.GROUND and point.is_sewer_entrance() and from_layer == LayerComponent.Layer.SEWER:
+			transition_ok = true
+		if not transition_ok:
+			return
+		point.mark_used()  # host starts + replicates the 15s global lockout
+	layer_component.set_layer(layer)
 	_net_layer = layer
+
+
+# A locally-controlled client's item press → ask the host to fire it (server-authoritative).
+func _on_item_requested(which: int) -> void:
+	_request_item.rpc_id(1, which)
+
+
+# HOST-ONLY: a controlling client asks to use an item slot. Verify the sender, then let the
+# host's own ItemComponent validate charges + apply the effect (§7.6).
+@rpc("any_peer", "call_local", "reliable")
+func _request_item(which: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
+	if effective_sender != controlling_peer_id:
+		return
+	var item_component := get_node_or_null("ItemComponent") as ItemComponent
+	if item_component != null:
+		item_component.server_activate(which)
 
 
 func _remove_killable_groups() -> void:

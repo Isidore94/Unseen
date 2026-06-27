@@ -28,6 +28,14 @@ var _cooldown_remaining: float = 0.0
 ## Who owns this point for the match (0 = unclaimed). Offline: a player_id; the owner is
 ## the only one who may use it once claimed.
 var _owner_id: int = 0
+## Stable id set by the map (points are built in the same order on every peer), so the host
+## can tell each client which point changed over the network (buildplan §7.3, online).
+var access_index: int = -1
+
+## Past-tense, emitted ONLY on the host when this point is claimed / its lockout starts, so
+## OnlineMatch can replicate the new state to every client. Offline nobody listens.
+signal claim_changed(owner_id: int)
+signal cooldown_started()
 
 
 func _ready() -> void:
@@ -62,10 +70,24 @@ func is_claimed() -> bool:
 func mark_used() -> void:
 	_cooldown_remaining = global_cooldown
 	queue_redraw()
+	cooldown_started.emit()
 
 # Claim for the rest of the match. The caller pays the exposure; we just record the owner.
 func claim(user_id: int) -> void:
 	_owner_id = user_id
+	queue_redraw()
+	claim_changed.emit(user_id)
+
+
+# Client-side: apply the host's authoritative claim/lockout WITHOUT re-emitting (the signals
+# are the host's broadcast trigger; re-emitting on a client would loop). OnlineMatch calls
+# these from the replication RPCs.
+func apply_claim_replicated(owner_id: int) -> void:
+	_owner_id = owner_id
+	queue_redraw()
+
+func apply_cooldown_replicated() -> void:
+	_cooldown_remaining = global_cooldown
 	queue_redraw()
 
 

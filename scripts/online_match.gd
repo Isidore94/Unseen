@@ -34,6 +34,23 @@ const NUM_SHEETS := 5
 ## are "homebodies" that mill around their spawn spot with short trips.
 @export var traveler_fraction: float = 0.25
 
+## How many NPC marks each player must kill before the human opponent becomes a valid
+## target (buildplan §7.0, note 9). The host secretly designates this many crowd NPCs
+## per peer and only opens the hunt phase once ALL of them are dead.
+@export var marks_per_player: int = 2
+
+## A designated mark is forced to stay LOCAL: it becomes a homebody that mills within
+## this radius (px) of where it was tagged, so you can learn its patch (note 13).
+@export var mark_wander_radius: float = 220.0
+
+## The marks for one player are spread at least this far apart (px) — about two
+## screen-widths — so you can't scoop both at once; it forces movement (note 13).
+@export var mark_min_separation: float = 1400.0
+
+## Per-viewer visibility (§7.2b): may a ROOFTOP player see OTHER rooftop players? Defaulted
+## ON so rooftops aren't a blind solo zone (a buildplan still-open decision — flip to taste).
+@export var rooftop_sees_rooftop: bool = true
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -46,9 +63,13 @@ var _status_label: Label = null
 var _players_by_peer: Dictionary = {}
 var _next_spawn_index: int = 0
 
-## Host-only: which crowd NPC is each peer's secret mark. The mapping never leaves
-## the host; each peer is told only ITS OWN mark (MULTIPLAYER_PLAN.md §4).
+## Host-only: which crowd NPCs are each peer's secret marks (an Array of Npc, since a
+## player now has `marks_per_player` of them — §7.0). The mapping never leaves the host;
+## each peer is told only ITS OWN marks (MULTIPLAYER_PLAN.md §4).
 var _mark_by_peer: Dictionary = {}
+## Host-only: how many of each peer's marks are still alive. The hunt phase opens only
+## when this reaches 0 (you must clear BOTH marks first — note 9).
+var _marks_remaining_by_peer: Dictionary = {}
 
 ## Host-only contract state: each peer's phase ("marks" -> "target" -> "done") and,
 ## once in the target phase, which peer they are hunting.
@@ -71,8 +92,11 @@ var _player_hud_layer: CanvasLayer = null
 var _mini_map: MiniMap = null
 var _objective_label: Label = null
 var _exposure_bar: ProgressBar = null
-var _my_mark_name: String = ""
-var _my_mark: Node2D = null
+## Our marks, as the host named them (owner-only). We resolve each name to its local
+## node once that NPC has replicated to us, highlight it, and point the mini-map at the
+## nearest living one. The host tells us when each dies so we can drop it.
+var _my_mark_names: Array = []
+var _resolved_marks: Dictionary = {}  # mark_name -> Node2D (resolved locally)
 ## Online PvP: our opponent (the other player). Known from the start so the exposure
 ## arrow can react when they run; only KILLABLE once we've finished our own mark.
 var _my_target_name: String = ""
@@ -83,6 +107,31 @@ var _hunt_phase: bool = false
 ## Client-side: re-asks the host to spawn us until our player appears (covers the rare
 ## case where our first request outran the host's scene during the lobby transition).
 var _spawn_retry_timer: float = 0.0
+
+# === Phase 7 online state (visibility / claim / items / reveals) =============
+# Layer ints mirrored from LayerComponent.Layer (kept decoupled, like CharacterVisual).
+const _LAYER_GROUND := 0
+const _LAYER_ROOFTOP := 1
+const _LAYER_SEWER := 2
+
+## Slice B — the dark overlay shown over our OWN view while we're in the sewer (blind).
+var _sewer_overlay: ColorRect = null
+
+## Slice C — every access point on THIS machine, by its stable map index, so the host's
+## replicated claim/cooldown can be applied to the right one.
+var _access_points_by_index: Dictionary = {}
+
+## Slice D — our own item kit readout, driven by host pushes (the host owns the charges).
+var _item_label: Label = null
+var _item_state: Dictionary = {"smoke": 0, "cloak": 0, "smoke_on": false, "cloak_on": false}
+
+## Slice E — the faceplate row + any reveal that arrived before the HUD existed.
+var _faceplates: FaceplateRow = null
+var _pending_target_face: int = -1
+var _pending_exposed_faces: Array = []
+## Host-only: who has already earned a reveal, so each fires once.
+var _target_reveal_awarded: bool = false
+var _exposure_revealed: Dictionary = {}
 
 ## Network debug overlay (toggle with F3): FPS, ping, and how many predicted inputs are
 ## still un-confirmed. Off by default so it doesn't clutter normal play.
@@ -95,6 +144,7 @@ func _ready() -> void:
 	_build_world()
 	_build_hud()
 	_build_debug_overlay()
+	_wire_access_points()
 
 	# Portals are map-control teleporters. They must only fire on the HOST (the
 	# referee); on clients the player bodies are just replicas, so a client-side
@@ -250,6 +300,14 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	# Host watches for this player being killed (their death ends the round).
 	character.died.connect(_on_player_killed.bind(peer_id))
 
+	# Host owns this player's item kit: relay cloak to the opponent's arrow and push the
+	# charges readout to the owner whenever it changes (Slice D).
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item != null:
+		item.item_activated.connect(_on_item_activated.bind(peer_id))
+		item.item_expired.connect(_on_item_expired.bind(peer_id))
+		_push_item_state_to(peer_id)
+
 	_update_status()
 
 
@@ -260,6 +318,12 @@ func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 	var opponent_peer := _other_peer(peer_id)
 	if opponent_peer != 0:
 		_receive_opponent_exposure.rpc_id(opponent_peer, value)
+	# BLUE reveal (§7.4): hitting 100% exposure reveals your look to the OTHERS (once).
+	if value >= 100.0 and not bool(_exposure_revealed.get(peer_id, false)):
+		_exposure_revealed[peer_id] = true
+		var character := _players_by_peer.get(peer_id) as Player
+		if character != null and opponent_peer != 0:
+			_receive_exposure_reveal.rpc_id(opponent_peer, int(character.appearance_index))
 
 
 # Owner-only: our opponent's exposure, fed to our local copy of them so the exposure
@@ -384,20 +448,63 @@ func _assign_mark_for_peer(peer_id: int) -> void:
 			candidates.append(npc)
 	if candidates.is_empty():
 		return
-	var mark: Npc = candidates[randi() % candidates.size()]
-	mark.add_to_group("killable_for_%d" % peer_id)  # the host-validated kill check uses this
-	mark.add_to_group("mark")
-	_mark_by_peer[peer_id] = mark
-	# Tell the owner privately when their mark dies (the host emits "died" on the kill).
-	mark.died.connect(_on_mark_killed.bind(peer_id))
-	# Send the mark's node name ONLY to its owner. The name matches across peers, so
-	# the owner can find the same NPC in its own copy of the crowd.
-	_receive_mark.rpc_id(peer_id, String(mark.name))
+	var chosen: Array = _pick_spaced_marks(candidates, marks_per_player)
+	var mark_names: Array = []
+	for mark in chosen:
+		mark.add_to_group("killable_for_%d" % peer_id)  # the host-validated kill check uses this
+		mark.add_to_group("mark")
+		# Force the mark to stay LOCAL (note 13): a homebody milling around where it was
+		# tagged. The NPC's wander logic reads these live, so changing them now is enough.
+		mark.is_traveler = false
+		mark.home_position = mark.global_position
+		mark.wander_radius = mark_wander_radius
+		# Tell the owner privately when this mark dies (the host emits "died" on the kill).
+		mark.died.connect(_on_mark_killed.bind(peer_id, String(mark.name)))
+		mark_names.append(String(mark.name))
+	_mark_by_peer[peer_id] = chosen
+	_marks_remaining_by_peer[peer_id] = chosen.size()
+	# Send the marks' node names ONLY to their owner. Names match across peers, so the
+	# owner can find the same NPCs in its own copy of the crowd.
+	_receive_marks.rpc_id(peer_id, mark_names)
 
 
-# Host-side: a peer's mark was killed → move that peer into the PvP "hunt" phase.
-func _on_mark_killed(peer_id: int) -> void:
-	_begin_target_phase(peer_id)
+# Host-only: pick `count` crowd NPCs to be one player's marks, spread at least
+# `mark_min_separation` apart so they can't be scooped together (note 13). Greedy: shuffle,
+# take the first, then add any NPC far enough from all picks. If the separation is too
+# strict to fill the quota (a tight map), top up with whatever's left so we still hand out
+# `count` marks.
+func _pick_spaced_marks(candidates: Array, count: int) -> Array:
+	var pool: Array = candidates.duplicate()
+	pool.shuffle()
+	var chosen: Array = []
+	for npc in pool:
+		if chosen.size() >= count:
+			break
+		var far_enough := true
+		for picked in chosen:
+			if picked.global_position.distance_to(npc.global_position) < mark_min_separation:
+				far_enough = false
+				break
+		if far_enough:
+			chosen.append(npc)
+	if chosen.size() < count:
+		for npc in pool:
+			if chosen.size() >= count:
+				break
+			if not chosen.has(npc):
+				chosen.append(npc)
+	return chosen
+
+
+# Host-side: one of a peer's marks was killed. Tell the owner so they can drop that
+# mark's highlight, then count it off; only once ALL marks are down do we open the hunt
+# phase (note 9 — you must clear both marks first).
+func _on_mark_killed(peer_id: int, mark_name: String) -> void:
+	_notify_mark_down.rpc_id(peer_id, mark_name)
+	var remaining: int = int(_marks_remaining_by_peer.get(peer_id, 0)) - 1
+	_marks_remaining_by_peer[peer_id] = remaining
+	if remaining <= 0:
+		_begin_target_phase(peer_id)
 
 
 # Host-only: the peer has finished their mark, so now they hunt the human opponent.
@@ -413,6 +520,10 @@ func _begin_target_phase(peer_id: int) -> void:
 	var opponent := _players_by_peer[opponent_peer] as Player
 	opponent.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
 	_enter_hunt_phase.rpc_id(peer_id)
+	# RED reveal (§7.4): the FIRST player to finish their marks learns their target's look.
+	if not _target_reveal_awarded:
+		_target_reveal_awarded = true
+		_receive_target_reveal.rpc_id(peer_id, int(opponent.appearance_index))
 
 
 # Returns any other living player's peer id (the opponent). 2-player for now.
@@ -428,10 +539,11 @@ func _other_peer(peer_id: int) -> int:
 @rpc("authority", "call_local", "reliable")
 func _enter_hunt_phase() -> void:
 	_hunt_phase = true
-	_my_mark = null
-	_my_mark_name = ""
+	_clear_mark_highlights()
+	_my_mark_names.clear()
+	_resolved_marks.clear()
 	if _objective_label != null:
-		_objective_label.text = "Mark down — HUNT YOUR OPPONENT."
+		_objective_label.text = "Marks down — HUNT YOUR OPPONENT."
 	if _target_arrow != null:
 		_target_arrow.set_flashing(true)
 
@@ -495,11 +607,25 @@ func _show_end_overlay(we_won: bool) -> void:
 	)
 
 
-# Owner-only: the host tells US which crowd NPC is our mark. We just remember the
-# name; the per-frame view resolves it once that NPC has replicated to us.
+# Owner-only: the host tells US which crowd NPCs are our marks. We just remember the
+# names; the per-frame view resolves each once that NPC has replicated to us.
 @rpc("authority", "call_local", "reliable")
-func _receive_mark(mark_name: String) -> void:
-	_my_mark_name = mark_name
+func _receive_marks(mark_names: Array) -> void:
+	_my_mark_names = mark_names.duplicate()
+
+
+# Owner-only: the host tells US one of our marks just died (clients don't see the crowd's
+# death state reliably). Drop its highlight and re-point the mini-map at what's left.
+@rpc("authority", "call_local", "reliable")
+func _notify_mark_down(mark_name: String) -> void:
+	var mark: Node2D = _resolved_marks.get(mark_name)
+	if mark != null and is_instance_valid(mark):
+		var visual := mark.get_node_or_null("CharacterVisual")
+		if visual != null and visual.has_method("set_highlight"):
+			visual.call("set_highlight", false)
+	_my_mark_names.erase(mark_name)
+	_resolved_marks.erase(mark_name)
+	_refresh_mark_tracking()
 
 
 # === this machine's private view (host AND client each have one) ============
@@ -507,6 +633,7 @@ func _receive_mark(mark_name: String) -> void:
 func _process(delta: float) -> void:
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
+	_update_visibility()
 	_update_debug_overlay()
 
 
@@ -557,15 +684,20 @@ func _update_local_view() -> void:
 		if _local_player != null:
 			_build_player_hud()
 
-	if _my_mark == null and _my_mark_name != "" and _crowd_parent != null:
-		var mark := _crowd_parent.get_node_or_null(_my_mark_name) as Node2D
-		if mark != null:
-			_my_mark = mark
-			_highlight_mark(mark)  # only THIS screen highlights it — no leak online
-			if _mini_map != null:
-				_mini_map.track_objective(mark)
-			if _objective_label != null:
-				_objective_label.text = "Kill your mark (gold dot) — or hunt the other player directly."
+	# Resolve any of our marks that have now replicated to us, highlight each (only THIS
+	# screen does, so there's no leak online), and keep the mini-map pointed at one.
+	if _crowd_parent != null and not _my_mark_names.is_empty():
+		var resolved_any := false
+		for mark_name in _my_mark_names:
+			if _resolved_marks.has(mark_name):
+				continue
+			var mark := _crowd_parent.get_node_or_null(mark_name) as Node2D
+			if mark != null:
+				_resolved_marks[mark_name] = mark
+				_highlight_mark(mark)
+				resolved_any = true
+		if resolved_any:
+			_refresh_mark_tracking()
 
 	# Resolve our opponent (known from the start) and raise the exposure arrow that
 	# points their way when they run. There are no mini-map pings for players — the
@@ -624,11 +756,43 @@ func _build_player_hud() -> void:
 	var screen_width := get_viewport().get_visible_rect().size.x
 	_mini_map.position = Vector2(screen_width - _mini_map.map_size_px.x - 24.0, 24.0)
 
+	_build_layer_feedback()   # sewer overlay + arrow uptime (Slice B)
+	_build_item_hud()         # smoke/cloak charges readout (Slice D)
+	_build_faceplate_row()    # red/blue identity reveals (Slice E)
+
 
 func _highlight_mark(mark: Node) -> void:
 	var visual := mark.get_node_or_null("CharacterVisual")
 	if visual != null and visual.has_method("set_highlight"):
 		visual.call("set_highlight", true)
+
+
+# Point the mini-map at the first still-living mark and update the "x / y done" caption.
+# Called when a mark resolves locally or when the host tells us one died.
+func _refresh_mark_tracking() -> void:
+	var living: Array = []
+	for mark_name in _my_mark_names:
+		var mark: Node2D = _resolved_marks.get(mark_name)
+		if mark != null and is_instance_valid(mark):
+			living.append(mark)
+	if _mini_map != null:
+		_mini_map.track_objective(living[0] if not living.is_empty() else null)
+	if _objective_label != null and not _hunt_phase:
+		if _my_mark_names.is_empty():
+			_objective_label.text = "Locating your marks..."
+		else:
+			_objective_label.text = "Kill your marks (gold dots) — %d left." % living.size()
+
+
+# Drop the highlight on every mark we still hold a reference to (used when the hunt
+# phase opens, so no stale ring lingers on a corpse).
+func _clear_mark_highlights() -> void:
+	for mark_name in _resolved_marks:
+		var mark: Node2D = _resolved_marks[mark_name]
+		if mark != null and is_instance_valid(mark):
+			var visual := mark.get_node_or_null("CharacterVisual")
+			if visual != null and visual.has_method("set_highlight"):
+				visual.call("set_highlight", false)
 
 
 # An arrow that points toward our opponent when they're off-screen. It starts in
@@ -643,6 +807,212 @@ func _build_target_arrow(opponent: Node2D) -> void:
 	_target_arrow.track_target(opponent)
 	if _hunt_phase:
 		_target_arrow.set_flashing(true)
+	# If we're already in the sewer when the arrow is created, give it 100% uptime now.
+	var layer_comp := _local_player.get_node_or_null("LayerComponent") as LayerComponent
+	if layer_comp != null and layer_comp.current_layer == _LAYER_SEWER:
+		_target_arrow.set_sewer_mode(true)
+
+
+# === Slice B — per-viewer visibility (the hidden view, §7.2b / §0.3) =========
+# Each machine hides the characters its OWN player shouldn't see, from the host-replicated
+# layer (+ smoke) carried on every character. Local-only — never touches the host's sim.
+func _update_visibility() -> void:
+	if _local_player == null or not is_instance_valid(_local_player):
+		return
+	var my_layer := _layer_of_character(_local_player)
+	for parent in [_players_parent, _crowd_parent]:
+		if parent == null:
+			continue
+		for child in parent.get_children():
+			var character := child as Node2D
+			if character == null:
+				continue
+			if character == _local_player:
+				character.visible = true  # you always see yourself
+			else:
+				character.visible = _can_local_player_see(my_layer, character)
+
+
+func _layer_of_character(character: Node) -> int:
+	var layer_comp := character.get_node_or_null("LayerComponent") as LayerComponent
+	if layer_comp != null:
+		return layer_comp.current_layer
+	return _LAYER_GROUND  # the crowd has no LayerComponent → always on the ground
+
+
+func _can_local_player_see(my_layer: int, other: Node2D) -> bool:
+	# A smoked player is invisible to everyone else, whatever the layer (§7.6).
+	if other is Player and bool(other.get("_net_smoked")):
+		return false
+	var other_layer := _layer_of_character(other)
+	match my_layer:
+		_LAYER_SEWER:
+			return false  # blind underground: you see no one (the overlay covers the world)
+		_LAYER_ROOFTOP:
+			if other_layer == _LAYER_GROUND:
+				return true  # the vantage: watch the ground below
+			if other_layer == _LAYER_ROOFTOP:
+				return rooftop_sees_rooftop
+			return false  # can't see down into the sewer
+		_:  # GROUND
+			return other_layer == _LAYER_GROUND
+
+
+# Build the sewer screen overlay and wire it (+ the arrow's 100% uptime) to OUR layer.
+func _build_layer_feedback() -> void:
+	if _player_hud_layer == null or _local_player == null:
+		return
+	_sewer_overlay = ColorRect.new()
+	_sewer_overlay.name = "SewerOverlay"
+	_sewer_overlay.color = Color(0.02, 0.03, 0.04, 0.82)
+	_sewer_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_sewer_overlay.visible = false
+	_sewer_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_player_hud_layer.add_child(_sewer_overlay)
+	_player_hud_layer.move_child(_sewer_overlay, 0)  # behind the rest of the HUD (dim the WORLD only)
+	var layer_comp := _local_player.get_node_or_null("LayerComponent") as LayerComponent
+	if layer_comp != null:
+		layer_comp.layer_changed.connect(_on_local_layer_changed)
+		_on_local_layer_changed(layer_comp.current_layer)
+
+
+func _on_local_layer_changed(new_layer: int) -> void:
+	var in_sewer := new_layer == _LAYER_SEWER
+	if _sewer_overlay != null:
+		_sewer_overlay.visible = in_sewer
+	if _target_arrow != null:
+		_target_arrow.set_sewer_mode(in_sewer)
+
+
+# === Slice C — access-point claim + cooldown replication (§7.3) ==============
+# Index every access point on THIS machine. On the host, listen for claims/lockouts and
+# broadcast them so every client's marker shows the same "claimed / on cooldown" state.
+func _wire_access_points() -> void:
+	for node in get_tree().get_nodes_in_group("access_point"):
+		var point := node as AccessPoint
+		if point == null:
+			continue
+		_access_points_by_index[point.access_index] = point
+		if NetworkManager.is_host():
+			point.claim_changed.connect(func(owner_id: int) -> void:
+				_apply_access_claim.rpc(point.access_index, owner_id))
+			point.cooldown_started.connect(func() -> void:
+				_apply_access_cooldown.rpc(point.access_index))
+
+
+# Clients only (the host already applied it directly): reflect a claim / a lockout start.
+@rpc("authority", "reliable")
+func _apply_access_claim(index: int, owner_id: int) -> void:
+	var point := _access_points_by_index.get(index) as AccessPoint
+	if point != null:
+		point.apply_claim_replicated(owner_id)
+
+
+@rpc("authority", "reliable")
+func _apply_access_cooldown(index: int) -> void:
+	var point := _access_points_by_index.get(index) as AccessPoint
+	if point != null:
+		point.apply_cooldown_replicated()
+
+
+# === Slice D — item kit HUD + cloak routing (§7.6) ==========================
+func _build_item_hud() -> void:
+	_item_label = Label.new()
+	_item_label.name = "ItemLabel"
+	_item_label.position = Vector2(24.0, 168.0)
+	_item_label.add_theme_font_size_override("font_size", 16)
+	_player_hud_layer.add_child(_item_label)
+	_refresh_item_label()
+
+
+func _refresh_item_label() -> void:
+	if _item_label == null:
+		return
+	var smoke_on: String = " (ON)" if bool(_item_state["smoke_on"]) else ""
+	var cloak_on: String = " (ON)" if bool(_item_state["cloak_on"]) else ""
+	_item_label.text = "SMOKE x%d%s   CLOAK x%d%s" % [
+		int(_item_state["smoke"]), smoke_on, int(_item_state["cloak"]), cloak_on]
+
+
+# HOST: a player's item turned on. Update the owner's readout; for CLOAK, suppress the
+# opponent's hunt arrow that points at them (their exposure arrow still fires).
+func _on_item_activated(which: int, _duration: float, peer_id: int) -> void:
+	_push_item_state_to(peer_id)
+	if which == ItemComponent.Item.CLOAK:
+		var opponent := _other_peer(peer_id)
+		if opponent != 0:
+			_set_opponent_arrow_suppressed.rpc_id(opponent, true)
+
+
+func _on_item_expired(which: int, peer_id: int) -> void:
+	_push_item_state_to(peer_id)
+	if which == ItemComponent.Item.CLOAK:
+		var opponent := _other_peer(peer_id)
+		if opponent != 0:
+			_set_opponent_arrow_suppressed.rpc_id(opponent, false)
+
+
+# HOST: send a player their authoritative item charges + active state (owner-only).
+func _push_item_state_to(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var character := _players_by_peer.get(peer_id) as Node
+	if character == null:
+		return
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return
+	_receive_item_state.rpc_id(peer_id,
+		item.charges_left(ItemComponent.Item.SMOKE),
+		item.charges_left(ItemComponent.Item.CLOAK),
+		item.smoke_active(), item.cloak_active())
+
+
+# Owner-only: update our item readout with the host's authoritative numbers.
+@rpc("authority", "call_local", "reliable")
+func _receive_item_state(smoke_left: int, cloak_left: int, smoke_on: bool, cloak_on: bool) -> void:
+	_item_state = {"smoke": smoke_left, "cloak": cloak_left, "smoke_on": smoke_on, "cloak_on": cloak_on}
+	_refresh_item_label()
+
+
+# Owner-only: the player we hunt raised a cloak — hide our hunt arrow on them.
+@rpc("authority", "call_local", "reliable")
+func _set_opponent_arrow_suppressed(on: bool) -> void:
+	if _target_arrow != null:
+		_target_arrow.set_suppressed(on)
+
+
+# === Slice E — identity reveals + faceplates (§7.4) =========================
+func _build_faceplate_row() -> void:
+	_faceplates = FaceplateRow.new()
+	_faceplates.name = "FaceplateRow"
+	var screen_width := get_viewport().get_visible_rect().size.x
+	_faceplates.position = Vector2(screen_width * 0.5 - 130.0, 16.0)
+	_faceplates.custom_minimum_size = Vector2(260.0, 60.0)
+	_player_hud_layer.add_child(_faceplates)
+	# Apply any reveal that arrived before this HUD existed.
+	if _pending_target_face >= 0:
+		_faceplates.set_target_face(_pending_target_face)
+	for index in _pending_exposed_faces:
+		_faceplates.add_exposed_face(index)
+
+
+# Owner-only: we finished our marks first — here's our target's look (red plate).
+@rpc("authority", "call_local", "reliable")
+func _receive_target_reveal(appearance_index: int) -> void:
+	if _faceplates != null:
+		_faceplates.set_target_face(appearance_index)
+	else:
+		_pending_target_face = appearance_index
+
+
+# Owner-only: an opponent hit 100% exposure — here's their look (blue plate).
+@rpc("authority", "call_local", "reliable")
+func _receive_exposure_reveal(appearance_index: int) -> void:
+	if _faceplates != null:
+		_faceplates.add_exposed_face(appearance_index)
+	elif not _pending_exposed_faces.has(appearance_index):
+		_pending_exposed_faces.append(appearance_index)
 
 
 # === minimal on-screen status (6.0 debugging aid) ===========================

@@ -4,6 +4,52 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7-online — porting Phase 7 onto the ONLINE match (server-authoritative)
+Phase 7 was built/tested on the OFFLINE split-screen path; online (`online_match.gd`) was
+still Phase 6. Online is the primary test surface (each player on a separate machine = a true
+hidden view), so we're porting the features there in slices (plan: 5 slices, A–E). Each slice
+is server-authoritative (host owns truth, clients send intent) and independently testable
+across a host + a 127.0.0.1 client.
+
+- **Slice A — quick wins (§7.0):**
+  - **Camera zoom online:** new `Player.network_camera_zoom` (`@export`, default 1.1) applied to
+    the locally-controlled player's embedded camera in `_setup_network_role`. Offline split-screen
+    (its own follow camera) is untouched.
+  - **Teleporter exposure cost:** confirmed it ALREADY fires online — the host applies the portal's
+    `exposure_cost` (the map sets it = `teleporter_cost`) and clients have portal monitoring off, so
+    only the host (referee) teleports + charges. No code change; verified by reading.
+  - **Two marks per peer:** `online_match._assign_mark_for_peer` now designates `marks_per_player`
+    (=2) crowd NPCs via `_pick_spaced_marks` (≥ `mark_min_separation`, ~2 screens apart), forces each
+    into a homebody (`is_traveler=false`, small `mark_wander_radius`), tells the owner BOTH names
+    (`_receive_marks`), and opens the hunt phase only after both die (`_marks_remaining_by_peer`). The
+    owner is told per-mark when one dies (`_notify_mark_down`) so the client drops its highlight and
+    the mini-map re-points at what's left.
+- **Slice B — per-viewer VISIBILITY, the hidden view (§7.2b/§0.3):** `online_match._update_visibility()`
+  runs per frame and toggles each character's `visible` for THIS machine from the host-replicated layer
+  (`LayerComponent.current_layer`, mirrored from `_net_layer`): GROUND sees ground only; ROOFTOP sees the
+  ground below (+ other rooftops, `rooftop_sees_rooftop` default on); SEWER sees no one. Local-only — it
+  never touches the host's sim, so it's a true hidden view (each peer is a separate machine). Ported the
+  sewer screen overlay + arrow 100% uptime (`_build_layer_feedback` / `_on_local_layer_changed`).
+- **Slice C — claim + global cooldown, server-authoritative (§7.3):** `player._try_claim` routes to the
+  host (`_request_claim` RPC — host finds the point you're on, validates, charges 20% committed exposure).
+  Access-point USE is host-validated in `_request_set_layer` (right kind + available + correct transition →
+  `mark_used()`), so the 15s global lockout is host-owned. New `AccessPoint.access_index` + `claim_changed`/
+  `cooldown_started` signals; the host broadcasts via `OnlineMatch._apply_access_claim`/`_apply_access_cooldown`
+  so every client's marker shows claimed/cooldown. (Late-joiner snapshot of claim state = a known small gap.)
+- **Slice D — items smoke + cloak, server-authoritative (§7.6):** `ItemComponent` split into `local_input`
+  (reads keys) / `server_authoritative` (owns charges + timers) / `network_mode`. The controlling client
+  emits `item_requested` -> `player._request_item` RPC -> host `server_activate`. Smoke sets the player's
+  replicated `_net_smoked` (others hide it via Slice B; smoker sees self) + disables their kill; cloak makes
+  the host suppress the OPPONENT's hunt arrow (`_set_opponent_arrow_suppressed`, targeted) while the exposure
+  arrow still fires. Charges readout pushed owner-only (`_push_item_state_to` / `_receive_item_state`).
+- **Slice E — identity reveals + faceplates (§7.4):** `FaceplateRow` built per machine. RED = first peer to
+  finish its marks is told its target's appearance (`_begin_target_phase` -> `_receive_target_reveal`, once).
+  BLUE = a player hitting 100% exposure reveals their look to the others (`_on_player_exposure_changed` ->
+  `_receive_exposure_reveal`, once each). Reveals are targeted owner-only RPCs carrying an appearance index.
+- **Compiles clean** (headless full-project boot, rc=0). **Untested in live play** — built on the integration
+  branch `phase-7-online-integration` for a 2-instance playtest. Deferred (next pass): §7.5 N-player
+  last-standing + rematch online, and the §0.3 per-viewer APPEARANCE swap.
+
 ### Session: 7.2–7.6 — layers, items, claim/cooldown, match flow, reveals (v0.7.0)
 A full methodical pass over the rest of the Phase 7 plan. Built logic-first and committed
 phase-by-phase; **all of it is UNTESTED in-editor** (no Godot on the build machine) — the
