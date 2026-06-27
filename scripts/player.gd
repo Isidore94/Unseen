@@ -58,7 +58,14 @@ class_name Player
 @export var network_camera_zoom: Vector2 = Vector2(1.1, 1.1)
 ## (Online) Which sprite sheet (0-4) this character wears. The host assigns it; every
 ## peer receives the same value at spawn, so the crowd looks identical on all screens.
+## Kept for back-compat; the full look now travels as `loadout_payload` (which wins
+## when present).
 @export var appearance_index: int = 0
+
+## (Online) The compact cosmetic loadout the host replicated for this player at spawn
+## (§5). Ids only, no textures — reconstructed into a Loadout and applied to the rig.
+## Empty = fall back to the legacy body-only appearance_index above.
+@export var loadout_payload: Dictionary = {}
 
 # --- client-side prediction tuning (the "feel" pass, MULTIPLAYER_PLAN.md §2) ---
 ## (Online) How fast a character you DON'T control slides toward its latest replicated
@@ -146,10 +153,14 @@ func _setup_network_role() -> void:
 	# Is this character controlled by the human sitting at THIS machine?
 	_is_locally_controlled = (controlling_peer_id == multiplayer.get_unique_id())
 
-	# Wear the sheet the host assigned (every peer got the same number at spawn).
+	# Wear what the host assigned at spawn (every peer got the same data). Prefer the full
+	# loadout (all four rig layers); fall back to the legacy body-only index if none.
 	var visual := get_node_or_null("CharacterVisual")
-	if visual != null and visual.has_method("set_appearance"):
-		visual.call("set_appearance", appearance_index)
+	if visual != null:
+		if not loadout_payload.is_empty() and visual.has_method("apply_loadout"):
+			visual.call("apply_loadout", Loadout.from_payload(loadout_payload))
+		elif visual.has_method("set_appearance"):
+			visual.call("set_appearance", appearance_index)
 
 	# Only my own character gets the camera; the others are just people I watch.
 	var camera := get_node_or_null("Camera2D") as Camera2D
