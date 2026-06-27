@@ -37,7 +37,30 @@ git fetch origin
 git checkout main && git pull
 git merge-base --is-ancestor c0e2196 main && echo "OK: at/after the v0.7.0 base" || echo "CHECK with Aaron"
 ```
-This is step 1, so there's no earlier phase to gate on — just confirm main is the expected base.
+This is step 1, so there's no earlier phase to gate on — just confirm main is the expected base. Nothing to
+re-sync inbound either (this is the base) — but read §1.5: you are the START of a stacked chain.
+
+---
+
+## 1.5 Forward-propagation of fixes (READ — this is where the chain begins)
+
+The three phase branches are **stacked**: Phase 8 was cut from this Phase 7 branch, and Phase 9 from Phase 8.
+That means **every later branch contains a FROZEN copy of the Phase 7 code as it is right now.** Any fix you
+make to Phase 7 during this integration will NOT exist in the Phase 8 or Phase 9 branches until it's
+deliberately carried forward. If you skip that, the later phases silently re-introduce the bug.
+
+**So for every fix you make here:**
+1. **Land it on `main`** as part of this integration.
+2. **It must reach the later branches.** Each later phase's plan (`PHASE_8_TO_MAIN.md` §1.5,
+   `PHASE_9_TO_MAIN.md` §1.5) starts by running `git merge main` to absorb your fix — but that merge only
+   reaches code those phases left **unchanged**. Where a later phase **rewrote or extended** the same code,
+   the merge won't fix it. The prime example: **`online_match.gd`** — you may fix it here, and Phase 9 added
+   the per-viewer crowd + experiment loader to that same file, so Phase 9 must re-apply the fix by hand.
+3. **Tell Aaron exactly what you fixed** (file + symptom) before you finish this phase, and write it in
+   `CHANGELOG.md`. That list is the checklist the Phase 8 and Phase 9 passes work through — without it, a
+   fix made here can quietly vanish two phases later.
+
+In short: **a Phase 7 fix is not "done" when it's on main — it's done when Phase 8 and Phase 9 have it too.**
 
 ---
 
