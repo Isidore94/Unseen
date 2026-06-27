@@ -1,6 +1,6 @@
 # UNSEEN — PHASE 9 → MAIN  (integration plan, step 3 of 3)
 
-> **Branch:** `claude/post-integration-checklist-ig0la4` · **Tip:** `7077a48`
+> **Branch:** `phase-9` · **Tip:** `7077a48`
 > **Integration order (the whole roadmap):** Phase 7 → main → Phase 8 → main → **Phase 9 → main (this file)**.
 > Do **NOT** start this until Phase 7 *and* Phase 8 are both on `main` and verified (see §1).
 
@@ -46,10 +46,10 @@ on `main` but is **NOT** in this branch yet. Pull it in and resolve before you t
 what will actually land:
 
 ```bash
-git checkout claude/post-integration-checklist-ig0la4
+git checkout phase-9
 git merge main          # absorb every Phase 7/8 fix that reached main
 tools/validate.sh       # re-verify after the merge
-git push origin claude/post-integration-checklist-ig0la4
+git push origin phase-9
 ```
 Resolve any conflict by **keeping the fix** from `main`. Expect conflicts in files this phase also edited —
 most likely **`online_match.gd`** (Phase 7 created it; Phase 9 adds the per-viewer crowd + experiment
@@ -89,7 +89,7 @@ tell Aaron, since it may need to be reflected on `main` directly.
 ```bash
 git checkout main && git pull
 git checkout -b integrate/phase-9
-git merge origin/claude/post-integration-checklist-ig0la4   # ff or a clean merge commit — both fine
+git merge origin/phase-9   # ff or a clean merge commit — both fine
 tools/validate.sh                                           # COMPILE GATE → expect exit 0
 ```
 Confirm the autoloads `ExperimentFlags` + the `earned_read_pulse` input action are present in
