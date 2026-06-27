@@ -119,6 +119,12 @@ func _build_local_match(map: TestMap01) -> void:
 	_add_item_hud(p1_hud_data["hud"] as CanvasLayer, player_one)
 	_add_item_hud(p2_hud_data["hud"] as CanvasLayer, player_two)
 
+	# Identity reveals + faceplates (buildplan §7.4): red = your target (first-to-finish),
+	# blue = an opponent who hit 100% exposure.
+	var p1_faces := _add_faceplate_row(p1_hud_data["hud"] as CanvasLayer)
+	var p2_faces := _add_faceplate_row(p2_hud_data["hud"] as CanvasLayer)
+	_wire_reveals(player_one, player_two, contract_one, contract_two, p1_faces, p2_faces)
+
 	_end_screen = END_SCREEN_SCENE.instantiate() as EndScreen
 	add_child(_end_screen)
 
@@ -317,6 +323,56 @@ func _add_item_hud(hud: CanvasLayer, player: Player) -> void:
 	refresh.call()
 	item.item_activated.connect(func(_which: int, _duration: float) -> void: refresh.call())
 	item.item_expired.connect(func(_which: int) -> void: refresh.call())
+
+
+# A faceplate row at the top-centre of a player's private view.
+func _add_faceplate_row(hud: CanvasLayer) -> FaceplateRow:
+	var row := FaceplateRow.new()
+	row.name = "FaceplateRow"
+	row.position = Vector2(954.0 * 0.5 - 130.0, 16.0)
+	row.custom_minimum_size = Vector2(260.0, 60.0)
+	hud.add_child(row)
+	return row
+
+
+# Connect the two reveal sources to the faceplate rows.
+func _wire_reveals(p1: Player, p2: Player, c1: ContractManager, c2: ContractManager, faces1: FaceplateRow, faces2: FaceplateRow) -> void:
+	# RED: only the FIRST player to finish their NPC marks learns their target's look.
+	var first := {"done": false}
+	if c1 != null:
+		c1.marks_completed.connect(func() -> void:
+			if not first["done"]:
+				first["done"] = true
+				faces1.set_target_face(_appearance_of(p2))
+		)
+	if c2 != null:
+		c2.marks_completed.connect(func() -> void:
+			if not first["done"]:
+				first["done"] = true
+				faces2.set_target_face(_appearance_of(p1))
+		)
+	# BLUE: hitting 100% exposure reveals your look to the OTHER player.
+	_wire_exposure_reveal(p1, faces2)
+	_wire_exposure_reveal(p2, faces1)
+
+
+func _wire_exposure_reveal(player: Player, opponent_faces: FaceplateRow) -> void:
+	var exposure := player.exposure_component
+	if exposure == null:
+		return
+	var revealed := {"done": false}
+	exposure.exposure_changed.connect(func(value: float) -> void:
+		if value >= 100.0 and not revealed["done"]:
+			revealed["done"] = true
+			opponent_faces.add_exposed_face(_appearance_of(player))
+	)
+
+
+func _appearance_of(player: Player) -> int:
+	var visual := player.get_node_or_null("CharacterVisual")
+	if visual != null and visual.has_method("get_appearance"):
+		return int(visual.call("get_appearance"))
+	return 0
 
 
 func _spawn_or_fallback(spawns: Array[Vector2], index: int, fallback: Vector2) -> Vector2:

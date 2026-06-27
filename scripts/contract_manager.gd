@@ -43,6 +43,10 @@ class_name ContractManager
 ## Emitted when the whole contract (all marks + target) is done.
 signal contract_completed
 
+## Emitted the moment all NPC marks are done and the human-hunt phase begins. The match
+## uses this to grant the FIRST finisher their target's faceplate (buildplan §7.4).
+signal marks_completed
+
 var _status_label: Label = null
 var _marks: Array[Npc] = []
 var _remaining_marks: int = 0
@@ -166,6 +170,7 @@ func _on_mark_killed() -> void:
 
 func _begin_target_phase() -> void:
 	_phase = "target"
+	marks_completed.emit()
 	var target := _final_target()
 	if target != null:
 		target.add_to_group(valid_target_group_name)
