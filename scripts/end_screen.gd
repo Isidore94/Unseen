@@ -14,6 +14,9 @@ class_name EndScreen
 func _ready() -> void:
 	add_to_group("end_screen")
 	visible = false
+	# "Rematch" = a fresh round with the same players/settings (buildplan §7.5). For local
+	# co-op that's a clean reload of this scene.
+	_play_again_button.text = "Rematch"
 	_play_again_button.pressed.connect(_on_play_again)
 
 

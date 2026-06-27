@@ -10,7 +10,11 @@ class_name LocalMatchManager
 @export var speed_bonus_cap: float = 500.0
 @export var speed_bleed_per_second: float = 2.0
 @export var kill_points: int = 100
-@export var win_bonus: int = 500
+## Awarded for COMPLETING your contract (an achievement that scores points) — NOT a flat
+## "you won" bonus. The winner is whoever has the most points (buildplan §7.5), so the
+## win can't be a circular input to itself.
+@export var contract_bonus: int = 500
+## Subtracted from a player who is eliminated — being killed caps what you can still earn.
 @export var death_penalty: int = 300
 
 @export var player_one_path: NodePath
@@ -24,6 +28,7 @@ var _contracts: Dictionary = {}
 var _exposure_sum: Dictionary = {}
 var _exposure_samples: Dictionary = {}
 var _kills: Dictionary = {}
+var _completed: Dictionary = {}  # did this player finish their contract?
 var _end_screen: EndScreen = null
 var _elapsed: float = 0.0
 var _round_over: bool = false
@@ -63,6 +68,7 @@ func _register_player(player_id: int, player: Player) -> void:
 	_exposure_sum[player_id] = 0.0
 	_exposure_samples[player_id] = 0
 	_kills[player_id] = 0
+	_completed[player_id] = false
 
 	if player == null:
 		push_warning("LocalMatchManager: Player %d not found." % player_id)
@@ -87,26 +93,26 @@ func _on_kill_landed(player_id: int) -> void:
 
 
 func _on_contract_completed(player_id: int) -> void:
+	_completed[player_id] = true
 	_end_round("contract", player_id)
 
 
-func _on_player_died(dead_player_id: int) -> void:
-	_end_round("player_down", _opponent_id(dead_player_id))
+func _on_player_died(_dead_player_id: int) -> void:
+	# A death only ENDS the round (buildplan §7.5) — it does NOT decide the winner; the
+	# scores do. The dead player just carries the death penalty into the tally.
+	_end_round("player_down", 0)
 
 
-func _end_round(reason: String, winner_id: int) -> void:
+func _end_round(reason: String, _trigger_id: int) -> void:
 	if _round_over:
 		return
 	_round_over = true
 
-	var p1_score := _score_for_player(1, winner_id)
-	var p2_score := _score_for_player(2, winner_id)
-
-	if reason == "timeout":
-		if p1_score["total"] > p2_score["total"]:
-			winner_id = 1
-		elif p2_score["total"] > p1_score["total"]:
-			winner_id = 2
+	var p1_score := _score_for_player(1)
+	var p2_score := _score_for_player(2)
+	# Winner is whoever has the most points, full stop; ties break to lowest average
+	# exposure (ghostliness is the core fantasy). 0 = an exact draw.
+	var winner_id := _winner_by_points(p1_score, p2_score)
 
 	var result_text := _result_text(reason, winner_id)
 	var breakdown := _score_breakdown(1, p1_score) + "\n\n" + _score_breakdown(2, p2_score)
@@ -115,17 +121,34 @@ func _end_round(reason: String, winner_id: int) -> void:
 		_end_screen.show_result(result_text, breakdown)
 
 
-func _score_for_player(player_id: int, winner_id: int) -> Dictionary:
+# Most points wins; tie on points → lowest average exposure; still tied → an exact draw (0).
+func _winner_by_points(p1_score: Dictionary, p2_score: Dictionary) -> int:
+	if int(p1_score["total"]) > int(p2_score["total"]):
+		return 1
+	if int(p2_score["total"]) > int(p1_score["total"]):
+		return 2
+	var e1 := _average_exposure(1)
+	var e2 := _average_exposure(2)
+	if e1 < e2:
+		return 1
+	if e2 < e1:
+		return 2
+	return 0
+
+
+func _score_for_player(player_id: int) -> Dictionary:
 	var average_exposure := _average_exposure(player_id)
 	var exposure_score: int = int(round((100.0 - average_exposure) * exposure_weight))
 	var speed_score: int = int(maxf(0.0, speed_bonus_cap - _elapsed * speed_bleed_per_second))
 	var kill_score: int = int(_kills[player_id]) * kill_points
 	var outcome_bonus: int = 0
 
-	if player_id == winner_id:
-		outcome_bonus = win_bonus
-	elif _is_player_dead(player_id):
-		outcome_bonus = -death_penalty
+	# Finishing your contract scores points; being eliminated costs you. These are NOT
+	# "you won" flags — the winner is decided from the totals afterwards.
+	if bool(_completed[player_id]):
+		outcome_bonus += contract_bonus
+	if _is_player_dead(player_id):
+		outcome_bonus -= death_penalty
 
 	var total: int = maxi(0, exposure_score + speed_score + kill_score + outcome_bonus)
 	return {
@@ -150,14 +173,15 @@ func _is_player_dead(player_id: int) -> bool:
 
 func _result_text(reason: String, winner_id: int) -> String:
 	if winner_id == 0:
-		return "TIME UP - DRAW"
+		return "DRAW"
+	var headline := "P%d WINS" % winner_id
 	match reason:
 		"contract":
-			return "P%d CONTRACT COMPLETE" % winner_id
+			return "%s — contract complete" % headline
 		"timeout":
-			return "TIME UP - P%d LEADS" % winner_id
+			return "TIME UP — %s" % headline
 		_:
-			return "P%d WINS" % winner_id
+			return headline
 
 
 func _score_breakdown(player_id: int, score: Dictionary) -> String:
@@ -172,7 +196,3 @@ func _score_breakdown(player_id: int, score: Dictionary) -> String:
 		score["kill_score"],
 		score["outcome_bonus"],
 	]
-
-
-func _opponent_id(player_id: int) -> int:
-	return 2 if player_id == 1 else 1
