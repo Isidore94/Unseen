@@ -71,6 +71,14 @@ func _build_ui() -> void:
 	_status_label.custom_minimum_size = Vector2(320.0, 0.0)
 	panel.add_child(_status_label)
 
+	var steam_label := Label.new()
+	steam_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	steam_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	steam_label.custom_minimum_size = Vector2(360.0, 0.0)
+	steam_label.modulate = Color(0.6, 0.85, 1.0)
+	steam_label.text = "Steam: %s" % NetworkManager.steam_status()
+	panel.add_child(steam_label)
+
 	_build_version_label()
 
 

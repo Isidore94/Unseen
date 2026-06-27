@@ -1,0 +1,7 @@
+# The GodotSteam editor binaries and Steam runtime libraries live in this folder so the
+# editor can run, but they are large, per-machine TOOLING — not project source. Never
+# commit them (each developer downloads their own GodotSteam editor).
+godotsteam*
+steam_api*.dll
+steam_api*.so
+steam_api*.dylib

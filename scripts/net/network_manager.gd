@@ -35,6 +35,14 @@ signal server_closed
 
 var _active_peer: MultiplayerPeer = null
 
+# --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
+## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.
+const STEAM_APP_ID := 480
+## The Steam singleton, fetched by NAME so this script still parses in stock Godot.
+var _steam: Object = null
+var _steam_ready: bool = false
+var _steam_status_text: String = "not initialised"
+
 
 func _ready() -> void:
 	# Connect to Godot's multiplayer events ONCE. They stay quiet until we actually
@@ -45,6 +53,65 @@ func _ready() -> void:
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
+	_init_steam()
+
+
+# Brings Steam online if we're running in the GodotSteam editor. Written defensively:
+# everything is reached through the singleton by name and guarded with has_method(), so
+# a missing/renamed function logs a clear message instead of breaking the game (LAN/ENet
+# play keeps working regardless).
+func _init_steam() -> void:
+	if not Engine.has_singleton("Steam"):
+		_steam_status_text = "not detected (open the project with the GodotSteam editor for online play)"
+		print("[Steam] %s" % _steam_status_text)
+		return
+
+	_steam = Engine.get_singleton("Steam")
+
+	# Init function name varies a little by GodotSteam version — call whichever exists.
+	var init_returned: Variant = null
+	if _steam.has_method("steamInitEx"):
+		init_returned = _steam.steamInitEx()
+	elif _steam.has_method("steamInit"):
+		init_returned = _steam.steamInit()
+	else:
+		_steam_status_text = "GodotSteam present but no init function found (version mismatch?)"
+		print("[Steam] %s" % _steam_status_text)
+		return
+
+	# The return type also varies: a Dictionary {status, verbal} or a bool.
+	if init_returned is Dictionary:
+		_steam_ready = int((init_returned as Dictionary).get("status", -1)) == 0
+	elif init_returned is bool:
+		_steam_ready = init_returned
+	else:
+		_steam_ready = true  # some versions return nothing on success
+
+	if _steam_ready:
+		var persona := "you"
+		if _steam.has_method("getPersonaName"):
+			persona = str(_steam.getPersonaName())
+		_steam_status_text = "ready as %s" % persona
+	else:
+		_steam_status_text = "init failed — is the Steam client running and logged in? (%s)" % str(init_returned)
+	print("[Steam] %s" % _steam_status_text)
+
+
+func _process(_delta: float) -> void:
+	# Steam needs its callbacks pumped each frame (when not embedded). Guarded so it's a
+	# no-op without Steam.
+	if _steam != null and _steam.has_method("run_callbacks"):
+		_steam.run_callbacks()
+
+
+# True if Steam initialised successfully (relay play is possible).
+func is_steam_ready() -> bool:
+	return _steam_ready
+
+
+# Human-readable Steam state for the menu.
+func steam_status() -> String:
+	return _steam_status_text
 
 
 # === public API (the menu calls these) =====================================
