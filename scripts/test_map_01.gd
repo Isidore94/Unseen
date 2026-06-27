@@ -81,6 +81,8 @@ enum Zone { NW, NE, SW, SE, HUB }
 # exposure costs for the map-control features (§8)
 @export var teleporter_cost: float = 20.0
 @export var trapdoor_cost: float = 8.0
+## Shared global cooldown (s) on the teleporter pair so it can't be chained (§7.3).
+@export var teleporter_cooldown: float = 15.0
 
 ## Radius of the central fountain's solid collision (you route around it), in pixels.
 @export var fountain_radius: float = 120.0
@@ -487,35 +489,37 @@ func _add_static_box(center: Vector2, size: Vector2) -> void:
 
 # === map-control features (Portal pairs, §8) ===============================
 func _spawn_portals() -> void:
-	# Teleporter pads — TOP ↔ BOTTOM cross-map jump, exposure cost (teal). Note 2/10.
-	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, 58.0)
+	# Teleporter pads — TOP ↔ BOTTOM cross-map jump, exposure cost + 15s shared cooldown
+	# (teal). Notes 2/10/§7.3.
+	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, 58.0, teleporter_cooldown)
 	# Trapdoor — a medium diagonal hop with a small exposure tell (orange): NW alley
-	# to SE alley.
-	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0)
+	# to SE alley. No cooldown.
+	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0, 0.0)
 	# Underground passage — FREE, linking the two SEWER corners (NE ↔ SW). Pure map
-	# knowledge, and it foreshadows the §7.2 sewer network (grey).
+	# knowledge, and it foreshadows the §7.2 sewer network (grey). No cooldown.
 	if _sewer_entrances.size() >= 2:
-		_spawn_portal_pair(_sewer_entrances[0], _sewer_entrances[_sewer_entrances.size() - 1], Color(0.55, 0.55, 0.62, 0.9), 0.0, 52.0)
+		_spawn_portal_pair(_sewer_entrances[0], _sewer_entrances[_sewer_entrances.size() - 1], Color(0.55, 0.55, 0.62, 0.9), 0.0, 52.0, 0.0)
 
 
-func _spawn_portal_pair(a: Vector2, b: Vector2, color: Color, cost: float, radius: float) -> void:
+func _spawn_portal_pair(a: Vector2, b: Vector2, color: Color, cost: float, radius: float, cooldown: float) -> void:
 	# Skip a pair whose endpoint would land in a wall/building — keeps ANY layout safe.
 	if not _is_point_walkable(a) or not _is_point_walkable(b):
 		return
-	var portal_a := _make_portal(a, color, cost, radius)
-	var portal_b := _make_portal(b, color, cost, radius)
+	var portal_a := _make_portal(a, color, cost, radius, cooldown)
+	var portal_b := _make_portal(b, color, cost, radius, cooldown)
 	portal_a.link = portal_b
 	portal_b.link = portal_a
 	# Remember the pair so the mini-map can draw it (matching colour links the two ends).
 	_portal_links.append({"a": a, "b": b, "color": color})
 
 
-func _make_portal(pos: Vector2, color: Color, cost: float, radius: float) -> Portal:
+func _make_portal(pos: Vector2, color: Color, cost: float, radius: float, cooldown: float) -> Portal:
 	var portal := Portal.new()
 	portal.position = pos
 	portal.portal_color = color
 	portal.exposure_cost = cost
 	portal.portal_radius = radius
+	portal.global_cooldown = cooldown
 	add_child(portal)
 	return portal
 

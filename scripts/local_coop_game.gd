@@ -129,6 +129,7 @@ func _spawn_player(player_id: int, spawn_position: Vector2, action_prefix: Strin
 	player.run_action = "%s_run" % action_prefix
 	player.interact_action = "%s_interact" % action_prefix
 	player.drop_down_action = "%s_drop_down" % action_prefix
+	player.secondary_action = "%s_action_secondary" % action_prefix
 
 	var embedded_camera := player.get_node_or_null("Camera2D") as Camera2D
 	if embedded_camera != null:

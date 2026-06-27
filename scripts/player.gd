@@ -35,6 +35,8 @@ class_name Player
 @export var interact_action: String = "interact"
 ## Drop off a rooftop back to the ground (to commit a kill). buildplan §7.2.
 @export var drop_down_action: String = "drop_down"
+## Claim the access point you're on for the rest of the match (pays exposure). §7.3.
+@export var secondary_action: String = "action_secondary"
 ## Per-player debounce (seconds) between access-point uses, so a press can't flip-flop you.
 @export var access_reuse_cooldown: float = 0.8
 
@@ -363,19 +365,40 @@ func _handle_layer_input(delta: float) -> void:
 		_request_layer(LayerComponent.Layer.GROUND)
 		return
 
+	var point := _nearest_access_point()
+	# CLAIM the point you're standing on for the rest of the match (§7.3).
+	if Input.is_action_just_pressed(secondary_action) and point != null:
+		_try_claim(point)
+		return
+
 	if not Input.is_action_just_pressed(interact_action) or _access_reuse_timer > 0.0:
 		return
-	var point := _nearest_access_point()
-	if point == null:
-		return
+	if point == null or not point.is_available_to(player_id):
+		return  # nothing here, or it's on global cooldown / claimed by someone else
+	var used := false
 	if point.is_rooftop_stair() and layer_component.is_ground():
 		_request_layer(LayerComponent.Layer.ROOFTOP)
+		used = true
 	elif point.is_sewer_entrance():
 		# At a sewer entrance: drop in from the ground, or surface back from the sewer.
 		if layer_component.is_ground():
 			_request_layer(LayerComponent.Layer.SEWER)
+			used = true
 		elif layer_component.is_sewer():
 			_request_layer(LayerComponent.Layer.GROUND)
+			used = true
+	if used:
+		point.mark_used()  # start the 15s global lockout so it can't be chained
+
+
+# Claim an access point for the rest of the match, paying its exposure cost (§7.3).
+# Offline only for now; online claim needs the same host validation as layers (TODO).
+func _try_claim(point: AccessPoint) -> void:
+	if network_controlled or point.is_claimed():
+		return
+	point.claim(player_id)
+	if exposure_component != null:
+		exposure_component.add_exposure(point.claim_exposure_cost, "claim_access")
 
 
 # The closest access point we're standing on (within its use radius), or null.

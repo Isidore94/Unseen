@@ -22,11 +22,25 @@ class_name Portal
 ## Radius of the pad (also its trigger size), in pixels.
 @export var portal_radius: float = 50.0
 
+## Global lockout (seconds) after any use, shared by BOTH ends of the pair, so a
+## teleporter can't be chained during a chase (buildplan §7.3). 0 = always ready
+## (free passages stay spammable; the map sets 15s only on the teleporter pair).
+@export var global_cooldown: float = 0.0
+
 ## The partner portal you travel to. Set by whoever spawns the pair.
 var link: Portal = null
 
 ## Bodies that JUST arrived here — ignored until they step off (stops the bounce).
 var _arrivals: Array = []
+
+## Seconds left on the shared lockout (0 = ready).
+var _cooldown_remaining: float = 0.0
+
+
+func _process(delta: float) -> void:
+	if _cooldown_remaining > 0.0:
+		_cooldown_remaining = maxf(0.0, _cooldown_remaining - delta)
+		queue_redraw()
 
 
 func _ready() -> void:
@@ -51,6 +65,8 @@ func _on_body_entered(body: Node2D) -> void:
 		return
 	if not body.is_in_group("player"):
 		return  # only players travel; the crowd never teleports
+	if _cooldown_remaining > 0.0:
+		return  # on global lockout — can't use it again yet (buildplan §7.3)
 
 	# Pay the exposure cost (teleporters/trapdoors raise it; passages are free).
 	if exposure_cost > 0.0:
@@ -59,6 +75,15 @@ func _on_body_entered(body: Node2D) -> void:
 			exposure.add_exposure(exposure_cost, "portal")
 
 	link.receive(body)
+	_start_cooldown()
+	link._start_cooldown()
+
+
+# Begin the shared lockout on this pad (called on both ends after a trip).
+func _start_cooldown() -> void:
+	if global_cooldown > 0.0:
+		_cooldown_remaining = global_cooldown
+		queue_redraw()
 
 
 # Called by the partner portal to place an arriving body here without it
@@ -74,5 +99,9 @@ func _on_body_exited(body: Node2D) -> void:
 
 
 func _draw() -> void:
-	draw_circle(Vector2.ZERO, portal_radius, portal_color)
-	draw_arc(Vector2.ZERO, portal_radius, 0.0, TAU, 32, Color(1, 1, 1, 0.5), 2.0)
+	# Dim while on the shared cooldown so you can see it's locked out.
+	var dim: float = 0.4 if _cooldown_remaining > 0.0 else 1.0
+	var fill := portal_color
+	fill.a *= dim
+	draw_circle(Vector2.ZERO, portal_radius, fill)
+	draw_arc(Vector2.ZERO, portal_radius, 0.0, TAU, 32, Color(1, 1, 1, 0.5 * dim), 2.0)
