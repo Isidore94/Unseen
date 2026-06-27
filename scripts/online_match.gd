@@ -207,12 +207,19 @@ var _debug_layer: CanvasLayer = null
 var _debug_label: Label = null
 var _debug_visible: bool = false
 
+## Phase 9 HOOK (PHASE_9_EXPERIMENTS.md). Re-announces every resolved kill at the MATCH level so
+## experiments can listen in one place instead of re-wiring per player spawn. online_match emits
+## this; it does not know or care who listens (the one-way dependency rule, §1.2).
+signal host_kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
+
 
 func _ready() -> void:
+	add_to_group("online_match")  # Phase 9 experiments find the match here (read-only accessors)
 	_build_world()
 	_build_hud()
 	_build_debug_overlay()
 	_wire_access_points()
+	_spawn_experiments()
 
 	# Portals are map-control teleporters. They must only fire on the HOST (the
 	# referee); on clients the player bodies are just replicas, so a client-side
@@ -431,6 +438,8 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	var kill := character.get_node_or_null("KillComponent") as KillComponent
 	if kill != null:
 		kill.kill_landed.connect(_on_peer_kill_landed.bind(peer_id))
+		# Phase 9: re-announce this player's kills (clean AND whiff) at the match level.
+		kill.kill_resolved.connect(_relay_kill_resolved)
 
 	# Host owns this player's item kit: relay cloak to the opponent's arrow and push the
 	# charges readout to the owner whenever it changes (Slice D).
@@ -1607,3 +1616,82 @@ func _unhandled_input(event: InputEvent) -> void:
 			_debug_visible = not _debug_visible
 			if _debug_layer != null:
 				_debug_layer.visible = _debug_visible
+
+
+# ===========================================================================
+# PHASE 9 EXPERIMENT SUPPORT (PHASE_9_EXPERIMENTS.md) — host-side hooks + read-only accessors.
+# online_match emits one kill signal and offers a few getters. It names NO experiment, so any
+# experiment can be deleted with zero impact here (the delete test, §1.4).
+# ===========================================================================
+
+# Re-emit a player's resolved kill at the match level (wired from each KillComponent on spawn).
+func _relay_kill_resolved(killer: Node, victim: Node, was_valid: bool) -> void:
+	host_kill_resolved.emit(killer, victim, was_valid)
+
+
+# Spin up whatever experiment scripts live in scripts/experiments/. This loop loads whatever .gd
+# files are present and names none of them, so deleting an experiment file is a clean removal.
+# Every peer runs this and names each node after its file, so an experiment's owner-only cue RPCs
+# resolve to the matching node on every machine. Each experiment is inert unless its flag is on.
+func _spawn_experiments() -> void:
+	var dir := DirAccess.open("res://scripts/experiments")
+	if dir == null:
+		return  # folder absent (all experiments removed) — base game runs untouched
+	var holder := Node.new()
+	holder.name = "Experiments"
+	add_child(holder)
+	for file_name in dir.get_files():
+		if not file_name.ends_with(".gd"):
+			continue
+		var script: Script = load("res://scripts/experiments/" + file_name)
+		if script == null:
+			continue
+		var node := Node.new()
+		node.name = file_name.get_basename()
+		node.set_script(script)
+		holder.add_child(node)
+
+
+# How far through the round we are, 0..1 (host clock; 0 if there's no time limit). Used by 9B.
+func round_fraction() -> float:
+	if round_time_limit <= 0.0:
+		return 0.0
+	return clampf(_elapsed / round_time_limit, 0.0, 1.0)
+
+
+# The local machine's HUD layer, where a client renders any cue the host sends it (9C/9D/9F).
+func local_hud_layer() -> CanvasLayer:
+	return _player_hud_layer
+
+
+# The player controlled at THIS machine (for a client to position a direction/intensity cue).
+func local_player_body() -> Node2D:
+	return _local_player
+
+
+# Host-only: every hunter→target edge in the ring whose BOTH ends are still alive, with whether
+# each end has finished its marks (is in the hunt phase). 9D/9F read this to find pairs to cue.
+func host_hunt_edges() -> Array:
+	var edges: Array = []
+	if not multiplayer.is_server():
+		return edges
+	for hunter_peer in _ring_target:
+		var target_peer: int = int(_ring_target[hunter_peer])
+		var hunter := _players_by_peer.get(hunter_peer) as Node2D
+		var target := _players_by_peer.get(target_peer) as Node2D
+		if hunter == null or target == null or not is_instance_valid(hunter) or not is_instance_valid(target):
+			continue
+		if bool(_dead_by_peer.get(hunter_peer, false)) or bool(_dead_by_peer.get(target_peer, false)):
+			continue
+		edges.append({
+			"hunter": hunter, "target": target,
+			"hunter_peer": hunter_peer, "target_peer": target_peer,
+			"hunter_ready": _is_hunt_ready(hunter_peer),
+			"target_ready": _is_hunt_ready(target_peer),
+		})
+	return edges
+
+
+# Host-only: has this peer cleared all its NPC marks (so the human-hunt phase is open for them)?
+func _is_hunt_ready(peer: int) -> bool:
+	return int(_marks_remaining_by_peer.get(peer, marks_per_player)) <= 0

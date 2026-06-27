@@ -43,6 +43,21 @@ signal kill_landed
 ## Emitted when a suspect lock is gained/lost, so the HUD can show "LOCKED".
 signal lock_changed(is_locked: bool)
 
+## Phase 9 HOOK (PHASE_9_EXPERIMENTS.md §9A/§9E). Announces EVERY resolved kill and its outcome,
+## so experiments can react WITHOUT core knowing they exist (the one-way dependency rule, §1.2).
+## `was_valid_target` = true for a clean kill (a player or your own mark), false for a whiff (an
+## innocent civilian). Emitted on the machine that resolves the kill (the host, online).
+signal kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
+
+# === Phase 9 gates core OWNS (default = no effect, so the base game is unchanged) =============
+# Generic, harmless values an experiment may flip; nothing here references an experiment.
+## When false, this killer cannot land a kill. 9A (whiff recovery) sets it false during the
+## brief recovery window after a wrong commit, then restores it.
+var can_kill: bool = true
+## Multiplies the WRONG-target exposure penalty (1.0 = full hit). 9A lowers this when its recovery
+## window fires, so the same mistake isn't punished at full weight twice (exposure + window).
+var exposure_penalty_multiplier: float = 1.0
+
 @onready var _body: CharacterBody2D = get_parent() as CharacterBody2D
 @onready var _exposure: ExposureComponent = get_parent().get_node("ExposureComponent")
 
@@ -120,6 +135,10 @@ func request_kill(target_path: NodePath) -> void:
 	if attacks_disabled:
 		return
 
+	# Phase 9 (9A) gate — disarmed during a whiff recovery window. Default true = no effect.
+	if not can_kill:
+		return
+
 	var target := get_node_or_null(target_path) as Node2D
 	if target == null or target == _body or not is_instance_valid(target):
 		return
@@ -133,6 +152,7 @@ func request_kill(target_path: NodePath) -> void:
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
 		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 		# Stamp who eliminated this PLAYER so OnlineMatch can attribute the kill (and award a
 		# completed-contract bonus if we were their assigned hunter). NPC marks ignore this.
@@ -143,8 +163,9 @@ func request_kill(target_path: NodePath) -> void:
 	else:
 		# An innocent civilian — they still die, but you take a HEAVY exposure hit.
 		# This is the cost of a sloppy or spammed kill: cutting down the wrong person
-		# lights you up for everyone.
-		_exposure.add_exposure(wrong_commit_exposure, "innocent_kill")
+		# lights you up for everyone. (exposure_penalty_multiplier is 1.0 unless 9A softens it.)
+		_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
+		kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
 		if target.has_method("die"):
 			target.die()
 
@@ -185,19 +206,23 @@ func _clear_lock() -> void:
 func _resolve_on(target: Node2D) -> void:
 	if not _layers_allow_kill(target):
 		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
+	if not can_kill:
+		return  # Phase 9 (9A) gate — disarmed during a whiff recovery window. Default = no effect.
 	_play_strike()
 	if target.is_in_group("player") or target.is_in_group(valid_target_group_name):
 		# A real player (always fair game) or your mark — clean kill (full permanent
 		# spike). Count it before they die (killing a player ends the round).
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
 		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 		if target.has_method("die"):
 			target.die()
 	else:
 		# An innocent civilian — they still die, but you take a HEAVY exposure hit
 		# (the downside of a sloppy or spammed kill).
-		_exposure.add_exposure(wrong_commit_exposure, "innocent_kill")
+		_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
+		kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
 		if target.has_method("die"):
 			target.die()
 

@@ -2,6 +2,52 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 9 — Endgame & commitment EXPERIMENTS (opt-in, isolated, removable)  ·  PHASE_9_EXPERIMENTS.md
+
+Built inside the Phase 8 branch. A batch of *feel* experiments for two problems: rewarding map-smart
+discipline, and giving the endgame ways to resolve instead of stalling. **Every experiment is OFF by
+default** — the base game runs identically with the whole phase present. Targeted at the ONLINE match
+(the only surface with two humans, which is what the phase is judged on), server-authoritative.
+
+**The removability architecture (§1):**
+- **`ExperimentFlags` autoload** — one master bool per experiment, all `false`. The host's copy governs.
+- **Folder-scan loader** — `online_match._spawn_experiments()` loads whatever `.gd` files live in
+  `scripts/experiments/` and names NONE of them, so deleting an experiment file is a clean removal (the
+  delete test, §1.4). Every peer names each node after its file, so an experiment's owner-only cue RPCs
+  resolve across machines.
+- **One-way dependency (§1.2):** core emits signals / exposes read-only getters; it never references an
+  experiment. New neutral hooks core OWNS (default = no effect): `KillComponent.kill_resolved(killer,
+  victim, was_valid)` + `can_kill` gate + `exposure_penalty_multiplier`; `Npc.react_to_kill()` and
+  `Npc.walk_off_to()`; `OnlineMatch.host_kill_resolved` signal + `round_fraction()` / `host_hunt_edges()`
+  / `local_hud_layer()` accessors.
+- **Shared infra:** `components/behavior_history.gd` (inert unless 9C/9F attach it) — a host-recorded
+  rolling memory of each actor's recent tells (ran / sharp-turned / killed / used a tool).
+
+**The six (build order 9B→9A→9D→9E→9C→9F):**
+- **9B crowd_thinning** — NPCs leave the map after the round's halfway mark (walk to an exit, then
+  despawn), down to a handful by the end, sparse areas first (marks never removed). Forces an exposed
+  endgame through the world, no UI.
+- **9A whiff_recovery** — a *witnessed* wrong-target kill briefly disarms the killer (`can_kill=false`),
+  window scaling with exposure; softens the civilian-kill exposure penalty when it fires (anti-double-
+  jeopardy). Whiffing unseen falls back to the exposure cost alone. (Root mode stubbed — disarm only.)
+- **9D mutual_proximity** — two players who are each other's target and both contract-complete get a
+  symmetric hot/cold meter, NO direction, NO figure. Host computes distance, sends each only an intensity.
+- **9E crowd_reaction** — NPCs within range of a kill flinch/scatter for a moment (host drives the motion;
+  it replicates as ordinary movement), leaving a directional tell with zero UI.
+- **9C earned_read** — sustained low exposure charges a one-shot pulse (`earned_read_pulse`, default Q)
+  that lights soft AREA zones around behavioral anomalies in the crowd (never a figure — Pillar #1).
+  Host owns the charge + query; sends the earner a list of zone positions drawn by a fading overlay.
+- **9F behavioral_flag** — a reciprocal, behavior-triggered directional flag: a target who just produced
+  a tell flashes a screen-edge cue toward their AREA for the hunter (brightness scales with the target's
+  exposure; vanishes once they're on the hunter's screen), and the target gets a "spotted" cue back.
+  Overlaps the §3.1 exposure arrow — treat as a variant; don't judge both at once.
+
+**Caveats (honest):** no Godot here to compile-check — reviewed by hand; flags-off means the base game is
+unaffected regardless. The loader attaches scripts at runtime, which assumes `@rpc` registers on a
+set_script node (host-own cues are delivered directly, so worst case only *remote* clients miss a cue).
+Cue visuals (meters/markers/zones) are minimal placeholders to be tuned in playtest. Set wall mask /
+tunables per `PHASE_9_EXPERIMENTS.md`; record kept values here after playtest (§3.5).
+
 ### Session: 8-per-viewer-appearance — the §0.3 hidden-identity pillar (crowd = copies of the OTHER players)
 Phase 8 built the cosmetic *plumbing*; this lands the gameplay pillar it exists for (`buildplan.md`
 §0.3): **on your screen you never see your own look in the crowd.** Visibility (Slice B) already
