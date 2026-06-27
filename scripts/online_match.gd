@@ -473,7 +473,7 @@ func _update_local_view() -> void:
 			if _mini_map != null:
 				_mini_map.track_objective(mark)
 			if _objective_label != null:
-				_objective_label.text = "Find and eliminate your mark (gold dot)."
+				_objective_label.text = "Kill your mark (gold dot) — or hunt the other player directly."
 
 	# Resolve our opponent (known from the start) and raise the exposure arrow that
 	# points their way when they run. There are no mini-map pings for players — the

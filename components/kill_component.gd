@@ -25,10 +25,12 @@ class_name KillComponent
 ## (a stand-in for "left your screen" that works the same for both split players).
 @export var lose_range: float = 800.0
 
-## Permanent exposure when a real kill lands.
+## Permanent exposure when a real kill lands (your mark, or a real player).
 @export var kill_exposure_spike: float = 30.0
-## Permanent exposure when you commit to the WRONG person (a civilian).
-@export var wrong_commit_exposure: float = 12.0
+## Permanent exposure when you kill the WRONG person (an innocent civilian NPC). Big on
+## purpose: cutting down innocents is a glaring tell, and this is the downside that
+## punishes spamming the kill button in a crowd.
+@export var wrong_commit_exposure: float = 40.0
 
 ## Input action that locks/commits. Local co-op assigns each player their own.
 @export var action_primary_action: String = "action_primary"
@@ -114,15 +116,19 @@ func request_kill(target_path: NodePath) -> void:
 	if distance > kill_range:
 		return
 
-	if target.is_in_group("killable_for_%d" % controller):
-		# Right read — clean kill. The permanent exposure spike is the cost.
+	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
+		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
 		if target.has_method("die"):
 			target.die()
 	else:
-		# Wrong read — you lunged at a civilian. Pay the exposure tell.
-		_exposure.add_exposure(wrong_commit_exposure, "wrong_commit")
+		# An innocent civilian — they still die, but you take a HEAVY exposure hit.
+		# This is the cost of a sloppy or spammed kill: cutting down the wrong person
+		# lights you up for everyone.
+		_exposure.add_exposure(wrong_commit_exposure, "innocent_kill")
+		if target.has_method("die"):
+			target.die()
 
 
 # Lock the best suspect in front of us (any character — you might be wrong).
@@ -160,16 +166,19 @@ func _clear_lock() -> void:
 
 func _resolve_on(target: Node2D) -> void:
 	_play_strike()
-	if target.is_in_group(valid_target_group_name):
-		# Right read — clean kill (full permanent spike). Count it before they die
-		# (killing the final target ends the round and we want it scored).
+	if target.is_in_group("player") or target.is_in_group(valid_target_group_name):
+		# A real player (always fair game) or your mark — clean kill (full permanent
+		# spike). Count it before they die (killing a player ends the round).
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
 		if target.has_method("die"):
 			target.die()
 	else:
-		# Wrong read — you lunged at a civilian. Pay the exposure tell.
-		_exposure.add_exposure(wrong_commit_exposure, "wrong_commit")
+		# An innocent civilian — they still die, but you take a HEAVY exposure hit
+		# (the downside of a sloppy or spammed kill).
+		_exposure.add_exposure(wrong_commit_exposure, "innocent_kill")
+		if target.has_method("die"):
+			target.die()
 
 
 # Finds the best character to lock: roughly in front of us, within range, closest
