@@ -62,8 +62,9 @@ switch). See §1.6.
 A `git merge main` carries a fix into code Phase 10 left **unchanged** — but not code Phase 10 **rewrote
 or added**. So after the merge: **keep the fix** on conflict, **re-check Phase 10's own edits for the same
 bug** (especially the `_build_world` map-scene switch in `online_match.gd`), and **log it in `CHANGELOG.md`**.
-Phase 10 is the last phase, so there's nothing downstream to hand off to — but if you fix anything here,
-tell Aaron so it's reflected on `main`.
+**And hand it forward:** Phase 11 (`PHASE_11_TO_MAIN.md` on `phase-11-art-pipeline`) stacks on Phase 10 and
+does the same `git merge main` re-sync before it's tested — it also touches `project.godot`. When you finish
+this phase, tell Aaron what was fixed so the Phase 11 pass knows to look for it.
 
 ---
 
