@@ -22,8 +22,10 @@ const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 ## Marks each player must kill before the other player becomes a valid target.
 @export var marks_per_player: int = 1
 
-## Camera zoom for each private view. Lower than 1.0 shows a bit more map.
-@export var camera_zoom: Vector2 = Vector2(0.85, 0.85)
+## Camera zoom for each private view. Higher than 1.0 tightens the view (zoom IN);
+## ~1.1 shows roughly three-quarters of the old span — the tighter new four-zone map
+## reads better closer in (buildplan.md §7.0, note 1). Pure feel — tune freely.
+@export var camera_zoom: Vector2 = Vector2(1.1, 1.1)
 
 var _p1_viewport: SubViewport = null
 var _p2_viewport: SubViewport = null

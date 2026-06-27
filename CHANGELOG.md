@@ -2,6 +2,40 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 7 — Playtest refinement (started)  ·  buildplan.md
+
+### Session: 7.1 — the four-zone main map + first quick wins
+- **`scripts/test_map_01.gd` reworked into the FOUR-ZONE main map** (buildplan §7.1,
+  incorporating the concept I mocked up). The default map is now a tight city arena
+  split into four corner ZONES around the central fountain:
+  - **NW + SE = "street + rooftop"** (paired on a diagonal): long parallel buildings,
+    tight one-cell N–S streets, a single mid-alley → long sightlines. Marked with the
+    rooftop-stair locations (orange ▲).
+  - **NE + SW = "sewer"**: more open, scattered blocks. Marked with sewer-entrance
+    locations (green grates).
+  - A 1-cell **hub cross** of streets joins all four to the fountain.
+- **Tighter main roads (your note):** denser 25×19 grid → 1-cell streets are genuinely
+  tight, but the arena stays the same size so the crowd still spreads.
+- **Zones are derived from grid position** (`_cell_zone`), so floor colour and access-point
+  placement come free from the layout. Per-zone muted floor colours read as four distinct
+  corners while keeping characters readable (Pillar #6). All colours are `@export`.
+- **Access-point locations exposed for §7.2:** `get_rooftop_stairs()` / `get_sewer_entrances()`
+  (placed farthest-first, off the perimeter ring). Drawn as greybox markers only — NO layer
+  mechanics yet (the build plan says build geometry first, add layers on top).
+- **Teleporters now TOP ↔ BOTTOM** (note 2), still costing exposure (note 10). Trapdoor +
+  a FREE underground passage linking the two sewer corners round out the portals.
+- **Spawns** = the four ring corners (far apart, note 12); **marks** = one per quarter,
+  farthest-first so any two are screens apart (note 13).
+- **`_verify_connectivity()`** flood-fills at runtime and warns if a future LAYOUT edit
+  walls off a pocket (the flood-fill guarantee, now a live tripwire). Offline generator +
+  preview in scratchpad confirmed 0 unreachable cells before commit.
+- **Camera zoom quick win (note 1):** local co-op `camera_zoom` 0.85 → 1.1 (tighter view
+  suits the tighter map). Pure feel — still `@export`.
+- Public API (`get_player_spawns/_mark_locations/_teleport_pads/_portal_links/
+  _building_rects`) unchanged, so crowd / contract / mini-map / online all keep working.
+- **Not done yet (awaiting in-editor test):** the layer mechanics (§7.2), 2-marks-per-player
+  contract change (§7.0), and the per-viewer rendering system (§0.3).
+
 ## Phase 6 — Online multiplayer (started)  ·  version 0.6.0
 
 ### Session: 6.2 — crowd netcode + compact arena (host perf) (v0.6.5)
