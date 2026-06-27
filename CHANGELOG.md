@@ -4,6 +4,34 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7-online — up-to-4-player online (lobby + last-standing + points)  ·  v0.7.1
+Brought the offline match model (notes 6 & 7 / §7.5) onto the ONLINE path. `online_match.gd`
+was the only place still hard-wired to 2 players; the lobby + ENet/Steam transport already
+allowed 4 (`NetworkManager.MAX_PLAYERS = 4`). All host-authoritative:
+- **Target ring (`_build_target_ring`).** At match start the host builds a random single cycle,
+  so every player hunts exactly one other and is hunted by exactly one other (master_plan §7.2).
+  `_begin_target_phase`, the exposure-arrow routing, and the red reveal all read the ring. If your
+  target dies before you reach them you re-link to a live opponent (`_relink_hunters_of` →
+  `_next_living_target`) and your hunt arrow retargets (`_receive_target` rebuilds it).
+- **Players always killable already (commit 2952b05),** so elimination is effectively open; the
+  ring adds the arrow, the reveal, and the contract-completion bonus on top.
+- **Last-standing end (§7.5).** A death no longer ends the match — it ELIMINATES that player
+  (`_dead_by_peer`, body frozen on every machine via `_freeze_player` so spectators don't
+  rubber-band). The match ends only when ≤1 player is alive, or on the time limit. A mid-match
+  disconnect counts as an elimination too.
+- **Points-based winner (mirrors `LocalMatchManager`).** Host samples each living player's
+  exposure per frame, counts kills (`kill_landed`), adds the contract bonus / subtracts the death
+  penalty, plus a speed bonus. Winner = most points (ties → lowest average exposure), NOT
+  necessarily the survivor.
+- **Scoreboard + Rematch.** The binary WIN/LOSE overlay is now a points-sorted scoreboard (winner
+  in gold, "YOU" tagged, eliminated/contract flags) with a **Rematch** button: once everyone still
+  connected has voted, the host reloads the match for all (`_request_rematch` → `_do_rematch`),
+  re-running the start handshake for a fresh ring, marks, and scores.
+- **Kill attribution.** `KillComponent.request_kill` stamps `Player.last_attacker_peer` on a player
+  kill so the host can award a completed-contract bonus when your assigned hunter finishes you.
+- Known limits: late-join mid-match splices into the ring best-effort; the per-viewer APPEARANCE
+  map (never see your own look in the crowd, §0.3) is still a separate future task.
+
 ### Session: 7-online — verifying the integration (two server-authority fixes)
 Reviewed the online port (slices A–E) for server-authority + hidden-identity correctness. The
 architecture held up; found and fixed two authority gaps:

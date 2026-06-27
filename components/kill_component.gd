@@ -133,6 +133,10 @@ func request_kill(target_path: NodePath) -> void:
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		# Stamp who eliminated this PLAYER so OnlineMatch can attribute the kill (and award a
+		# completed-contract bonus if we were their assigned hunter). NPC marks ignore this.
+		if target.is_in_group("player"):
+			target.set("last_attacker_peer", controller)
 		if target.has_method("die"):
 			target.die()
 	else:

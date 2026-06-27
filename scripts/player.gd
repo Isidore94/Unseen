@@ -120,6 +120,12 @@ signal died
 ## Set once caught, so we stop and can't die twice.
 var _dead: bool = false
 
+## (Online, host-side) The peer whose kill eliminated us. The host stamps this in
+## KillComponent.request_kill just before we die, so OnlineMatch can attribute the kill (and
+## award a completed-contract bonus if our killer was our assigned hunter). −1 = not killed
+## by a player (e.g. an offline hunter bot).
+var last_attacker_peer: int = -1
+
 
 func _ready() -> void:
 	# Join the "player" group so other systems (like hunter bots) can find us by

@@ -18,6 +18,8 @@ const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
+## Reloaded on a rematch (re-runs the whole start handshake with everyone still connected).
+const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 
 ## Crowd size for the COMPACT arena (the lobby's "compact" toggle uses this instead of
 ## npc_count — roughly two-thirds, to lighten the host).
@@ -51,6 +53,25 @@ const NUM_SHEETS := 5
 ## ON so rooftops aren't a blind solo zone (a buildplan still-open decision — flip to taste).
 @export var rooftop_sees_rooftop: bool = true
 
+# === scoring (buildplan §7.5 — winner = most points; mirrors LocalMatchManager) ========
+# The match runs until ONE player is left alive (or time runs out); the WINNER is then
+# whoever has the most points — NOT necessarily the survivor. These tunables mirror the
+# offline LocalMatchManager so online and offline score the same way.
+## Seconds before the match times out and is scored as-is (0 = no limit).
+@export var round_time_limit: float = 300.0
+## Points per % of "ghostliness" (100 − your average exposure). Low exposure is the fantasy.
+@export var exposure_weight: float = 5.0
+## Starting speed bonus; it bleeds away over the match, rewarding a fast clean game.
+@export var speed_bonus_cap: float = 500.0
+@export var speed_bleed_per_second: float = 2.0
+## Points for each clean kill (your marks + the player you eliminate).
+@export var kill_points: int = 100
+## Awarded for COMPLETING your contract (killing your assigned target) — an achievement that
+## scores points, not a circular "you won" flag (the winner is decided from the totals).
+@export var contract_bonus: int = 500
+## Subtracted from a player who is eliminated — being killed caps what you can still earn.
+@export var death_penalty: int = 300
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -71,11 +92,29 @@ var _mark_by_peer: Dictionary = {}
 ## when this reaches 0 (you must clear BOTH marks first — note 9).
 var _marks_remaining_by_peer: Dictionary = {}
 
-## Host-only contract state: each peer's phase ("marks" -> "target" -> "done") and,
-## once in the target phase, which peer they are hunting.
+## Host-only contract state: each peer's phase ("marks" -> "target" -> "done").
 var _phase_by_peer: Dictionary = {}
-var _hunter_target: Dictionary = {}  # hunter_peer -> target_peer
-var _round_over: bool = false
+## The TARGET RING (host-only): hunter_peer -> the peer they are assigned to hunt. Fixed as a
+## single cycle at match start so everyone has exactly one target and is exactly one other's
+## prey (master_plan §7.2). If your target dies before you reach them, you re-link to the next
+## living player in the ring (_next_living_target) so your arrow/reveal stay meaningful.
+var _ring_target: Dictionary = {}  # hunter_peer -> target_peer
+## True once the WHOLE match is decided (one player left, or time up). A single death no longer
+## ends the match (buildplan §7.5) — it only eliminates that player.
+var _match_over: bool = false
+
+## Host-only scoring accumulators, one entry per peer (mirrors LocalMatchManager).
+var _player_num: Dictionary = {}        # peer -> 1-based display number (spawn order)
+var _exposure_sum: Dictionary = {}      # peer -> summed exposure samples
+var _exposure_samples: Dictionary = {}  # peer -> sample count
+var _kills_by_peer: Dictionary = {}     # peer -> clean kills landed
+var _completed_by_peer: Dictionary = {} # peer -> killed their assigned target?
+var _dead_by_peer: Dictionary = {}      # peer -> eliminated?
+var _elapsed: float = 0.0               # match time, host clock (drives speed bonus + timeout)
+
+## Host-only: peers that have pressed "Rematch" on the end screen. When everyone still
+## connected has voted, the host reloads the match for all of them.
+var _rematch_votes: Dictionary = {}
 
 ## Lobby → match readiness gate. The clients we expect (everyone who was in the lobby),
 ## which of them have reported their match scene ready, and whether we've begun. Nothing
@@ -216,9 +255,10 @@ func _maybe_begin_match() -> void:
 	for client_peer in _expected_clients:
 		_spawn_player_for_peer(client_peer)
 	_spawn_crowd()
+	_build_target_ring()
 	for peer_id in _players_by_peer:
 		_assign_mark_for_peer(peer_id)
-	_notify_opponents()
+	_notify_targets()
 
 
 func _spawn_crowd() -> void:
@@ -255,30 +295,62 @@ func _request_spawn() -> void:
 		# A late joiner after the match already started — bring them in directly.
 		_spawn_player_for_peer(requesting_peer)
 		_assign_mark_for_peer(requesting_peer)
-		_notify_opponents()
+		_insert_into_ring(requesting_peer)
+		_notify_targets()
 	else:
 		# Still in the start handshake: mark this client ready, begin once all are.
 		_ready_clients[requesting_peer] = true
 		_maybe_begin_match()
 
 
-# Host-only: privately tell each player which node is their opponent (2-player: the
-# other one). Owner-only, so nobody else learns it. Used by the exposure arrow.
-func _notify_opponents() -> void:
+# Host-only: build the TARGET RING — a random single cycle over all players, so each peer
+# hunts exactly one other and is hunted by exactly one other (master_plan §7.2). One player =
+# empty; two = the mutual pair; more = one big loop.
+func _build_target_ring() -> void:
 	if not multiplayer.is_server():
 		return
-	for peer_id in _players_by_peer:
-		var opponent_peer := _other_peer(peer_id)
-		if opponent_peer != 0:
-			var opponent := _players_by_peer[opponent_peer] as Node
-			_receive_opponent.rpc_id(peer_id, String(opponent.name))
+	var peers: Array = _players_by_peer.keys()
+	if peers.size() < 2:
+		return
+	peers.shuffle()
+	for i in peers.size():
+		var hunter: int = peers[i]
+		var prey: int = peers[(i + 1) % peers.size()]
+		_ring_target[hunter] = prey
 
 
-# Owner-only: remember our opponent's node name; the per-frame view resolves it.
+# Host-only: privately tell each player the node name of their assigned target. Owner-only, so
+# nobody else learns it. The exposure arrow tracks them (and flips to the hunt flash once you
+# finish your marks). Calling _send_target_to again RETARGETS that player (used on reassignment).
+func _notify_targets() -> void:
+	if not multiplayer.is_server():
+		return
+	for peer_id in _ring_target:
+		_send_target_to(peer_id)
+
+
+func _send_target_to(peer_id: int) -> void:
+	var target_peer: int = int(_ring_target.get(peer_id, 0))
+	if target_peer == 0 or not _players_by_peer.has(target_peer):
+		return
+	var target := _players_by_peer[target_peer] as Node
+	if target == null or not is_instance_valid(target):
+		return
+	_receive_target.rpc_id(peer_id, String(target.name))
+
+
+# Owner-only: our assigned target's node name. The first arrives at match start; a later one
+# (after our target was killed) RETARGETS us — drop the old resolved target + arrow so the
+# per-frame view rebuilds them for the new target.
 @rpc("authority", "call_local", "reliable")
-func _receive_opponent(opponent_name: String) -> void:
-	if _my_target_name == "":
-		_my_target_name = opponent_name
+func _receive_target(target_name: String) -> void:
+	if target_name == _my_target_name:
+		return
+	_my_target_name = target_name
+	_my_target = null
+	if _target_arrow != null and is_instance_valid(_target_arrow):
+		_target_arrow.queue_free()
+	_target_arrow = null
 
 
 func _spawn_player_for_peer(peer_id: int) -> void:
@@ -291,14 +363,29 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	_players_by_peer[peer_id] = character
 	_next_spawn_index += 1
 
+	# Start this peer's score row (host-only). _player_num is 1-based spawn order, for the
+	# scoreboard ("Player 1/2/3/4").
+	_player_num[peer_id] = _next_spawn_index
+	_exposure_sum[peer_id] = 0.0
+	_exposure_samples[peer_id] = 0
+	_kills_by_peer[peer_id] = 0
+	_completed_by_peer[peer_id] = false
+	_dead_by_peer[peer_id] = false
+
 	# Host relays THIS player's exposure to its owner only (private — §4). The signal
 	# fires only when the value changes, so this isn't a constant stream.
 	var exposure := character.get_node_or_null("ExposureComponent")
 	if exposure != null:
 		exposure.exposure_changed.connect(_on_player_exposure_changed.bind(peer_id))
 
-	# Host watches for this player being killed (their death ends the round).
+	# Host watches for this player being killed (eliminates them; ends the match if last).
 	character.died.connect(_on_player_killed.bind(peer_id))
+
+	# Count this player's clean kills for scoring. request_kill emits kill_landed on the HOST
+	# (where it resolves), so this fires even though the client's KillComponent is frozen here.
+	var kill := character.get_node_or_null("KillComponent") as KillComponent
+	if kill != null:
+		kill.kill_landed.connect(_on_peer_kill_landed.bind(peer_id))
 
 	# Host owns this player's item kit: relay cloak to the opponent's arrow and push the
 	# charges readout to the owner whenever it changes (Slice D).
@@ -315,15 +402,20 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 # to their opponent (so the opponent's exposure arrow can react when this player runs).
 func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 	_receive_exposure.rpc_id(peer_id, value)
-	var opponent_peer := _other_peer(peer_id)
-	if opponent_peer != 0:
-		_receive_opponent_exposure.rpc_id(opponent_peer, value)
-	# BLUE reveal (§7.4): hitting 100% exposure reveals your look to the OTHERS (once).
+	# Feed this player's exposure to whoever is HUNTING them, so that hunter's exposure arrow
+	# reacts when their prey runs loud.
+	var hunter_peer := _hunter_of_target(peer_id)
+	if hunter_peer != 0:
+		_receive_opponent_exposure.rpc_id(hunter_peer, value)
+	# BLUE reveal (§7.4): hitting 100% exposure reveals your look to EVERY other living player
+	# (you've become a beacon), once.
 	if value >= 100.0 and not bool(_exposure_revealed.get(peer_id, false)):
 		_exposure_revealed[peer_id] = true
 		var character := _players_by_peer.get(peer_id) as Player
-		if character != null and opponent_peer != 0:
-			_receive_exposure_reveal.rpc_id(opponent_peer, int(character.appearance_index))
+		if character != null:
+			for other_peer in _players_by_peer:
+				if other_peer != peer_id and not bool(_dead_by_peer.get(other_peer, false)):
+					_receive_exposure_reveal.rpc_id(other_peer, int(character.appearance_index))
 
 
 # Owner-only: our opponent's exposure, fed to our local copy of them so the exposure
@@ -354,7 +446,14 @@ func _on_player_left(peer_id: int) -> void:
 		if is_instance_valid(character):
 			character.queue_free()  # the spawner replicates the removal to clients
 		_players_by_peer.erase(peer_id)
-	_maybe_begin_match()  # in case we were waiting on the peer who just left
+	# A mid-match departure counts as an elimination: re-link anyone hunting them and end the
+	# match if only one player is left.
+	if _match_begun and not _match_over:
+		_dead_by_peer[peer_id] = true
+		_relink_hunters_of(peer_id)
+		if _alive_count() <= 1:
+			_end_match("last_standing")
+	_maybe_begin_match()  # in case we were waiting on the peer who just left (pre-start only)
 	_update_status()
 
 
@@ -512,18 +611,17 @@ func _on_mark_killed(peer_id: int, mark_name: String) -> void:
 func _begin_target_phase(peer_id: int) -> void:
 	if not multiplayer.is_server() or _phase_by_peer.get(peer_id, "marks") == "target":
 		return
-	var opponent_peer := _other_peer(peer_id)
-	if opponent_peer == 0:
+	var target_peer := int(_ring_target.get(peer_id, 0))
+	if target_peer == 0 or not _players_by_peer.has(target_peer):
 		return  # nobody to hunt yet
 	_phase_by_peer[peer_id] = "target"
-	_hunter_target[peer_id] = opponent_peer
-	var opponent := _players_by_peer[opponent_peer] as Player
-	opponent.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
+	var target := _players_by_peer[target_peer] as Player
+	target.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
 	_enter_hunt_phase.rpc_id(peer_id)
 	# RED reveal (§7.4): the FIRST player to finish their marks learns their target's look.
 	if not _target_reveal_awarded:
 		_target_reveal_awarded = true
-		_receive_target_reveal.rpc_id(peer_id, int(opponent.appearance_index))
+		_receive_target_reveal.rpc_id(peer_id, int(target.appearance_index))
 
 
 # Returns any other living player's peer id (the opponent). 2-player for now.
@@ -548,54 +646,233 @@ func _enter_hunt_phase() -> void:
 		_target_arrow.set_flashing(true)
 
 
-# === win / lose =============================================================
+# === elimination, scoring & match end (buildplan §7.5) ======================
 
-# Host-side: a player was killed → the round is over; whoever was hunting them wins.
+# Host-side: this player was killed. A death no longer ends the match — it ELIMINATES that
+# player (their body is already frozen by Player.die). We attribute the kill, re-link anyone
+# who was hunting the dead player onto a live target, and end the match only when ONE is left.
 func _on_player_killed(loser_peer: int) -> void:
-	if not multiplayer.is_server() or _round_over:
+	if not multiplayer.is_server() or _match_over:
 		return
-	_round_over = true
-	var winner_peer := _hunter_of(loser_peer)
-	_declare_round_over.rpc(winner_peer)
+	if bool(_dead_by_peer.get(loser_peer, false)):
+		return  # already eliminated
+	_dead_by_peer[loser_peer] = true
+
+	# Attribute the kill. request_kill stamps last_attacker_peer on the victim. If the killer
+	# was this player's assigned hunter, it COMPLETES their contract (the +contract_bonus).
+	var loser := _players_by_peer.get(loser_peer) as Player
+	var killer_peer: int = int(loser.get("last_attacker_peer")) if loser != null else -1
+	if killer_peer > 0 and int(_ring_target.get(killer_peer, 0)) == loser_peer:
+		_completed_by_peer[killer_peer] = true
+		_phase_by_peer[killer_peer] = "done"
+
+	# Freeze the corpse on EVERY machine. The host already ran die() on its own copy via the
+	# kill; this mirrors it so the dead player's own client stops predicting movement (no
+	# spectator rubber-banding) and everyone's arrows treat them as dead.
+	if loser != null:
+		_freeze_player.rpc(String(loser.name))
+
+	_relink_hunters_of(loser_peer)
+	_update_status()
+	if _alive_count() <= 1:
+		_end_match("last_standing")
 
 
-func _hunter_of(loser_peer: int) -> int:
-	for hunter_peer in _hunter_target:
-		if _hunter_target[hunter_peer] == loser_peer:
-			return hunter_peer
-	return _other_peer(loser_peer)  # fallback: the other player
-
-
-# Everyone: show the result for THIS machine and freeze the match.
+# Everyone: freeze a killed player's body locally (idempotent — Player.die guards re-death).
 @rpc("authority", "call_local", "reliable")
-func _declare_round_over(winner_peer: int) -> void:
-	var we_won := winner_peer == multiplayer.get_unique_id()
-	_show_end_overlay(we_won)
+func _freeze_player(player_name: String) -> void:
+	if _players_parent == null:
+		return
+	var node := _players_parent.get_node_or_null(player_name) as Player
+	if node != null and not node.is_dead():
+		node.die()
+
+
+# Re-link anyone whose assigned target is `gone_peer` (just died or left) onto a live opponent,
+# so their arrow/reveal keep pointing somewhere real and a contract is still reachable.
+func _relink_hunters_of(gone_peer: int) -> void:
+	for hunter in _ring_target.keys():
+		if int(_ring_target[hunter]) == gone_peer and not bool(_dead_by_peer.get(hunter, false)):
+			var new_target := _next_living_target(hunter)
+			if new_target != 0 and _players_by_peer.has(new_target):
+				_ring_target[hunter] = new_target
+				(_players_by_peer[new_target] as Node).add_to_group("killable_for_%d" % hunter)
+				if _phase_by_peer.get(hunter, "marks") == "target":
+					_send_target_to(hunter)  # retargets their hunt arrow
+
+
+# Any living player other than `hunter` (used to re-link a hunter whose target just died).
+func _next_living_target(hunter: int) -> int:
+	for p in _players_by_peer:
+		if p != hunter and not bool(_dead_by_peer.get(p, false)):
+			return p
+	return 0
+
+
+func _alive_count() -> int:
+	var n := 0
+	for p in _players_by_peer:
+		if not bool(_dead_by_peer.get(p, false)):
+			n += 1
+	return n
+
+
+# The peer currently hunting `prey_peer` (0 if none). Used to route exposure → the right arrow.
+func _hunter_of_target(prey_peer: int) -> int:
+	for hunter in _ring_target:
+		if int(_ring_target[hunter]) == prey_peer:
+			return hunter
+	return 0
+
+
+# Host-side: tally a clean kill for scoring (fired by the killer's KillComponent on the host).
+func _on_peer_kill_landed(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_kills_by_peer[peer_id] = int(_kills_by_peer.get(peer_id, 0)) + 1
+
+
+# Splice a late joiner into the ring so it stays one connected loop: pick a living player L,
+# take L's current target T, then set L -> new_peer -> T.
+func _insert_into_ring(new_peer: int) -> void:
+	var existing: Array = []
+	for p in _ring_target:
+		if p != new_peer and not bool(_dead_by_peer.get(p, false)):
+			existing.append(p)
+	if existing.is_empty():
+		var other := _other_peer(new_peer)
+		if other != 0:
+			_ring_target[new_peer] = other
+			_ring_target[other] = new_peer
+		return
+	existing.shuffle()
+	var link: int = existing[0]
+	var their_target: int = int(_ring_target.get(link, 0))
+	_ring_target[link] = new_peer
+	_ring_target[new_peer] = their_target if their_target != 0 else link
+
+
+# Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
+# (for the round average), and end on the time limit. Stops once the match is decided.
+func _host_score_tick(delta: float) -> void:
+	if not _match_begun or _match_over:
+		return
+	_elapsed += delta
+	for peer_id in _players_by_peer:
+		if bool(_dead_by_peer.get(peer_id, false)):
+			continue
+		var character := _players_by_peer[peer_id] as Player
+		if character == null or not is_instance_valid(character) or character.exposure_component == null:
+			continue
+		_exposure_sum[peer_id] = float(_exposure_sum.get(peer_id, 0.0)) + character.exposure_component.exposure
+		_exposure_samples[peer_id] = int(_exposure_samples.get(peer_id, 0)) + 1
+	if round_time_limit > 0.0 and _elapsed >= round_time_limit:
+		_end_match("timeout")
+
+
+# Host-only: score everyone, sort highest-first (ties → lowest average exposure), and broadcast
+# the scoreboard so every machine shows the same result and winner.
+func _end_match(reason: String) -> void:
+	if _match_over:
+		return
+	_match_over = true
+	var rows: Array = []
+	for peer_id in _players_by_peer:
+		var row := _score_for_peer(peer_id)
+		row["peer"] = peer_id
+		row["num"] = int(_player_num.get(peer_id, 0))
+		rows.append(row)
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a["total"]) != int(b["total"]):
+			return int(a["total"]) > int(b["total"])
+		return float(a["avg_exposure"]) < float(b["avg_exposure"]))
+	var winner_peer: int = int(rows[0]["peer"]) if not rows.is_empty() else 0
+	_declare_match_over.rpc(rows, winner_peer, reason)
+
+
+# Host-only: one player's score breakdown (mirrors LocalMatchManager._score_for_player).
+func _score_for_peer(peer_id: int) -> Dictionary:
+	var samples: int = maxi(1, int(_exposure_samples.get(peer_id, 0)))
+	var avg_exposure: float = float(_exposure_sum.get(peer_id, 0.0)) / float(samples)
+	var exposure_score: int = int(round((100.0 - avg_exposure) * exposure_weight))
+	var speed_score: int = int(maxf(0.0, speed_bonus_cap - _elapsed * speed_bleed_per_second))
+	var kill_score: int = int(_kills_by_peer.get(peer_id, 0)) * kill_points
+	var outcome_bonus: int = 0
+	if bool(_completed_by_peer.get(peer_id, false)):
+		outcome_bonus += contract_bonus
+	if bool(_dead_by_peer.get(peer_id, false)):
+		outcome_bonus -= death_penalty
+	var total: int = maxi(0, exposure_score + speed_score + kill_score + outcome_bonus)
+	return {
+		"avg_exposure": avg_exposure,
+		"kills": int(_kills_by_peer.get(peer_id, 0)),
+		"completed": bool(_completed_by_peer.get(peer_id, false)),
+		"dead": bool(_dead_by_peer.get(peer_id, false)),
+		"total": total,
+	}
+
+
+# Everyone: freeze the match and show the scoreboard (winner highlighted, "YOU" tagged).
+@rpc("authority", "call_local", "reliable")
+func _declare_match_over(rows: Array, winner_peer: int, reason: String) -> void:
 	get_tree().paused = true
+	_show_scoreboard(rows, winner_peer, reason)
 
 
-func _show_end_overlay(we_won: bool) -> void:
+func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
+	var my_id := multiplayer.get_unique_id()
 	var overlay := CanvasLayer.new()
 	overlay.name = "EndOverlay"
-	# Keep working while the tree is paused, so the button still responds.
-	overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	overlay.process_mode = Node.PROCESS_MODE_ALWAYS  # keep the buttons live while paused
 	add_child(overlay)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.6)
+	dim.color = Color(0, 0, 0, 0.72)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	overlay.add_child(dim)
 
 	var box := VBoxContainer.new()
 	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.add_theme_constant_override("separation", 16)
+	box.add_theme_constant_override("separation", 10)
 	overlay.add_child(box)
 
-	var result := Label.new()
-	result.text = "YOU WIN" if we_won else "YOU LOSE"
-	result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	result.add_theme_font_size_override("font_size", 56)
-	box.add_child(result)
+	var headline := Label.new()
+	var we_won := winner_peer == my_id
+	headline.text = "YOU WIN" if we_won else ("PLAYER %d WINS" % _num_of(rows, winner_peer))
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	headline.add_theme_font_size_override("font_size", 52)
+	box.add_child(headline)
+
+	var sub := Label.new()
+	sub.text = "Last assassin standing — most points wins" if reason == "last_standing" else "Time up — most points wins"
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(sub)
+
+	# One line per player, already sorted highest-first.
+	for row in rows:
+		var line := Label.new()
+		var you_tag: String = "   (YOU)" if int(row["peer"]) == my_id else ""
+		var status: String = ""
+		if bool(row["dead"]):
+			status = "   [eliminated]"
+		elif bool(row["completed"]):
+			status = "   [contract ✓]"
+		line.text = "P%d — %d pts   ·   kills %d   ·   avg exp %d%%%s%s" % [
+			int(row["num"]), int(row["total"]), int(row["kills"]),
+			int(round(float(row["avg_exposure"]))), status, you_tag]
+		if int(row["peer"]) == winner_peer:
+			line.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))  # gold winner
+		line.add_theme_font_size_override("font_size", 20)
+		box.add_child(line)
+
+	var rematch_button := Button.new()
+	rematch_button.text = "Rematch"
+	rematch_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	box.add_child(rematch_button)
+	rematch_button.pressed.connect(func() -> void:
+		rematch_button.disabled = true
+		rematch_button.text = "Waiting for players…"
+		_request_rematch.rpc_id(1))
 
 	var menu_button := Button.new()
 	menu_button.text = "Back to menu"
@@ -603,8 +880,37 @@ func _show_end_overlay(we_won: bool) -> void:
 	box.add_child(menu_button)
 	menu_button.pressed.connect(func() -> void:
 		get_tree().paused = false
-		_return_to_menu()
-	)
+		_return_to_menu())
+
+
+# The 1-based player number for a peer, read from the scoreboard rows.
+func _num_of(rows: Array, peer_id: int) -> int:
+	for row in rows:
+		if int(row["peer"]) == peer_id:
+			return int(row["num"])
+	return 0
+
+
+# Host-only: collect rematch votes. Once everyone still connected has voted, reload the match
+# for all of them — re-running the start handshake gives a fresh ring, marks, and scores.
+@rpc("any_peer", "call_local", "reliable")
+func _request_rematch() -> void:
+	if not multiplayer.is_server():
+		return
+	var voter := multiplayer.get_remote_sender_id()
+	if voter == 0:
+		voter = multiplayer.get_unique_id()
+	_rematch_votes[voter] = true
+	var needed := multiplayer.get_peers().size() + 1  # all clients + the host
+	if _rematch_votes.size() >= needed:
+		_do_rematch.rpc()
+
+
+# Everyone: clear the pause and reload the match scene together for a fresh round.
+@rpc("authority", "call_local", "reliable")
+func _do_rematch() -> void:
+	get_tree().paused = false
+	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
 
 
 # Owner-only: the host tells US which crowd NPCs are our marks. We just remember the
@@ -631,6 +937,8 @@ func _notify_mark_down(mark_name: String) -> void:
 # === this machine's private view (host AND client each have one) ============
 
 func _process(delta: float) -> void:
+	if NetworkManager.is_host():
+		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
 	_update_visibility()
@@ -934,22 +1242,22 @@ func _refresh_item_label() -> void:
 		int(_item_state["smoke"]), smoke_on, int(_item_state["cloak"]), cloak_on]
 
 
-# HOST: a player's item turned on. Update the owner's readout; for CLOAK, suppress the
-# opponent's hunt arrow that points at them (their exposure arrow still fires).
+# HOST: a player's item turned on. Update the owner's readout; for CLOAK, suppress the hunt
+# arrow held by whoever is HUNTING this player (their exposure arrow still fires).
 func _on_item_activated(which: int, _duration: float, peer_id: int) -> void:
 	_push_item_state_to(peer_id)
 	if which == ItemComponent.Item.CLOAK:
-		var opponent := _other_peer(peer_id)
-		if opponent != 0:
-			_set_opponent_arrow_suppressed.rpc_id(opponent, true)
+		var hunter := _hunter_of_target(peer_id)
+		if hunter != 0:
+			_set_opponent_arrow_suppressed.rpc_id(hunter, true)
 
 
 func _on_item_expired(which: int, peer_id: int) -> void:
 	_push_item_state_to(peer_id)
 	if which == ItemComponent.Item.CLOAK:
-		var opponent := _other_peer(peer_id)
-		if opponent != 0:
-			_set_opponent_arrow_suppressed.rpc_id(opponent, false)
+		var hunter := _hunter_of_target(peer_id)
+		if hunter != 0:
+			_set_opponent_arrow_suppressed.rpc_id(hunter, false)
 
 
 # HOST: send a player their authoritative item charges + active state (owner-only).
