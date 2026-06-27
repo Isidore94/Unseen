@@ -1,10 +1,11 @@
 # MULTIPLAYER_PLAN.md — UNSEEN online (Phase 6)
 
-> The detailed build plan for **online multiplayer**. It expands `UNSEEN_BUILD_PLAN.md`
-> §Phase 6 — it does not replace it. Read the build plan's §1 (principles) and §Phase 6
-> first; read `master_plan.md` §6 (kill) and §3 (exposure) for the rules we must enforce
-> server-side. Mechanics are unchanged here — this is purely *how the game runs across
-> machines*.
+> The detailed build plan for **online multiplayer** (the **Phase 6** transport/netcode layer,
+> now built — kept as reference). The historical principles/sequencing it cites lived in the old
+> `UNSEEN_BUILD_PLAN.md` (now retired); today the active plan is `buildplan.md` and the coding
+> rules live in `CLAUDE.md`. Read `master_plan.md` §6 (kill) and §3 (exposure) for the rules we
+> must enforce server-side. Mechanics are unchanged here — this is purely *how the game runs
+> across machines*.
 
 **Scope of this plan:** 2–4 players, listen-server (one player hosts), Godot's built-in
 high-level multiplayer for the game logic, Steam relay for connectivity. **First milestone
