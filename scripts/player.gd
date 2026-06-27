@@ -37,6 +37,8 @@ class_name Player
 @export var drop_down_action: String = "drop_down"
 ## Claim the access point you're on for the rest of the match (pays exposure). §7.3.
 @export var secondary_action: String = "action_secondary"
+## Play your equipped EMOTE cosmetic (Input Map action — never a hardcoded key). §6.
+@export var emote_action: String = "emote"
 ## Per-player debounce (seconds) between access-point uses, so a press can't flip-flop you.
 @export var access_reuse_cooldown: float = 0.8
 
@@ -392,10 +394,22 @@ func _move_with(direction: Vector2, run_held: bool) -> void:
 	move_and_slide()
 
 
+# Play this player's equipped EMOTE through the rig's one animation entry point (§6).
+func _play_emote() -> void:
+	var visual := get_node_or_null("CharacterVisual")
+	if visual != null and visual.has_method("play_cosmetic_animation"):
+		visual.call("play_cosmetic_animation", CosmeticItem.Slot.EMOTE)
+
+
 # === layers: rooftops & sewers (buildplan §7.2) ============================
 # Read this player's own input to climb/drop/enter/exit. Called only for the human at
 # this machine (offline: always; online: only for the locally-controlled character).
 func _handle_layer_input(delta: float) -> void:
+	# EMOTE (§6): manual, mid-match, this player's own input. Fires the equipped EMOTE
+	# cosmetic on our rig through the one animation entry point — stubbed pop for now.
+	if Input.is_action_just_pressed(emote_action):
+		_play_emote()
+
 	if layer_component == null:
 		return
 	if _access_reuse_timer > 0.0:

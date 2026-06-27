@@ -112,6 +112,11 @@ var _weapon_palette: Color = Color(1, 1, 1, 1)
 ## real animations / VFX listen here — today the handler just plays a placeholder pop.
 signal cosmetic_animation_played(animation_slot: int, cosmetic_id: StringName)
 
+## Emitted on the VICTIM's rig the moment they're killed — the seam for the brief
+## "kill card" the victim sees on death (§6). Carries the killer's body index so a real
+## card can later show who got them. A no-op today; the event is what we wire now.
+signal kill_card_requested(killer_appearance: int)
+
 
 func _ready() -> void:
 	# BODY — the animated sheet. Built first so it sits at the bottom (z=0).
@@ -215,6 +220,13 @@ func play_cosmetic_animation(animation_slot: int) -> void:
 	# win / emote animations replace this body without changing any caller.
 	_strike_timer = STRIKE_DURATION
 	cosmetic_animation_played.emit(animation_slot, id)
+
+
+# The brief card the VICTIM sees when killed (§6). STUB: a no-op handler that just fires
+# the event — real kill-card art/VFX listen on `kill_card_requested` later, content-only.
+# `killer_appearance` is the killer's body index (-1 if unknown).
+func show_kill_card(killer_appearance: int = -1) -> void:
+	kill_card_requested.emit(killer_appearance)
 
 
 # Put on one of the body sheets. `index` is just data — kept as the BODY-only shim used by

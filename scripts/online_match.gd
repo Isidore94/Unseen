@@ -907,6 +907,18 @@ func _declare_match_over(rows: Array, winner_peer: int, reason: String) -> void:
 	_show_scoreboard(rows, winner_peer, reason)
 
 
+# Fire the local winner's equipped WIN_ANIM on their own rig through the one animation
+# entry point (§6). Finds our character by the peer id that controls it. Stub pop today.
+func _play_local_win_animation() -> void:
+	var my_id := multiplayer.get_unique_id()
+	for node in get_tree().get_nodes_in_group("player"):
+		if int(node.get("controlling_peer_id")) == my_id:
+			var visual := node.get_node_or_null("CharacterVisual")
+			if visual != null and visual.has_method("play_cosmetic_animation"):
+				visual.call("play_cosmetic_animation", CosmeticItem.Slot.WIN_ANIM)
+			return
+
+
 func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	var my_id := multiplayer.get_unique_id()
 	var overlay := CanvasLayer.new()
@@ -926,6 +938,8 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 
 	var headline := Label.new()
 	var we_won := winner_peer == my_id
+	if we_won:
+		_play_local_win_animation()  # fire the winner's WIN_ANIM cosmetic on the results screen (§6)
 	headline.text = "YOU WIN" if we_won else ("PLAYER %d WINS" % _num_of(rows, winner_peer))
 	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	headline.add_theme_font_size_override("font_size", 52)
