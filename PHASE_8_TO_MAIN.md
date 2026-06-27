@@ -44,6 +44,37 @@ If STOP, integrate Phase 7 first (`PHASE_7_TO_MAIN.md` on the `phase-7-online-in
 
 ---
 
+## 1.5 Re-sync this branch with `main` FIRST (absorb Phase 7 fixes)  ·  **do not skip**
+
+These branches are **stacked**: this Phase 8 branch contains a FROZEN copy of the Phase 7 code as it was
+when this branch was cut. Any fix made to Phase 7 during *its* integration now lives on `main` but is
+**NOT** in this branch yet. Pull it in and resolve before you test, so what you test is what will land:
+
+```bash
+git checkout claude/phase-8-monetization-oqu6sd
+git merge main          # absorb every Phase 7 fix that reached main
+tools/validate.sh       # re-verify after the merge
+git push origin claude/phase-8-monetization-oqu6sd
+```
+Resolve any conflict by **keeping the fix** from `main`. Conflicts are possible in files Phase 8 also
+edited — e.g. `npc.gd` and `kill_component.gd` (Phase 8 added cosmetic hooks to them). See §1.6.
+
+## 1.6 Forward-propagation of fixes (the contract that keeps stacked branches correct)
+
+A `git merge main` carries a fix into code this phase left **unchanged** — but it does **not** fix code this
+phase **rewrote or newly added**. So after the merge, for every earlier-phase fix:
+
+1. **Keep the fix** when resolving conflicts (don't let this branch's older version win).
+2. **Consciously re-check this phase's own code for the SAME bug** and re-apply it by hand where the merge
+   couldn't reach (anything Phase 8 rewrote/added).
+3. **Record it in `CHANGELOG.md`** so the chain is traceable.
+
+**And hand it forward:** any fix that ends up on `main` here must still reach **Phase 9** — that branch
+does the same `git merge main` re-sync before it's tested (its `PHASE_9_TO_MAIN.md` §1.5). When you finish
+this phase, tell Aaron explicitly what was fixed so the Phase 9 pass knows to look for it.
+
+---
+
 ## 2. Golden rules
 
 1. **`tools/validate.sh` passes before you advance main** (the compile gate the cloud author can't run).
