@@ -9,6 +9,19 @@ is generated cold from a text prompt with no reference.
 If you change nothing else here, obey this: **one base civilian, generated once, hand-
 finished, then reused as the reference for everything.**
 
+## LOCKED ART DIRECTION (Aaron's call — see `ART_PIPELINE.md` §0/§2)
+- **Full pixel art, map included.** The whole game is pixel — one coherent identity.
+- **Clean / refined, NOT chunky/retro.** Muted palette, soft ambient shadows, orderly tiling,
+  selective edge-smoothing in the hand-finish — an "AC-style clean urban" feel.
+- **32×32 base, top-down, 4-direction, pivot at the feet.** (Clean comes from craft + palette,
+  not from going hi-res. Flippable to 48px only if you accept the rig rework + higher cost.)
+- **Starting master palette — muted urban** (refine from the first hand-finished base civilian + tile,
+  then enforce it in `tools/ingest_sprite.py`):
+  - stone / paving: `#cbc4b2 #c3bca9 #aaa28d #8f8a7e`
+  - clay roof / wood: `#b08a5e #a9845a #8f6f48 #6e5436` · highlight `#cda978`
+  - slate / shadow: `#6f6678 #4a525a` · water: `#3a7fa8 #4f93bc`
+  - skin / hair / outline: `#d9a878 #3a2c22 #33303a` · void `#191a1d`
+
 ---
 
 ## 1. The art-direction decision (read before generating anything)
