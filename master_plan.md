@@ -1,7 +1,7 @@
 # UNSEEN — GAME MECHANICS
 ### Master design reference for all gameplay systems
 
-> **Purpose:** This file is the single source of truth for *what the game is and how it plays* — every mechanic, rule, and design decision we've settled on. It pairs with `UNSEEN_BUILD_PLAN.md` (which covers *how and when to build*). When implementing any system, read the relevant section here for intent, then check the build plan for sequencing. Where a value is "tunable," it must be an `@export` variable, not a hardcoded number.
+> **Purpose:** This file is the single source of truth for *what the game is and how it plays* — every mechanic, rule, and design decision we've settled on. It pairs with `buildplan.md` (which covers *how and when to build*). When implementing any system, read the relevant section here for intent, then check the build plan for sequencing. Where a value is "tunable," it must be an `@export` variable, not a hardcoded number.
 
 ---
 
@@ -312,7 +312,7 @@ If a future feature conflicts with one of these, the feature is wrong:
 
 ---
 
-*Mechanics reference v0.4 — June 2026. Pairs with UNSEEN_BUILD_PLAN.md.*
+*Mechanics reference v0.4 — June 2026. Pairs with buildplan.md.*
 *v0.2: exposure arrow (§3.1), single-occupancy passages (§8.1a), asymmetric classes (§9A).*
 *v0.3: color-coded arrows + sameness guardrail (§3.1), teleport pads + free-teleport reward (§8.5).*
 *v0.4: intended exposure arc / pacing model (§3), death + casual/ranked rules, no respawns (§6.1), speed-reward target pings (§7.1), how-you-kill micro-decision (§7.2), Poisoner & Crossbow rebalanced (§9A), exposure-scaled teleport cast time (§8.5), Known Balance Risks (§15).*

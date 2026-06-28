@@ -4,6 +4,107 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
+### Session: 7-online — offline mode is now single-player only (split-screen retired)
+Online (Steam relay) is the real playtest surface — on one screen you can just see each other,
+so split-screen never actually tested the social-stealth read. Offline now exists only to check
+basic feel, so it's one human vs a bot:
+- **New `scripts/single_player_game.gd`** (`main.tscn` now points here): spawns one player with
+  its own full-screen camera, the crowd, a bot HUNTER (master_plan §5 — a bot stands in for a
+  human), one ContractManager (kill your marks → the hunter becomes your target), and the HUD
+  (exposure bar, contract label, hunt arrow, mini-map, lock cue, item readout, sewer overlay,
+  faceplates). Scored by the existing `RoundManager`. Everything self-wires through groups.
+- **Removed** `scripts/local_coop_game.gd` + `scripts/local_match_manager.gd` (the 2-player
+  split-screen shell) — no longer referenced by any scene or script.
+- Menu: "Local AI test (split screen)" → **"Single-player (offline)"**.
+
+### Session: 7-online — up-to-4-player online (lobby + last-standing + points)  ·  v0.7.1
+Brought the offline match model (notes 6 & 7 / §7.5) onto the ONLINE path. `online_match.gd`
+was the only place still hard-wired to 2 players; the lobby + ENet/Steam transport already
+allowed 4 (`NetworkManager.MAX_PLAYERS = 4`). All host-authoritative:
+- **Target ring (`_build_target_ring`).** At match start the host builds a random single cycle,
+  so every player hunts exactly one other and is hunted by exactly one other (master_plan §7.2).
+  `_begin_target_phase`, the exposure-arrow routing, and the red reveal all read the ring. If your
+  target dies before you reach them you re-link to a live opponent (`_relink_hunters_of` →
+  `_next_living_target`) and your hunt arrow retargets (`_receive_target` rebuilds it).
+- **Players always killable already (commit 2952b05),** so elimination is effectively open; the
+  ring adds the arrow, the reveal, and the contract-completion bonus on top.
+- **Last-standing end (§7.5).** A death no longer ends the match — it ELIMINATES that player
+  (`_dead_by_peer`, body frozen on every machine via `_freeze_player` so spectators don't
+  rubber-band). The match ends only when ≤1 player is alive, or on the time limit. A mid-match
+  disconnect counts as an elimination too.
+- **Points-based winner (mirrors `LocalMatchManager`).** Host samples each living player's
+  exposure per frame, counts kills (`kill_landed`), adds the contract bonus / subtracts the death
+  penalty, plus a speed bonus. Winner = most points (ties → lowest average exposure), NOT
+  necessarily the survivor.
+- **Scoreboard + Rematch.** The binary WIN/LOSE overlay is now a points-sorted scoreboard (winner
+  in gold, "YOU" tagged, eliminated/contract flags) with a **Rematch** button: once everyone still
+  connected has voted, the host reloads the match for all (`_request_rematch` → `_do_rematch`),
+  re-running the start handshake for a fresh ring, marks, and scores.
+- **Kill attribution.** `KillComponent.request_kill` stamps `Player.last_attacker_peer` on a player
+  kill so the host can award a completed-contract bonus when your assigned hunter finishes you.
+- Known limits: late-join mid-match splices into the ring best-effort; the per-viewer APPEARANCE
+  map (never see your own look in the crowd, §0.3) is still a separate future task.
+
+### Session: 7-online — verifying the integration (two server-authority fixes)
+Reviewed the online port (slices A–E) for server-authority + hidden-identity correctness. The
+architecture held up; found and fixed two authority gaps:
+- **Smoke now actually stops a CLIENT from killing (§7.6).** Smoke sets `attacks_disabled` on the
+  HOST's copy of the killer's `KillComponent`, but that flag isn't replicated, so a client's own
+  copy never learned it — and the host's `KillComponent.request_kill` never re-checked it. A smoked
+  client could still land a kill. Fix: `request_kill` now refuses while `attacks_disabled` (one
+  guard, on the only machine whose answer counts). Offline + host-player paths were already correct.
+- **Claiming an access point is now independent of the transit cooldown (§7.3, note 5b).** The
+  offline `_try_claim` only blocked if a point was already owned, but the online `_request_claim`
+  also rejected points on their 15s global cooldown — so you couldn't claim a point right after
+  using it. Made online match offline: the 15s lockout governs UNCLAIMED pass-through only; claiming
+  is permanent ownership bought with exposure and ignores the cooldown.
+
+### Session: 7-online — porting Phase 7 onto the ONLINE match (server-authoritative)
+Phase 7 was built/tested on the OFFLINE split-screen path; online (`online_match.gd`) was
+still Phase 6. Online is the primary test surface (each player on a separate machine = a true
+hidden view), so we're porting the features there in slices (plan: 5 slices, A–E). Each slice
+is server-authoritative (host owns truth, clients send intent) and independently testable
+across a host + a 127.0.0.1 client.
+
+- **Slice A — quick wins (§7.0):**
+  - **Camera zoom online:** new `Player.network_camera_zoom` (`@export`, default 1.1) applied to
+    the locally-controlled player's embedded camera in `_setup_network_role`. Offline split-screen
+    (its own follow camera) is untouched.
+  - **Teleporter exposure cost:** confirmed it ALREADY fires online — the host applies the portal's
+    `exposure_cost` (the map sets it = `teleporter_cost`) and clients have portal monitoring off, so
+    only the host (referee) teleports + charges. No code change; verified by reading.
+  - **Two marks per peer:** `online_match._assign_mark_for_peer` now designates `marks_per_player`
+    (=2) crowd NPCs via `_pick_spaced_marks` (≥ `mark_min_separation`, ~2 screens apart), forces each
+    into a homebody (`is_traveler=false`, small `mark_wander_radius`), tells the owner BOTH names
+    (`_receive_marks`), and opens the hunt phase only after both die (`_marks_remaining_by_peer`). The
+    owner is told per-mark when one dies (`_notify_mark_down`) so the client drops its highlight and
+    the mini-map re-points at what's left.
+- **Slice B — per-viewer VISIBILITY, the hidden view (§7.2b/§0.3):** `online_match._update_visibility()`
+  runs per frame and toggles each character's `visible` for THIS machine from the host-replicated layer
+  (`LayerComponent.current_layer`, mirrored from `_net_layer`): GROUND sees ground only; ROOFTOP sees the
+  ground below (+ other rooftops, `rooftop_sees_rooftop` default on); SEWER sees no one. Local-only — it
+  never touches the host's sim, so it's a true hidden view (each peer is a separate machine). Ported the
+  sewer screen overlay + arrow 100% uptime (`_build_layer_feedback` / `_on_local_layer_changed`).
+- **Slice C — claim + global cooldown, server-authoritative (§7.3):** `player._try_claim` routes to the
+  host (`_request_claim` RPC — host finds the point you're on, validates, charges 20% committed exposure).
+  Access-point USE is host-validated in `_request_set_layer` (right kind + available + correct transition →
+  `mark_used()`), so the 15s global lockout is host-owned. New `AccessPoint.access_index` + `claim_changed`/
+  `cooldown_started` signals; the host broadcasts via `OnlineMatch._apply_access_claim`/`_apply_access_cooldown`
+  so every client's marker shows claimed/cooldown. (Late-joiner snapshot of claim state = a known small gap.)
+- **Slice D — items smoke + cloak, server-authoritative (§7.6):** `ItemComponent` split into `local_input`
+  (reads keys) / `server_authoritative` (owns charges + timers) / `network_mode`. The controlling client
+  emits `item_requested` -> `player._request_item` RPC -> host `server_activate`. Smoke sets the player's
+  replicated `_net_smoked` (others hide it via Slice B; smoker sees self) + disables their kill; cloak makes
+  the host suppress the OPPONENT's hunt arrow (`_set_opponent_arrow_suppressed`, targeted) while the exposure
+  arrow still fires. Charges readout pushed owner-only (`_push_item_state_to` / `_receive_item_state`).
+- **Slice E — identity reveals + faceplates (§7.4):** `FaceplateRow` built per machine. RED = first peer to
+  finish its marks is told its target's appearance (`_begin_target_phase` -> `_receive_target_reveal`, once).
+  BLUE = a player hitting 100% exposure reveals their look to the others (`_on_player_exposure_changed` ->
+  `_receive_exposure_reveal`, once each). Reveals are targeted owner-only RPCs carrying an appearance index.
+- **Compiles clean** (headless full-project boot, rc=0). **Untested in live play** — built on the integration
+  branch `phase-7-online-integration` for a 2-instance playtest. Deferred (next pass): §7.5 N-player
+  last-standing + rematch online, and the §0.3 per-viewer APPEARANCE swap.
+
 ### Session: 7.2–7.6 — layers, items, claim/cooldown, match flow, reveals (v0.7.0)
 A full methodical pass over the rest of the Phase 7 plan. Built logic-first and committed
 phase-by-phase; **all of it is UNTESTED in-editor** (no Godot on the build machine) — the

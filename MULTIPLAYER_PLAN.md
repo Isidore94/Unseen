@@ -1,10 +1,11 @@
 # MULTIPLAYER_PLAN.md — UNSEEN online (Phase 6)
 
-> The detailed build plan for **online multiplayer**. It expands `UNSEEN_BUILD_PLAN.md`
-> §Phase 6 — it does not replace it. Read the build plan's §1 (principles) and §Phase 6
-> first; read `master_plan.md` §6 (kill) and §3 (exposure) for the rules we must enforce
-> server-side. Mechanics are unchanged here — this is purely *how the game runs across
-> machines*.
+> The detailed build plan for **online multiplayer** (the **Phase 6** transport/netcode layer,
+> now built — kept as reference). The historical principles/sequencing it cites lived in the old
+> `UNSEEN_BUILD_PLAN.md` (now retired); today the active plan is `buildplan.md` and the coding
+> rules live in `CLAUDE.md`. Read `master_plan.md` §6 (kill) and §3 (exposure) for the rules we
+> must enforce server-side. Mechanics are unchanged here — this is purely *how the game runs
+> across machines*.
 
 **Scope of this plan:** 2–4 players, listen-server (one player hosts), Godot's built-in
 high-level multiplayer for the game logic, Steam relay for connectivity. **First milestone
@@ -224,11 +225,12 @@ Phase 0 (build plan §1.6). Concretely:
 - `scripts/player.gd` → input is read locally and **sent**, not applied directly; the server
   applies it. Local prediction added later (6.2).
 
-**Moved out of the default run path, but KEPT in the project (as you asked)**
-- `scripts/local_coop_game.gd` + its scene = the split-screen shell. It stays in the repo and
-  stays runnable from Main Menu → "Local AI test," but it is **no longer** what `main.tscn`
-  launches. Nothing is deleted. (Reason: online play is needed to truly playtest social
-  stealth — on one screen you can just see each other.)
+**Offline is now single-player only (split-screen retired)**
+- Online (Steam relay) is the real playtest surface, so offline exists only to test basic feel.
+  The 2-player split-screen shell (`local_coop_game.gd` + `local_match_manager.gd`) is **removed**;
+  `main.tscn` now launches `single_player_game.gd` — one human vs a bot hunter (master_plan §5),
+  reached from Main Menu → "Single-player (offline)". (Reason: on one screen you can just see each
+  other, so split-screen never tested the social-stealth read anyway.)
 - The per-player duplicated input actions (`p1_*`, `p2_*`) aren't needed online (each machine
   has one local player using the base `move_*` / `action_primary` / `run` actions). We keep the
   Input Map entries; online simply uses the base actions.

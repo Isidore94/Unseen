@@ -1,3 +1,10 @@
+# UNSEEN — first-playtest notes (raw)
+
+> Raw change notes captured after the **first online playtest** (2–3 players). These were refined
+> into the ordered, buildable plan in **`buildplan.md` (Phase 7)** — read that for intent and build
+> from it. Every note below is **already implemented (Phase 7 / v0.7.0)**; this file is kept only as
+> the historical origin record. Don't build directly from here.
+
 1. Zoom in the camera a bit. go to 75%
 2. move 1 set of teleporters to the top and bottom. 
 3. make the small map the main map 

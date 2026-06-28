@@ -30,6 +30,9 @@ enum Item { SMOKE, CLOAK }
 ## Fired when an item turns ON (carries the item + its duration) and when it expires.
 signal item_activated(item: int, duration: float)
 signal item_expired(item: int)
+## (Online) Fired when THIS machine's player presses an item key but isn't the authority —
+## the Player relays it to the host as a request (server-authoritative, buildplan §7.6).
+signal item_requested(item: int)
 
 @onready var _body: Node = get_parent()
 @onready var _visual: Node = get_parent().get_node_or_null("CharacterVisual")
@@ -39,18 +42,17 @@ var _smoke_timer: float = 0.0
 var _cloak_timer: float = 0.0
 var _smoke_left: int = 0
 var _cloak_left: int = 0
-## Online: only the machine that controls this player reads its input (set by the player).
-var _network_local_control: bool = true
+
+## Online wiring, set by Player._setup_network_role. Offline leaves these defaults so this
+## component reads input AND applies effects locally, exactly as before.
+var network_mode: bool = false         ## true online: smoke hides via per-viewer visibility, not a local fade
+var server_authoritative: bool = true  ## this copy owns charges + effect timers (the host online; everyone offline)
+var local_input: bool = true           ## this copy reads THIS machine's item keys
 
 
 func _ready() -> void:
 	_smoke_left = smoke_charges
 	_cloak_left = cloak_charges
-
-
-# Called by the player on the controlling machine (online). Offline stays true by default.
-func enable_network_local_control() -> void:
-	_network_local_control = true
 
 
 func smoke_active() -> bool:
@@ -64,11 +66,16 @@ func charges_left(item: int) -> int:
 
 
 func _physics_process(delta: float) -> void:
-	if _network_local_control:
+	# Read this machine's item keys (only on the copy that controls this player).
+	if local_input:
 		if Input.is_action_just_pressed(item_primary_action):
-			_activate(Item.SMOKE)
+			_on_press(Item.SMOKE)
 		if Input.is_action_just_pressed(item_secondary_action):
-			_activate(Item.CLOAK)
+			_on_press(Item.CLOAK)
+
+	# Only the authority (the host online, or everyone offline) owns the effect timers.
+	if not server_authoritative:
+		return
 
 	# Count the active effects down and switch them off when they run out.
 	if _smoke_timer > 0.0:
@@ -81,6 +88,21 @@ func _physics_process(delta: float) -> void:
 			item_expired.emit(Item.CLOAK)
 
 
+# A press on the controlling machine. If we're the authority (offline, or the host running
+# its own player) we fire it directly; otherwise we emit a request the Player relays to the
+# host, so the server stays the one true judge of charges + effects (§7.6).
+func _on_press(item: int) -> void:
+	if server_authoritative:
+		_activate(item)
+	else:
+		item_requested.emit(item)
+
+
+# Host entry point: a request from the controlling client, already verified by the Player.
+func server_activate(item: int) -> void:
+	_activate(item)
+
+
 func _activate(item: int) -> void:
 	if item == Item.SMOKE:
 		if _smoke_left <= 0 or smoke_active():
@@ -88,10 +110,7 @@ func _activate(item: int) -> void:
 		_smoke_left -= 1
 		_smoke_timer = smoke_duration
 		# Vanish from others + lock out your own attack (you can't kill while hidden).
-		if _visual != null and _visual.has_method("set_smoked"):
-			_visual.call("set_smoked", true)
-		if _kill != null:
-			_kill.set("attacks_disabled", true)
+		_apply_smoke(true)
 		item_activated.emit(Item.SMOKE, smoke_duration)
 	else:
 		if _cloak_left <= 0 or cloak_active():
@@ -102,8 +121,18 @@ func _activate(item: int) -> void:
 
 
 func _end_smoke() -> void:
-	if _visual != null and _visual.has_method("set_smoked"):
-		_visual.call("set_smoked", false)
-	if _kill != null:
-		_kill.set("attacks_disabled", false)
+	_apply_smoke(false)
 	item_expired.emit(Item.SMOKE)
+
+
+# Make the smoker invisible to others + unable to attack. Online (this runs on the host) we
+# set the player's replicated `_net_smoked` flag so each OTHER machine hides it via the
+# per-viewer visibility system, and the smoker still sees themselves; offline we fade the
+# shared body. Either way the kill is locked out while smoked.
+func _apply_smoke(on: bool) -> void:
+	if network_mode:
+		_body.set("_net_smoked", on)
+	elif _visual != null and _visual.has_method("set_smoked"):
+		_visual.call("set_smoked", on)
+	if _kill != null:
+		_kill.set("attacks_disabled", on)

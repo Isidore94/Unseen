@@ -538,7 +538,7 @@ func _verify_connectivity() -> void:
 	var stack: Array[Vector2i] = [start]
 	while not stack.is_empty():
 		var cell: Vector2i = stack.pop_back()
-		for offset in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+		for offset: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
 			var next := cell + offset
 			if next.x < 0 or next.x >= _cols() or next.y < 0 or next.y >= _rows():
 				continue
@@ -593,16 +593,23 @@ func _draw_fountain() -> void:
 # their own marker (orange ▲ / green grate) and join the "access_point" group so a nearby
 # player can use them (the layer mechanics live on the player + LayerComponent, §7.2).
 func _spawn_access_points() -> void:
+	# Index them in a fixed order so the same point has the same id on every peer (the online
+	# match replicates claim/cooldown by this index — buildplan §7.3).
+	var index := 0
 	for pos in _rooftop_stairs:
-		_make_access_point(pos, AccessPoint.Kind.ROOFTOP_STAIR)
+		_make_access_point(pos, AccessPoint.Kind.ROOFTOP_STAIR, index)
+		index += 1
 	for pos in _sewer_entrances:
-		_make_access_point(pos, AccessPoint.Kind.SEWER_ENTRANCE)
+		_make_access_point(pos, AccessPoint.Kind.SEWER_ENTRANCE, index)
+		index += 1
 
 
-func _make_access_point(pos: Vector2, kind: int) -> void:
+func _make_access_point(pos: Vector2, kind: int, index: int) -> void:
 	var point := AccessPoint.new()
 	point.position = pos
 	point.kind = kind
+	point.access_index = index
+	point.name = "AccessPoint%d" % index  # deterministic name → matches across peers
 	add_child(point)
 
 

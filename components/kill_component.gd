@@ -113,6 +113,13 @@ func request_kill(target_path: NodePath) -> void:
 	if effective_sender != controller:
 		return  # someone tried to kill on behalf of a player they don't control
 
+	# Smoke locks out attacks (§7.6). The flag is set on the HOST's copy of this
+	# component (item_component._apply_smoke), so we must enforce it HERE — the client's
+	# own copy never learns it (it isn't replicated), so the client-side check alone is
+	# bypassable. Without this, a smoked CLIENT could still land a kill.
+	if attacks_disabled:
+		return
+
 	var target := get_node_or_null(target_path) as Node2D
 	if target == null or target == _body or not is_instance_valid(target):
 		return
@@ -126,6 +133,10 @@ func request_kill(target_path: NodePath) -> void:
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		# Stamp who eliminated this PLAYER so OnlineMatch can attribute the kill (and award a
+		# completed-contract bonus if we were their assigned hunter). NPC marks ignore this.
+		if target.is_in_group("player"):
+			target.set("last_attacker_peer", controller)
 		if target.has_method("die"):
 			target.die()
 	else:
