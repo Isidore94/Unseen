@@ -55,6 +55,10 @@ Resolve any conflict by **keeping the fix** from `main`. Expect conflicts in fil
 most likely **`online_match.gd`** (Phase 7 created it; Phase 9 adds the per-viewer crowd + experiment
 loader to it) and `npc.gd` / `kill_component.gd` (Phase 9 added hooks). See §1.6 before resolving.
 
+> **A trial integration of the whole 7→11 stack found exactly ONE conflict: `CHANGELOG.md` here at
+> Phase 9** (both phases prepend a session section). Resolve it by **keeping BOTH sections** (Phase 9's
+> on top, then the earlier ones) — it's a doc, not code. Everything else (8, 10, 11) merged clean.
+
 ## 1.6 Forward-propagation of fixes (the contract that keeps stacked branches correct)
 
 A `git merge main` carries a fix into code this phase left **unchanged** — but it does **not** fix code this
