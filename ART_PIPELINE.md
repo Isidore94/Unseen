@@ -28,9 +28,11 @@ Adopting this means two commitments, stated plainly so you go in with eyes open:
 1. **The whole game becomes pixel art, map included.** Right now you have pixel
    characters on an SVG (vector) map — a mixed look. Moving the map to PixelLab
    tiles makes the environment match the characters: one coherent pixel-art
-   identity. That's an *art-direction* decision, not just a tooling one. Confirm
-   you actually want a pixel-art game, because once the map is tiles and the
-   characters are sprites, that's the game's visual identity for good.
+   identity. That's an *art-direction* decision, not just a tooling one.
+   > **DECISION — LOCKED (Aaron): YES, full pixel art, map included.** Target the
+   > **clean / refined** end of pixel art (muted palette, soft ambient shadows,
+   > orderly tiling, mandatory hand-finish) — an "AC-style clean urban" feel, **NOT**
+   > chunky/retro/saturated. This is the game's visual identity for good.
 
 2. **PixelLab is the source, not the finish.** "Crutch" is fine — lean on it. But
    what keeps the game from looking generically AI-generated is two things you
@@ -60,23 +62,27 @@ direction, and you own the outputs commercially. The math holds (see §1).
 ## 2. Foundational decisions to lock (before generating at scale)
 
 These ripple through every asset. Changing them later means regenerating work.
+Status below: **[x] = locked this session**, **[ ] = still to do.**
 
-- [ ] **Canonical resolution / grid:** 32×32 base for characters (matches current
-      sprites). Lock it.
-- [ ] **Tile size + view angle:** 32px square tiles, low *or* high top-down — pick
-      one and make it match your character camera angle. Tiles and sprites must
-      share a perspective or the map and characters won't sit together.
-- [ ] **Master palette:** lock a limited palette and enforce it on every asset.
-      This is the biggest single lever for cohesion and for clean recoloring.
-- [ ] **Style bible:** the master reference set — a base civilian (front), a
-      sample tile, a sample weapon — hand-finished to your quality bar. Versioned
-      in the repo. Everything generates *from these*. Never regenerate cold.
-- [ ] **Character display:** full-body 3/4 vs bird's-eye; pivot at feet; Y-sort
-      on; ground shadow; layered hitboxes (see the hitbox setup work). Lock this —
-      tile view angle and sprite angle have to agree.
-- [ ] **Direction count:** 4 or 8 (start 4; go 8 only if facing-reads feel coarse).
-- [ ] **Godot import defaults:** nearest-neighbor filtering, mipmaps off,
-      compression off (lossless) for all pixel assets. Set project-wide.
+- [x] **Canonical resolution / grid:** **32×32 base** (matches the current rig — no rework, and
+      ~16 anim frames per PixelLab request vs ~4 at 128px, §6 → far cheaper to produce/animate at a
+      live-service cadence). The "clean vs blocky" test proved 32px reads **clean** when the craft is
+      right (palette + soft shadows + orderly tiling + hand-finish), so clean comes from craft, not
+      from going hi-res. *Flippable to 48px ONLY if you want more architectural detail and accept the
+      rig rework + higher credit/hand-finish cost per asset — decide before generating at scale.*
+- [x] **Tile size + view angle:** **32px square tiles, top-down**, matching the character camera
+      angle (the existing top-down view). Tiles + sprites share one perspective.
+- [~] **Master palette:** **clean / refined, MUTED urban** (not saturated/retro). Starting set seeded
+      in `tools/ingest_sprite.py` + `assets/style_bible/README.md`; **finalize from the first
+      hand-finished base civilian + sample tile**, then turn on palette enforcement in the ingest script.
+- [ ] **Style bible:** the master reference set — base civilian (front), a sample tile, a sample
+      weapon — hand-finished. Generate next (recipe in `assets/style_bible/README.md`). Never regen cold.
+- [x] **Character display:** top-down, **pivot at the feet** (the rig's locked centre/feet origin),
+      ground shadow on, sprite angle agrees with the tile angle.
+- [x] **Direction count:** **4** (start here; go to 8 only if facing-reads feel coarse).
+- [x] **Godot import defaults:** **nearest-neighbour filtering set project-wide** this session
+      (`project.godot` → `default_texture_filter=0`). Still set per-texture in the editor: mipmaps off,
+      compression off (lossless) for pixel assets.
 
 ---
 

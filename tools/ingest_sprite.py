@@ -31,9 +31,17 @@ DEFAULT_ROWS = 4              # directions: down / up / left / right (matches th
 # Until it's locked, palette enforcement is a pass-through (raw colours kept). Fill this from the
 # style bible, then flip ENFORCE_PALETTE on.
 MASTER_PALETTE: list[tuple[int, int, int]] = [
-    # (r, g, b),  # e.g. travertine, terracotta, ... — see assets/style_bible/
+    # STARTING "clean / refined, muted urban" set (ART_PIPELINE.md §2 decision). Refine these from the
+    # first hand-finished base civilian + sample tile, then flip ENFORCE_PALETTE on. See style bible.
+    (203, 196, 178), (195, 188, 169), (170, 162, 141), (143, 138, 126),  # stone / paving
+    (176, 138, 94),  (169, 132, 90),  (143, 111, 72),  (110, 84, 54),    # clay roof / wood
+    (205, 169, 120),                                                     # warm highlight
+    (111, 102, 120), (74, 82, 90),                                       # slate / shadow accent
+    (58, 127, 168),  (79, 147, 188),                                     # water
+    (217, 168, 120), (58, 44, 34), (51, 48, 58),                         # skin / hair / outline
+    (25, 26, 29),                                                        # void / deep shadow
 ]
-ENFORCE_PALETTE = False       # set True once MASTER_PALETTE is filled
+ENFORCE_PALETTE = False       # set True once MASTER_PALETTE is finalized from the style bible
 
 
 def trim(img: Image.Image) -> Image.Image:
