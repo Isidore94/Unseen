@@ -21,9 +21,11 @@ class_name MiniMap
 var _map: TestMap01 = null
 var _player: Node2D = null
 var _contract: ContractManager = null
-## Online play hands the objective node in directly (the host privately tells each
-## client which crowd member is its mark), instead of asking an offline contract.
+## Online play hands the objective node(s) in directly (the host privately tells each client which
+## crowd members are its marks). `_objective_node` is the single ping target (PvP); `_objective_nodes`
+## holds ALL live PvE marks so the player can see every target at once and path between them.
 var _objective_node: Node2D = null
+var _objective_nodes: Array = []
 ## Online: when true, the objective is shown as periodic pings (PvP opponent), not a
 ## live dot (PvE mark). Offline keeps using the contract's phase instead.
 var _ping_mode: bool = false
@@ -58,6 +60,14 @@ func _process(delta: float) -> void:
 # Online, PvE: track a node with a LIVE dot (your wandering mark).
 func track_objective(node: Node2D) -> void:
 	_objective_node = node
+	_objective_nodes = [node] if node != null else []
+	_ping_mode = false
+
+
+# Online, PvE: track ALL your live marks at once (a dot each), so you can path between both.
+func track_objectives(nodes: Array) -> void:
+	_objective_nodes = nodes.duplicate()
+	_objective_node = nodes[0] if not nodes.is_empty() else null
 	_ping_mode = false
 
 
@@ -122,10 +132,11 @@ func _draw() -> void:
 			draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
 	else:
 		# Online: mode is set explicitly by the match (live mark, or pinged opponent).
-		var objective := _objective()
-		if objective != null and is_instance_valid(objective):
-			if _ping_mode:
-				if _ping_visible:
-					draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
-			else:
-				draw_circle(_world_to_map(objective.global_position), 4.5, mark_color)
+		if _ping_mode:
+			if _ping_visible:
+				draw_circle(_world_to_map(_last_opponent_pos), 5.5, opponent_ping_color)
+		else:
+			# A dot for EVERY live mark, so both targets show and you can path between them.
+			for node in _objective_nodes:
+				if node != null and is_instance_valid(node):
+					draw_circle(_world_to_map((node as Node2D).global_position), 4.5, mark_color)

@@ -58,6 +58,11 @@ enum Map { FOUR_ZONE, COMPACT, ROME }
 ## Defaults to COMPACT — our main map for now (matches small_arena = true above).
 var selected_map: int = Map.COMPACT
 
+## The two TOOLS this player picked in the lobby (ItemComponent.Tool ints: 0=smoke, 1=disguise,
+## 2=morph, 3=decoy, 4=poison). Lives here so it survives the lobby → match scene change; the match
+## sends it to the host, who stamps it into this player's spawn. Default: smoke + decoy.
+var selected_tools: Array = [0, 3]
+
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.
 const STEAM_APP_ID := 480

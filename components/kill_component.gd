@@ -128,10 +128,10 @@ func request_kill(target_path: NodePath) -> void:
 	if effective_sender != controller:
 		return  # someone tried to kill on behalf of a player they don't control
 
-	# Smoke locks out attacks (§7.6). The flag is set on the HOST's copy of this
-	# component (item_component._apply_smoke), so we must enforce it HERE — the client's
-	# own copy never learns it (it isn't replicated), so the client-side check alone is
-	# bypassable. Without this, a smoked CLIENT could still land a kill.
+	# A STUN (standing in a smoke cloud) locks out attacks. The flag is set on the HOST's copy of
+	# this component (OnlineMatch._set_player_stunned), so we enforce it HERE — the client's own copy
+	# never learns it (it isn't replicated), so the client-side check alone is bypassable. Without
+	# this, a stunned CLIENT could still land a kill.
 	if attacks_disabled:
 		return
 
@@ -218,6 +218,43 @@ func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
 		target.set("last_attacker_peer", attacker_peer)
 	if target.has_method("die"):
 		target.die()
+
+
+# POISON (host-authoritative): a validated, DELAYED, QUIET kill. The target is committed NOW (pulled
+# out of the killable groups so it can't be double-killed and you can walk away), then drops after
+# `delay`. It deliberately NEVER emits kill_resolved, so the crowd-reaction panic never fires — a
+# poisoning goes unnoticed. No big exposure spike either (the tool's own cost is the tell); poisoning
+# an INNOCENT still applies the wrong-commit penalty when the body drops. Returns true if it landed.
+func host_poison(target: Node2D, delay: float) -> bool:
+	if target == null or target == _body or not is_instance_valid(target):
+		return false
+	var controller := int(_body.get("controlling_peer_id"))
+	var is_valid: bool = target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller)
+	_play_strike()  # immediate "you struck" feedback on the poisoner
+	if target.get("is_poisoned") != null:
+		target.set("is_poisoned", true)  # crowd-reaction skips a poisoned death
+	_strip_killable(target)  # committed — no second kill, and they keep walking until they drop
+	var tree := get_tree()
+	tree.create_timer(maxf(0.05, delay)).timeout.connect(func() -> void:
+		if not is_instance_valid(target):
+			return
+		if is_valid:
+			kill_landed.emit()  # scoring credited when the body drops
+			if controller >= 0 and target.is_in_group("player"):
+				target.set("last_attacker_peer", controller)
+		else:
+			_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
+		if target.has_method("die"):
+			target.die())  # die() fires `died` → mark completion / elimination (no kill_resolved = no panic)
+	return true
+
+
+# Pull a target out of every killable group so it can't be killed again (used by poison's commit).
+func _strip_killable(target: Node) -> void:
+	for group in target.get_groups():
+		var group_name := String(group)
+		if group_name == "killable" or group_name.begins_with("killable_for_"):
+			target.remove_from_group(group)
 
 
 # A whiff: you committed to the WRONG person. They still die, but you take a HEAVY exposure

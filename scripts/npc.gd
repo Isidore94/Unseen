@@ -99,6 +99,10 @@ var _react_speed_scale: float = 1.0
 ## Set once killed, so we stop behaving and can't be killed twice.
 var _dead: bool = false
 
+## Set true the moment this NPC is POISONED (a delayed, quiet kill). The crowd-reaction experiment
+## checks it so a poisoning never triggers the panic scatter — that's the whole point of poison.
+var is_poisoned: bool = false
+
 ## Cached reference to the map, used to pick wander destinations spread evenly across
 ## the WHOLE walkable area (so the crowd fills the map instead of bunching).
 var _map_ref: Node = null
@@ -226,6 +230,19 @@ func react_to_kill(kill_position: Vector2, away: bool, duration_seconds: float, 
 	_react_timer = duration_seconds
 
 
+# DECOY HOOK — bolt in `direction` (the way the NPC is already heading) for a moment. Used by the
+# decoy tool: the spooked civilian just breaks into a run, drawing a hunter's eye. If it was standing
+# still (no heading), pick a random direction so it always visibly reacts.
+func flee_run(direction: Vector2, duration_seconds: float, speed_scale: float) -> void:
+	if _dead:
+		return
+	if direction.length() < 1.0:
+		direction = Vector2.RIGHT.rotated(randf() * TAU)
+	_react_direction = direction.normalized()
+	_react_speed_scale = speed_scale
+	_react_timer = duration_seconds
+
+
 # Phase 9 (9B) HOOK — head to `point` as a one-way traveler (crowd_thinning uses this to send a
 # retiring NPC toward a map exit before it despawns). A neutral "go here" command; the NPC doesn't
 # know why. Host-only in practice, since the host owns NPC navigation.
@@ -260,11 +277,14 @@ func _physics_process(delta: float) -> void:
 	var moved_since_last: float = global_position.distance_to(_last_position)
 	_last_position = global_position
 
-	# Phase 9 (9E) — reacting to a nearby kill: flee/cluster for a moment, then resume normal.
-	# Checked before the mark/wander logic so even a standing mark visibly flinches.
+	# Phase 9 (9E) / DECOY — reacting (flee/bolt) for a moment, then resume normal. Checked before
+	# the mark/wander logic so even a standing mark visibly bolts. We move DIRECTLY here (bypassing
+	# the navigation avoidance) so a panicking/decoyed NPC always breaks into a run — avoidance would
+	# cancel its velocity in a dense crowd, which is exactly where decoy is used (it "did nothing").
 	if _react_timer > 0.0:
 		_react_timer -= delta
-		_drive(_react_direction * move_speed * _react_speed_scale)
+		velocity = _react_direction * move_speed * _react_speed_scale
+		move_and_slide()
 		return
 
 	# A non-wandering NPC (a mark) just stands at its spot.

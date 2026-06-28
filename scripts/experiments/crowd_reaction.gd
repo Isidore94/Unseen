@@ -59,8 +59,11 @@ func _on_kill_resolved(_killer: Node, victim: Node, _was_valid: bool) -> void:
 
 # OFFLINE: an NPC died.
 func _on_npc_died(victim: Node) -> void:
-	if victim != null and is_instance_valid(victim):
-		_panic_around(victim.global_position)
+	if victim == null or not is_instance_valid(victim):
+		return
+	if victim.get("is_poisoned") == true:
+		return  # a poisoning is silent — no panic scatter
+	_panic_around(victim.global_position)
 
 
 # Make every nearby living NPC flee (host/offline owns the motion; it replicates to clients), then

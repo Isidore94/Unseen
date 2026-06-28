@@ -2,6 +2,40 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — AC-Rearmed tool kit (pick-2 loadout) + interaction ring
+
+Replaced the fixed smoke+cloak kit with a 5-tool pool; each player **picks 2 in the lobby**
+(`NetworkManager.selected_tools`), fired by R / T. Cloak removed. Server-authoritative throughout.
+- **`item_component.gd` rewritten** to a generic `Tool` enum (SMOKE/DISGUISE/MORPH/DECOY/POISON),
+  2 equipped slots, per-tool charges + cooldown + active timer + **exposure cost**; emits
+  `tool_activated`/`tool_expired` for the authority to apply the world effect.
+- **SMOKE** — wide AoE **stun** cloud (`smoke_cloud.gd`): anyone inside is frozen (`_net_stunned`)
+  and can't kill (`attacks_disabled`); deployer immune. Radius 110. Stun is **capped by the cloud's
+  remaining life** so it never outlasts the animation. Offline stuns the AI hunter.
+- **DECOY** — the NPC in your interaction ring **bolts in its current direction** (`Npc.flee_run`).
+- **DISGUISE (30s)** — replicated `_net_disguise_body`: every OTHER screen shows you as a random
+  commoner (you keep your real look); the hunt arrow on you is suppressed. Offline swaps own body.
+- **MORPH (12s)** — RPC reskins the nearest NPCs to your current look on every machine, reverts after.
+- **`?` portrait** — top-left portrait shows a `?` while your disguise/morph is active.
+- **Interaction ring** (`interaction_ring.gd`) — a tight visible ring around your own player;
+  `Player.interaction_target()` returns the NPC **or enemy player** you're facing inside it
+  (highlighted). Tools/targeting key off it.
+- **Exposure rules** — every tool use adds exposure; the exposure ARROW threshold is now **100%**,
+  so you only light up to enemies at full exposure (use tools freely below that).
+- **POISON** — a validated, DELAYED, QUIET kill (`KillComponent.host_poison`): commits the target
+  now (pulled from killable groups so you can walk away), drops it after `poison_delay_seconds`, and
+  NEVER emits kill_resolved so the crowd panic doesn't fire (offline skips via an `is_poisoned` flag).
+  Poisoning an innocent applies the wrong-commit penalty when the body drops. Works on NPC marks or
+  your human target.
+- **`?` reveals** — a disguised player shows as a `?` on the EXPOSED/TARGET reveal plates (disguise
+  hides you even from the 100% reveal); decoy NPC capped to 180 px/s (below the 220 player run).
+- HUD ability bar shows your two equipped tools (icon/name/key/charges + cooldown/"ON Ns").
+- All five tools wired. Compile-verified; smoke/decoy/morph/disguise/poison/ring screenshot-verified.
+  Per-viewer disguise/morph + all online tool paths still want a 2-instance playtest.
+- **Minimap shows BOTH marks** (`MiniMap.track_objectives`) so you can path between targets.
+- **Teleporter/trapdoor pads shrunk 75%** (`teleporter_radius` 14.5 / `trapdoor_radius` 11.5 — both
+  visual + collision) so they stop walling corridors.
+
 ## Session: prayer — movement/arrow fixes + compact-map structure & art pass
 
 Three slices (compile-verified; map render screenshot-verified; online paths still need a 2-instance playtest).

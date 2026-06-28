@@ -63,8 +63,8 @@ func _ready() -> void:
 	if kill != null and kill.has_signal("kill_resolved"):
 		kill.connect("kill_resolved", Callable(self, "_on_kill_resolved"))
 	var item := get_parent().get_node_or_null("ItemComponent")
-	if item != null and item.has_signal("item_activated"):
-		item.connect("item_activated", Callable(self, "_on_item_activated"))
+	if item != null and item.has_signal("tool_activated"):
+		item.connect("tool_activated", Callable(self, "_on_item_activated"))
 
 
 func _physics_process(delta: float) -> void:

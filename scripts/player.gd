@@ -24,6 +24,10 @@ class_name Player
 ## Local player number. Used for groups/debugging; it never changes the visual.
 @export var player_id: int = 1
 
+## Radius (px) of the tight INTERACTION RING drawn around you (AC-Rearmed style). Tools that act on
+## a crowd member (decoy, poison) hit the NPC inside this ring you're facing — see interaction_target().
+@export var interaction_radius: float = 110.0
+
 ## Abstract movement actions for this player. Local co-op assigns each player a
 ## different Input Map action set while the movement code stays identical.
 @export var move_left_action: String = "move_left"
@@ -120,6 +124,14 @@ var _net_layer: int = 0
 ## to everyone. Other machines use it to hide this character via the per-viewer visibility
 ## system (buildplan §7.6) — the smoker still sees themselves normally.
 var _net_smoked: bool = false
+## (Online) Host-authoritative "is this player STUNNED by a smoke cloud?" flag, replicated to
+## everyone. While true the player can't move (frozen) and the host blocks their kills. Set + timed
+## by OnlineMatch on the host; every machine reads it to freeze the body so there's no rubber-band.
+var _net_stunned: bool = false
+## (Online) Host-authoritative DISGUISE: the commoner body index this player shows to OTHERS while
+## disguised (−1 = not disguised). Replicated; every OTHER machine swaps this player's body to it,
+## while the owner's own machine keeps the real look (you always see yourself). Breaks a visual lock.
+var _net_disguise_body: int = -1
 ## Counts down the per-player access-point debounce (see access_reuse_cooldown).
 var _access_reuse_timer: float = 0.0
 
@@ -128,6 +140,15 @@ signal died
 
 ## Set once caught, so we stop and can't die twice.
 var _dead: bool = false
+
+## Last meaningful heading, held while standing still so interaction_target() still knows which way
+## you face (you can't read facing from a zero velocity).
+var _last_interaction_facing: Vector2 = Vector2.RIGHT
+
+## (Online) The NPC this player had targeted when it asked the host to use a tool. The controlling
+## client computes it from ITS OWN view (what it saw highlighted) and sends it with the request, so
+## the host acts on the exact same NPC — no "host picked a different one" mismatch. Consumed per use.
+var _pending_tool_target: NodePath = NodePath("")
 
 ## (Online, host-side) The peer whose kill eliminated us. The host stamps this in
 ## KillComponent.request_kill just before we die, so OnlineMatch can attribute the kill (and
@@ -147,6 +168,9 @@ func _ready() -> void:
 	# position replicator. Offline mode skips all of this and behaves as before.
 	if network_controlled:
 		_setup_network_role()
+	else:
+		# Offline: this IS the local player, so show its interaction ring.
+		_add_interaction_ring()
 
 
 # Online setup, run on EVERY machine for EVERY networked character (each machine
@@ -154,6 +178,10 @@ func _ready() -> void:
 func _setup_network_role() -> void:
 	# Is this character controlled by the human sitting at THIS machine?
 	_is_locally_controlled = (controlling_peer_id == multiplayer.get_unique_id())
+
+	# Only OUR own character shows the interaction ring (it's a private targeting aid).
+	if _is_locally_controlled:
+		_add_interaction_ring()
 
 	# Wear what the host assigned at spawn (every peer got the same data). Prefer the full
 	# loadout (all four rig layers); fall back to the legacy body-only index if none.
@@ -217,6 +245,8 @@ func _build_position_synchronizer() -> void:
 	replication.add_property(NodePath(".:_net_ack_seq"))
 	replication.add_property(NodePath(".:_net_layer"))
 	replication.add_property(NodePath(".:_net_smoked"))
+	replication.add_property(NodePath(".:_net_stunned"))
+	replication.add_property(NodePath(".:_net_disguise_body"))
 	var synchronizer := MultiplayerSynchronizer.new()
 	synchronizer.name = "NetSync"
 	synchronizer.replication_config = replication
@@ -236,6 +266,46 @@ func die() -> void:
 
 func is_dead() -> bool:
 	return _dead
+
+
+# The character inside our interaction ring we'd act on (the ring visual's highlight + tools).
+# Prefers the one we're FACING; ties break toward the closest. By default it considers BOTH crowd
+# NPCs AND other players (so an enemy assassin in the ring is targetable too); pass include_players
+# = false for NPC-only tools like decoy. Works on the host (it reads authoritative velocity for facing).
+func interaction_target(include_players: bool = true) -> Node2D:
+	if velocity.length() > 5.0:
+		_last_interaction_facing = velocity.normalized()
+	var groups: Array = ["npc"]
+	if include_players:
+		groups.append("player")
+	var best: Node2D = null
+	var best_score: float = -INF
+	for group in groups:
+		for node in get_tree().get_nodes_in_group(group):
+			var character := node as Node2D
+			if character == null or character == self or not is_instance_valid(character):
+				continue
+			if character.has_method("is_dead") and character.is_dead():
+				continue
+			var to_target: Vector2 = character.global_position - global_position
+			var distance: float = to_target.length()
+			if distance > interaction_radius or distance < 1.0:
+				continue
+			# Favour someone straight ahead and close: alignment (−1..1) minus a small distance penalty.
+			var score: float = (to_target / distance).dot(_last_interaction_facing) - distance / interaction_radius
+			if score > best_score:
+				best_score = score
+				best = character
+	return best
+
+
+# Give the LOCAL player a visible interaction ring (only for the human at this machine).
+func _add_interaction_ring() -> void:
+	if has_node("InteractionRing"):
+		return
+	var ring := InteractionRing.new()
+	ring.name = "InteractionRing"
+	add_child(ring)
 
 
 # Diagnostics: how many predicted inputs are still waiting for the host to confirm. It
@@ -396,6 +466,12 @@ func _apply_movement(direction: Vector2, run_held: bool, delta: float) -> void:
 # too would double-count it). By DEFAULT you move at the calm walk pace; holding run is
 # the deliberate, exposing choice.
 func _move_with(direction: Vector2, run_held: bool) -> void:
+	# STUNNED by a smoke cloud: frozen in place (the one chokepoint, so the host's sim AND a
+	# client's own prediction both freeze — no rubber-band toward a position you can't reach).
+	if _net_stunned:
+		velocity = Vector2.ZERO
+		move_and_slide()
+		return
 	var speed: float = run_speed if run_held else walk_speed
 	velocity = direction * speed
 	# move_and_slide() reads `velocity`, moves the body, and resolves wall collisions.
@@ -553,19 +629,25 @@ func _request_set_layer(layer: int) -> void:
 	_net_layer = layer
 
 
-# A locally-controlled client's item press → ask the host to fire it (server-authoritative).
+# A locally-controlled client's item press → ask the host to fire it (server-authoritative). We
+# also send the NPC we have targeted in our ring, so the host acts on the exact one we saw.
 func _on_item_requested(which: int) -> void:
-	_request_item.rpc_id(NetworkManager.HOST_PEER_ID, which)
+	# Send whatever we have HIGHLIGHTED (NPC or enemy player). The host filters per tool: decoy/
+	# disguise use it only if it's an NPC; poison accepts a player target too.
+	var target := interaction_target(true)
+	var target_path := target.get_path() if target != null else NodePath("")
+	_request_item.rpc_id(NetworkManager.HOST_PEER_ID, which, target_path)
 
 
-# HOST-ONLY: a controlling client asks to use an item slot. Verify the sender, then let the
-# host's own ItemComponent validate charges + apply the effect (§7.6).
+# HOST-ONLY: a controlling client asks to use an item slot. Verify the sender, stash the target it
+# sent, then let the host's own ItemComponent validate charges + apply the effect (§7.6).
 @rpc("any_peer", "call_local", "reliable")
-func _request_item(which: int) -> void:
+func _request_item(which: int, target_path: NodePath = NodePath("")) -> void:
 	if not multiplayer.is_server():
 		return
 	if not _remote_sender_controls_this_character():
 		return
+	_pending_tool_target = target_path
 	var item_component := get_node_or_null("ItemComponent") as ItemComponent
 	if item_component != null:
 		item_component.server_activate(which)

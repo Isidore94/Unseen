@@ -84,6 +84,10 @@ enum Zone { NW, NE, SW, SE, HUB }
 @export var trapdoor_cost: float = 8.0
 ## Shared global cooldown (s) on the teleporter pair so it can't be chained (§7.3).
 @export var teleporter_cooldown: float = 15.0
+## Pad radius (px) for the teleporter + trapdoor — both the visual AND the trigger/collision. Kept
+## SMALL (75% below the old 58/46) so the pads are a spot you step on, not a blob that walls a lane.
+@export var teleporter_radius: float = 14.5
+@export var trapdoor_radius: float = 11.5
 
 ## Radius of the central fountain's solid collision (you route around it), in pixels.
 @export var fountain_radius: float = 120.0
@@ -565,10 +569,10 @@ func _add_static_box(center: Vector2, size: Vector2) -> void:
 func _spawn_portals() -> void:
 	# Teleporter pads — TOP ↔ BOTTOM cross-map jump, exposure cost + 15s shared cooldown
 	# (teal). Notes 2/10/§7.3.
-	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, 58.0, teleporter_cooldown)
+	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, teleporter_radius, teleporter_cooldown)
 	# Trapdoor — a medium diagonal hop with a small exposure tell (orange): NW alley
 	# to SE alley. No cooldown.
-	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0, 0.0)
+	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, trapdoor_radius, 0.0)
 	# (REMOVED) the cross-map underground passage that linked the two sewer corners — it turned the
 	# sewer into a map-spanning tunnel. Sewers are corner pockets for cover now, not a highway.
 

@@ -26,6 +26,7 @@ var _roster_rows: Array = []          # Array of {name:Label, score:Label, dot:C
 var _log_lines: Array[String] = []
 var _log_label: Label = null
 var _portrait: TextureRect = null
+var _portrait_unknown: Label = null   # the big "?" shown over the portrait while disguised/morphed
 var _ability_slots: Dictionary = {}   # key -> {label:Label, sub:Label, dim:bool}
 var minimap_slot: Control = null      # the match drops its MiniMap in here
 var _reveals: HBoxContainer = null     # holds the TARGET (red) + EXPOSED (blue) reveal portraits
@@ -87,14 +88,17 @@ func _mklabel(parent: Control, text: String, pos: Vector2, size: int, color: Col
 	parent.add_child(l)
 	return l
 
-func _icon(parent: Control, icon_name: String, pos: Vector2, sz: int) -> void:
+# Returns the inner TextureRect (so callers like the ability bar can swap its icon later), or null
+# when the icon file is missing (a placeholder box is drawn instead).
+func _icon(parent: Control, icon_name: String, pos: Vector2, sz: int) -> TextureRect:
 	var path := ICONS + icon_name + ".png"
 	if not ResourceLoader.exists(path):
-		var box := ColorRect.new(); box.position = pos; box.size = Vector2(sz, sz); box.color = Color(0.25, 0.2, 0.12); parent.add_child(box); return
+		var box := ColorRect.new(); box.position = pos; box.size = Vector2(sz, sz); box.color = Color(0.25, 0.2, 0.12); parent.add_child(box); return null
 	var wrap := Control.new(); wrap.position = pos; wrap.custom_minimum_size = Vector2(sz, sz); wrap.size = Vector2(sz, sz); wrap.clip_contents = true; parent.add_child(wrap)
 	var tr := TextureRect.new(); tr.texture = load(path); tr.set_anchors_preset(Control.PRESET_FULL_RECT)
 	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; tr.stretch_mode = TextureRect.STRETCH_SCALE
 	tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; wrap.add_child(tr)
+	return tr
 
 
 # === regions ===============================================================
@@ -106,6 +110,16 @@ func _portrait_panel(rect: Rect2) -> void:
 	_portrait = TextureRect.new(); _portrait.position = Vector2(4, 4); _portrait.size = Vector2(64, 64)
 	_portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; _portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	_portrait.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; frame.add_child(_portrait)
+	# A big "?" overlaid on the portrait while disguise/morph is active (shown via set_portrait_unknown).
+	_portrait_unknown = Label.new()
+	_portrait_unknown.text = "?"
+	_portrait_unknown.add_theme_font_size_override("font_size", 46)
+	_portrait_unknown.add_theme_color_override("font_color", GOLD)
+	_portrait_unknown.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_portrait_unknown.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_portrait_unknown.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_portrait_unknown.visible = false
+	frame.add_child(_portrait_unknown)
 	_name_label = _mklabel(p, "PLAYER", Vector2(90, 8), 20, GOLD)
 	_title_label = _mklabel(p, "", Vector2(90, 34), 14, TEXT)
 	for i in 7:
@@ -154,18 +168,17 @@ func _log_panel(rect: Rect2) -> void:
 
 func _ability_bar(rect: Rect2) -> void:
 	var p := _panel(rect)
-	# Real abilities: smoke + cloak (the kit), plus emote. Keyed by id we update via set_ability().
-	var slots := [["smoke", "SMOKE", "R"], ["cloak", "CLOAK", "T"], ["emote", "EMOTE", "V"]]
-	var icon_for := {"smoke": "ui_hide", "cloak": "ui_disguise", "emote": "ui_coin"}
+	# Two TOOL slots (their tool is set per-match via set_ability_tool) + emote. Keyed by id.
+	var slots := [["slot0", "TOOL 1", "R", "ui_hide"], ["slot1", "TOOL 2", "T", "ui_flag"], ["emote", "EMOTE", "V", "ui_coin"]]
 	for i in slots.size():
 		var x := 12 + i * 192
 		var slot := Panel.new(); slot.position = Vector2(x, 8); slot.size = Vector2(180, 72)
 		var sb := StyleBoxFlat.new(); sb.bg_color = Color(0.04, 0.04, 0.05); sb.set_border_width_all(2); sb.border_color = GOLD_DIM; sb.set_corner_radius_all(3)
 		slot.add_theme_stylebox_override("panel", sb); p.add_child(slot)
-		_icon(slot, icon_for.get(slots[i][0], "ui_coin"), Vector2(8, 16), 40)
-		_mklabel(slot, slots[i][1], Vector2(56, 12), 14, GOLD)
+		var icon := _icon(slot, slots[i][3], Vector2(8, 16), 40)
+		var name_label := _mklabel(slot, slots[i][1], Vector2(56, 12), 14, GOLD)
 		var sub := _mklabel(slot, "[%s]" % slots[i][2], Vector2(56, 36), 15, Color(0.95, 0.9, 0.75))
-		_ability_slots[slots[i][0]] = {"label": sub, "key": slots[i][2], "slot": slot}
+		_ability_slots[slots[i][0]] = {"label": sub, "name": name_label, "icon": icon, "key": slots[i][2], "slot": slot}
 
 func _minimap_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
@@ -193,14 +206,21 @@ func _make_plate(appearance_index: int, border: Color, caption: String) -> Contr
 	var frame := Panel.new(); frame.custom_minimum_size = Vector2(64, 64)
 	var fb := StyleBoxFlat.new(); fb.bg_color = Color(0.03, 0.03, 0.04); fb.set_border_width_all(3); fb.border_color = border
 	frame.add_theme_stylebox_override("panel", fb); holder.add_child(frame)
-	var tr := TextureRect.new()
-	var sheets = CharacterVisual.SHEET_TEXTURES
-	var tex: Texture2D = sheets[wrapi(appearance_index, 0, sheets.size())]
-	var fpx := int(float(tex.get_width()) / float(CharacterVisual.SHEET_COLUMNS))
-	var at := AtlasTexture.new(); at.atlas = tex; at.region = Rect2(0, 0, fpx, fpx)
-	tr.texture = at; tr.set_anchors_preset(Control.PRESET_FULL_RECT)
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; frame.add_child(tr)
+	if appearance_index < 0:
+		# Unknown look (the revealed player is DISGUISED) — show a "?" instead of a sprite.
+		var q := Label.new(); q.text = "?"
+		q.add_theme_font_size_override("font_size", 40); q.add_theme_color_override("font_color", border)
+		q.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER; q.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		q.set_anchors_preset(Control.PRESET_FULL_RECT); frame.add_child(q)
+	else:
+		var tr := TextureRect.new()
+		var sheets = CharacterVisual.SHEET_TEXTURES
+		var tex: Texture2D = sheets[wrapi(appearance_index, 0, sheets.size())]
+		var fpx := int(float(tex.get_width()) / float(CharacterVisual.SHEET_COLUMNS))
+		var at := AtlasTexture.new(); at.atlas = tex; at.region = Rect2(0, 0, fpx, fpx)
+		tr.texture = at; tr.set_anchors_preset(Control.PRESET_FULL_RECT)
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE; tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST; frame.add_child(tr)
 	var lbl := Label.new(); lbl.text = caption; lbl.add_theme_font_size_override("font_size", 11)
 	lbl.add_theme_color_override("font_color", border); lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	holder.add_child(lbl)
@@ -213,14 +233,30 @@ func set_player(name_text: String, title_text: String, appearance_index: int) ->
 	if _title_label: _title_label.text = title_text
 	set_portrait(appearance_index)
 
+# Update just the top-left box's name + subtitle (no portrait change). Used online once the roster
+# arrives so the box shows YOUR player number ("PLAYER 2" / "YOU") and matches the scoreboard.
+func set_player_name(name_text: String, title_text: String = "") -> void:
+	if _name_label != null: _name_label.text = name_text
+	if _title_label != null: _title_label.text = title_text
+
 func set_portrait(appearance_index: int) -> void:
 	if _portrait == null:
 		return
+	if _portrait_unknown != null:
+		_portrait_unknown.visible = false
+	_portrait.visible = true
 	var sheets = CharacterVisual.SHEET_TEXTURES
 	var tex: Texture2D = sheets[wrapi(appearance_index, 0, sheets.size())]
 	var frame_px := int(float(tex.get_width()) / float(CharacterVisual.SHEET_COLUMNS))
 	var at := AtlasTexture.new(); at.atlas = tex; at.region = Rect2(0, 0, frame_px, frame_px)
 	_portrait.texture = at
+
+# Show a "?" instead of the portrait — used while your disguise/morph hides who you are.
+func set_portrait_unknown() -> void:
+	if _portrait_unknown != null:
+		_portrait_unknown.visible = true
+	if _portrait != null:
+		_portrait.visible = false
 
 func set_exposure(fraction: float) -> void:
 	var lit := int(round(clampf(fraction, 0.0, 1.0) * _exposure_segs.size()))
@@ -250,6 +286,19 @@ func set_ability(id: String, text: String, available: bool = true) -> void:
 	var s: Dictionary = _ability_slots[id]
 	s.label.text = text
 	(s.slot as Panel).modulate = Color(1, 1, 1, 1.0 if available else 0.45)
+
+# Set a tool slot's NAME + ICON (the match calls this once it knows your equipped tools). The slot's
+# key (R / T) is appended to the name so you can still see which key fires it.
+func set_ability_tool(id: String, tool_display_name: String, icon_id: String) -> void:
+	if not _ability_slots.has(id):
+		return
+	var s: Dictionary = _ability_slots[id]
+	if s.get("name") != null:
+		(s["name"] as Label).text = "%s [%s]" % [tool_display_name, s.get("key", "")]
+	if s.get("icon") != null:
+		var path := ICONS + icon_id + ".png"
+		if ResourceLoader.exists(path):
+			(s["icon"] as TextureRect).texture = load(path)
 
 # Your target's look (red plate), shown once you've cleared your marks. Replaces any prior one.
 func set_target_reveal(appearance_index: int) -> void:

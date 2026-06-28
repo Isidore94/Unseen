@@ -179,6 +179,11 @@ var _arrow_layer: CanvasLayer = null
 ## nearest living one. The host tells us when each dies so we can drop it.
 var _my_mark_names: Array = []
 var _resolved_marks: Dictionary = {}  # mark_name -> Node2D (resolved locally)
+## The colour of OUR mark rings — set to our roster colour once the roster arrives, so each
+## player's target circles match their own scoreboard dot. It is applied LOCALLY only; the ring's
+## on/off state and colour are NEVER replicated, so no other peer can see (or even know there is)
+## a ring around our marks. (Marks are unique per player and told only to their owner, too.)
+var _my_ring_color: Color = Color(1.0, 0.84, 0.25)
 ## Online PvP: our opponent (the other player). Known from the start so the exposure
 ## arrow can react when they run; only KILLABLE once we've finished our own mark.
 var _my_target_name: String = ""
@@ -207,9 +212,19 @@ var _sewer_overlay: ColorRect = null
 ## replicated claim/cooldown can be applied to the right one.
 var _access_points_by_index: Dictionary = {}
 
-## Slice D — our own item kit readout, driven by host pushes (the host owns the charges).
+## Our own item kit readout, driven by host pushes (the host owns the charges). `slots` is a
+## 2-element array, each [tool, charges, cooldown_left, active_left] for our two equipped tools.
 var _item_label: Label = null
-var _item_state: Dictionary = {"smoke": 0, "cloak": 0, "smoke_on": false, "cloak_on": false, "smoke_secs": 0.0, "cloak_secs": 0.0}
+var _item_state: Dictionary = {"slots": [[0, 0, 0.0, 0.0], [0, 0, 0.0, 0.0]]}
+## Host-side: each peer's two chosen tools (from the lobby), and how long each player is stunned.
+var _tools_by_peer: Dictionary = {}
+var _stun_left_by_peer: Dictionary = {}
+## Local (per-machine): which OTHER players we're currently showing disguised (so we only swap the
+## body on transition), and the active MORPH overrides we'll revert ([{visual, restore_index, left}]).
+var _disguise_shown: Dictionary = {}
+var _morph_active: Array = []
+## Our own body index (for restoring the HUD portrait after a disguise/morph "?" period).
+var _my_appearance_index: int = 0
 
 ## Slice E — the faceplate row + any reveal that arrived before the HUD existed.
 var _faceplates: FaceplateRow = null
@@ -439,6 +454,7 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		"pos": _spawn_position_for_index(_next_spawn_index),
 		"appearance": _body_index_from_payload(loadout_payload),
 		"loadout": loadout_payload,
+		"tools": _tools_for_peer(peer_id),  # the two tools this player picked in the lobby
 	}
 	var character := _player_spawner.spawn(spawn_data)
 	_players_by_peer[peer_id] = character
@@ -470,12 +486,12 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		# Phase 9: re-announce this player's kills (clean AND whiff) at the match level.
 		kill.kill_resolved.connect(_relay_kill_resolved)
 
-	# Host owns this player's item kit: relay cloak to the opponent's arrow and push the
-	# charges readout to the owner whenever it changes (Slice D).
+	# Host owns this player's tool kit: apply each tool's world effect when used + push the
+	# charges/cooldown readout to the owner whenever it changes.
 	var item := character.get_node_or_null("ItemComponent") as ItemComponent
 	if item != null:
-		item.item_activated.connect(_on_item_activated.bind(peer_id))
-		item.item_expired.connect(_on_item_expired.bind(peer_id))
+		item.tool_activated.connect(_on_tool_activated.bind(peer_id))
+		item.tool_expired.connect(_on_tool_expired.bind(peer_id))
 		_push_item_state_to(peer_id)
 
 	_update_status()
@@ -498,7 +514,7 @@ func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 		if character != null:
 			for other_peer in _players_by_peer:
 				if other_peer != peer_id and not bool(_dead_by_peer.get(other_peer, false)):
-					_receive_exposure_reveal.rpc_id(other_peer, int(character.appearance_index))
+					_receive_exposure_reveal.rpc_id(other_peer, _revealed_look(character))
 
 
 # Owner-only: our opponent's exposure, fed to our local copy of them so the exposure
@@ -562,6 +578,8 @@ func _announce_ready_to_host() -> void:
 	# request that follows), then ask to be spawned. Sending it once here is the whole
 	# join-time loadout sync (§5) — it's static for the match, so nothing repeats per-frame.
 	_submit_loadout.rpc_id(NetworkManager.HOST_PEER_ID, _local_loadout_payload())
+	# Tell the host the two TOOLS we picked in the lobby (so it stamps them into our spawn).
+	_submit_tools.rpc_id(NetworkManager.HOST_PEER_ID, _local_tools())
 	# "Host, my scene is up — please spawn my character." Runs the host's _request_spawn.
 	_request_spawn.rpc_id(NetworkManager.HOST_PEER_ID)
 	_update_status()
@@ -586,6 +604,10 @@ func _create_networked_player(spawn_data: Dictionary) -> Node:
 	var visual := character.get_node_or_null("CharacterVisual")
 	if visual != null:
 		visual.set("randomize_on_ready", false)
+	# Equip the two tools this player picked (same on every machine, so slot→tool agrees).
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item != null and spawn_data.has("tools"):
+		item.apply_equipped(spawn_data["tools"])
 	return character
 
 
@@ -629,6 +651,31 @@ func _submit_loadout(payload: Dictionary) -> void:
 	# ON-CHANGE seam: if this peer already has a live character (a mid-match wardrobe
 	# change), we'd re-broadcast + re-apply here. Loadouts are static during a match today
 	# (§5), so we only stash it for the (re)spawn. Hook left intentionally for later.
+
+
+# === tool loadout (the two tools picked in the lobby) =======================
+# Client → host: "here are the two tools I picked." Stored, then stamped into our spawn data.
+@rpc("any_peer", "reliable")
+func _submit_tools(tools: Array) -> void:
+	if not multiplayer.is_server():
+		return
+	_tools_by_peer[multiplayer.get_remote_sender_id()] = tools
+
+# The two tools chosen at THIS machine (from NetworkManager, set by the lobby; sensible default).
+func _local_tools() -> Array:
+	return NetworkManager.selected_tools.duplicate()
+
+# Host-only: the two tools to spawn `peer_id` with — their submitted pick, our own for the host, or
+# a safe default. Always returns exactly two tool ints.
+func _tools_for_peer(peer_id: int) -> Array:
+	var tools: Array = []
+	if _tools_by_peer.has(peer_id):
+		tools = _tools_by_peer[peer_id]
+	elif peer_id == multiplayer.get_unique_id():
+		tools = _local_tools()
+	if tools.size() < 2:
+		tools = [ItemComponent.Tool.SMOKE, ItemComponent.Tool.DECOY]
+	return [int(tools[0]), int(tools[1])]
 
 
 # The loadout payload for the human at THIS machine, read from the account inventory if
@@ -791,7 +838,7 @@ func _begin_target_phase(peer_id: int) -> void:
 	# RED reveal (§7.4): the FIRST player to finish their marks learns their target's look.
 	if not _target_reveal_awarded:
 		_target_reveal_awarded = true
-		_receive_target_reveal.rpc_id(peer_id, int(target.appearance_index))
+		_receive_target_reveal.rpc_id(peer_id, _revealed_look(target))
 
 
 # Returns any other living player's peer id (the opponent). 2-player for now.
@@ -1146,10 +1193,13 @@ func _notify_mark_down(mark_name: String) -> void:
 func _process(delta: float) -> void:
 	if NetworkManager.is_host():
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
+		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
 	_maybe_assign_crowd_appearances()
 	_update_visibility()
+	_tick_morphs(delta)  # revert finished morphs (every machine; morph is applied locally)
+	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
 	# started together via the lobby, so it stays roughly in sync without extra messages).
@@ -1182,6 +1232,7 @@ func _build_roster_rows() -> Array:
 			"name": "PLAYER %d" % (i + 1),
 			"color": ROSTER_COLORS[i % ROSTER_COLORS.size()],
 			"score": int(_score_for_peer(peer).get("total", 0)),
+			"peer": peer,  # so each client can find ITS OWN row and label the top-left box
 		})
 		i += 1
 	return rows
@@ -1190,8 +1241,20 @@ func _build_roster_rows() -> Array:
 # Everyone: render the host's roster snapshot in the HUD scoreboard.
 @rpc("authority", "call_local", "reliable")
 func _receive_roster(rows: Array) -> void:
-	if _mhud != null:
-		_mhud.set_roster(rows)
+	if _mhud == null:
+		return
+	_mhud.set_roster(rows)
+	# Show MY player number in the top-left box (matches the scoreboard), with "YOU" underneath.
+	var my_id := multiplayer.get_unique_id()
+	for row in rows:
+		if int(row.get("peer", 0)) == my_id:
+			_mhud.set_player_name(String(row.get("name", "YOU")), "YOU")
+			# Our mark rings use our own roster colour (matches our scoreboard dot), applied locally.
+			var col: Color = row.get("color", _my_ring_color)
+			if col != _my_ring_color:
+				_my_ring_color = col
+				_recolor_my_rings()
+			break
 
 
 # Count our own active item timers down locally so the "(ON Ns)" readout ticks every frame.
@@ -1201,12 +1264,13 @@ func _tick_item_countdown(delta: float) -> void:
 	if _mhud == null:
 		return
 	var changed := false
-	if bool(_item_state["smoke_on"]) and float(_item_state["smoke_secs"]) > 0.0:
-		_item_state["smoke_secs"] = maxf(0.0, float(_item_state["smoke_secs"]) - delta)
-		changed = true
-	if bool(_item_state["cloak_on"]) and float(_item_state["cloak_secs"]) > 0.0:
-		_item_state["cloak_secs"] = maxf(0.0, float(_item_state["cloak_secs"]) - delta)
-		changed = true
+	for s in _item_state.get("slots", []):
+		if float(s[2]) > 0.0:  # cooldown
+			s[2] = maxf(0.0, float(s[2]) - delta)
+			changed = true
+		if float(s[3]) > 0.0:  # active effect
+			s[3] = maxf(0.0, float(s[3]) - delta)
+			changed = true
 	if changed:
 		_refresh_item_label()
 
@@ -1306,6 +1370,7 @@ func _build_player_hud() -> void:
 	_mhud.name = "MatchHud"
 	add_child(_mhud)
 	var my_idx := int(_local_player.get("appearance_index")) if _local_player != null else 0
+	_my_appearance_index = my_idx
 	_mhud.set_player("YOU", "", my_idx)
 	_mhud.set_objective("Locating your marks…")
 	_mhud.add_log("Match started.")
@@ -1337,7 +1402,18 @@ func _build_player_hud() -> void:
 func _highlight_mark(mark: Node) -> void:
 	var visual := mark.get_node_or_null("CharacterVisual")
 	if visual != null and visual.has_method("set_highlight"):
+		visual.set("highlight_color", _my_ring_color)  # OUR colour, drawn only on OUR screen
 		visual.call("set_highlight", true)
+
+
+# Re-tint our existing mark rings to our colour (called once the roster tells us our colour).
+func _recolor_my_rings() -> void:
+	for mark_name in _resolved_marks:
+		var mark: Node2D = _resolved_marks[mark_name]
+		if mark != null and is_instance_valid(mark):
+			var visual := mark.get_node_or_null("CharacterVisual")
+			if visual != null:
+				visual.set("highlight_color", _my_ring_color)
 
 
 # Point the mini-map at the first still-living mark and update the "x / y done" caption.
@@ -1349,12 +1425,12 @@ func _refresh_mark_tracking() -> void:
 		if mark != null and is_instance_valid(mark):
 			living.append(mark)
 	if _mini_map != null:
-		_mini_map.track_objective(living[0] if not living.is_empty() else null)
+		_mini_map.track_objectives(living)  # show ALL your live marks so you can path between them
 	if _mhud != null and not _hunt_phase:
 		if _my_mark_names.is_empty():
 			_mhud.set_objective("Locating your marks…")
 		else:
-			_mhud.set_objective("Kill your marks (gold dots) — %d left." % living.size())
+			_mhud.set_objective("Kill your marks (your circles) — %d left." % living.size())
 
 
 # Drop the highlight on every mark we still hold a reference to (used when the hunt
@@ -1407,6 +1483,27 @@ func _update_visibility() -> void:
 				_apply_self_smoke_cue(character)  # ...but show YOU that you're hidden
 			else:
 				character.visible = _can_local_player_see(my_layer, character)
+				_apply_disguise_view(character)  # show OTHER players' disguise (commoner) look
+
+
+# Per-viewer DISGUISE: if this OTHER player is disguised, show them as their commoner body; when the
+# disguise ends, restore their real look. Only changes on transition (tracked in _disguise_shown).
+func _apply_disguise_view(character: Node2D) -> void:
+	if not (character is Player):
+		return
+	var visual := character.get_node_or_null("CharacterVisual")
+	if visual == null or not visual.has_method("set_appearance"):
+		return
+	var disguise_body := int(character.get("_net_disguise_body"))
+	var shown := bool(_disguise_shown.get(character, false))
+	if disguise_body >= 0 and not shown:
+		visual.call("set_appearance", disguise_body)
+		_disguise_shown[character] = true
+	elif disguise_body < 0 and shown:
+		# Restore their real look (the host-assigned loadout).
+		if visual.has_method("apply_loadout"):
+			visual.call("apply_loadout", _loadout_of_player(character))
+		_disguise_shown[character] = false
 
 
 # Self-only feedback: while YOUR smoke is up you stay fully visible to yourself (others can't
@@ -1607,44 +1704,351 @@ func _apply_access_cooldown(index: int) -> void:
 		point.apply_cooldown_replicated()
 
 
-# === Slice D — item kit HUD + cloak routing (§7.6) ==========================
+# === tool kit HUD + effects =================================================
 func _build_item_hud() -> void:
 	_refresh_item_label()
 
 
-# Drive the MatchHud ability slots from our authoritative item state (smoke/cloak charges + the
-# live "Ns" countdown — for SMOKE that's the seconds until you can attack/be seen again).
+# Drive the two MatchHud ability slots from our authoritative tool state: the tool's name + icon,
+# its charges, and a live countdown (cooldown, or "ON Ns" while a durational effect runs).
 func _refresh_item_label() -> void:
 	if _mhud == null:
 		return
-	var smoke_secs: String = " · %ds" % int(ceil(_item_state["smoke_secs"])) if bool(_item_state["smoke_on"]) else ""
-	var cloak_secs: String = " · %ds" % int(ceil(_item_state["cloak_secs"])) if bool(_item_state["cloak_on"]) else ""
-	var smoke_n := int(_item_state["smoke"])
-	var cloak_n := int(_item_state["cloak"])
-	_mhud.set_ability("smoke", "x%d  [R]%s" % [smoke_n, smoke_secs], smoke_n > 0 or bool(_item_state["smoke_on"]))
-	_mhud.set_ability("cloak", "x%d  [T]%s" % [cloak_n, cloak_secs], cloak_n > 0 or bool(_item_state["cloak_on"]))
+	var slots: Array = _item_state.get("slots", [])
+	for slot in mini(slots.size(), 2):
+		var s: Array = slots[slot]
+		var tool := int(s[0])
+		var charges := int(s[1])
+		var cooldown := float(s[2])
+		var active := float(s[3])
+		var key := "slot%d" % slot
+		_mhud.set_ability_tool(key, ItemComponent.tool_name(tool), ItemComponent.tool_icon(tool))
+		var sub := "x%d" % charges
+		if active > 0.0:
+			sub = "ON %ds" % int(ceil(active))
+		elif cooldown > 0.0:
+			sub = "%ds" % int(ceil(cooldown))
+		var usable := (charges > 0 and cooldown <= 0.0 and active <= 0.0) or active > 0.0
+		_mhud.set_ability(key, sub, usable)
 	_mhud.set_ability("emote", "[V]", true)
 
 
-# HOST: a player's item turned on. Update the owner's readout; for CLOAK, suppress the hunt
-# arrow held by whoever is HUNTING this player (their exposure arrow still fires).
-func _on_item_activated(which: int, _duration: float, peer_id: int) -> void:
+# While OUR identity is hidden (disguise active — read straight off our replicated flag — or a morph
+# is running), the top-left portrait shows a "?". Driven every frame from authoritative state so it
+# can't get out of sync with the effect. Called from _process.
+func _update_identity_portrait() -> void:
+	if _mhud == null or _local_player == null:
+		return
+	var hidden := int(_local_player.get("_net_disguise_body")) >= 0
+	if not hidden:
+		for s in _item_state.get("slots", []):
+			if float(s[3]) > 0.0 and int(s[0]) == ItemComponent.Tool.MORPH:
+				hidden = true
+				break
+	if hidden:
+		_mhud.set_portrait_unknown()
+	else:
+		_mhud.set_portrait(_my_appearance_index)
+
+
+# HOST: a tool was used by `peer_id`. Apply its world effect (server-authoritative), then refresh
+# that player's readout. (Disguise/morph/decoy/poison are wired in the next slices.)
+func _on_tool_activated(tool: int, slot: int, peer_id: int) -> void:
+	var character := _players_by_peer.get(peer_id) as Player
+	if character != null and is_instance_valid(character):
+		var ok := true
+		match tool:
+			ItemComponent.Tool.SMOKE:
+				_deploy_smoke(character, peer_id)
+			ItemComponent.Tool.DECOY:
+				ok = _deploy_decoy(character)
+			ItemComponent.Tool.DISGUISE:
+				ok = _apply_disguise(character, peer_id)
+			ItemComponent.Tool.MORPH:
+				_apply_morph_host(character, peer_id)
+			ItemComponent.Tool.POISON:
+				ok = _apply_poison(character, peer_id)
+			_:
+				_announce_panic_unimplemented(tool)  # placeholder until its slice lands
+		# A target-needing tool (disguise/decoy/poison) fired with nothing in the ring — refund + tell.
+		if not ok:
+			var item := character.get_node_or_null("ItemComponent") as ItemComponent
+			if item != null:
+				item.refund(slot)
+			_notify_owner.rpc_id(peer_id, "Aim at someone in your ring first.")
 	_push_item_state_to(peer_id)
-	if which == ItemComponent.Item.CLOAK:
-		var hunter := _hunter_of_target(peer_id)
-		if hunter != 0:
-			_set_opponent_arrow_suppressed.rpc_id(hunter, true)
 
 
-func _on_item_expired(which: int, peer_id: int) -> void:
+# Owner-only feedback line (so tools that worked/failed give the user a clear, immediate cue).
+@rpc("authority", "call_local", "reliable")
+func _notify_owner(text: String) -> void:
+	if _mhud != null:
+		_mhud.add_log(text)
+
+
+func _on_tool_expired(tool: int, _slot: int, peer_id: int) -> void:
+	if tool == ItemComponent.Tool.DISGUISE:
+		_clear_disguise(peer_id)
 	_push_item_state_to(peer_id)
-	if which == ItemComponent.Item.CLOAK:
-		var hunter := _hunter_of_target(peer_id)
-		if hunter != 0:
-			_set_opponent_arrow_suppressed.rpc_id(hunter, false)
 
 
-# HOST: send a player their authoritative item charges + active state (owner-only).
+# Temporary: log "not yet wired" for tools whose effect ships in a later slice, so a player who
+# equips one isn't left wondering why nothing happened (the charge/cooldown still tick).
+func _announce_panic_unimplemented(tool: int) -> void:
+	if _mhud != null:
+		_mhud.add_log("%s isn't wired up yet." % ItemComponent.tool_name(tool).capitalize())
+
+
+# HOST: deploy a smoke cloud at the player's feet (spawned on every machine so all SEE it). The
+# host's per-frame stun loop then catches anyone (but the deployer) standing inside it.
+func _deploy_smoke(character: Player, peer_id: int) -> void:
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return
+	_spawn_smoke_cloud.rpc(character.global_position, item.smoke_cloud_radius, item.smoke_cloud_seconds, item.smoke_stun_seconds, peer_id)
+
+
+# Everyone: spawn the smoke cloud visual + marker in the world. The host's copy also drives stuns
+# (via the "smoke_cloud" group); clients' copies are visual-only.
+@rpc("authority", "call_local", "reliable")
+func _spawn_smoke_cloud(world_pos: Vector2, radius: float, life: float, stun_seconds: float, deployer_peer: int) -> void:
+	var cloud := SmokeCloud.new()
+	cloud.set("stun_seconds", stun_seconds)
+	var parent: Node = _map if _map != null else self
+	parent.add_child(cloud)
+	cloud.setup(world_pos, radius, life, deployer_peer)
+	# A small deploy pop on the deployer's body, for feedback.
+	var deployer := _players_by_peer.get(deployer_peer) as Node
+	if deployer == null and _players_parent != null:
+		for p in _players_parent.get_children():
+			if int(p.get("controlling_peer_id")) == deployer_peer:
+				deployer = p
+				break
+	if deployer != null:
+		var v := deployer.get_node_or_null("CharacterVisual")
+		if v != null and v.has_method("play_strike"):
+			v.call("play_strike")
+
+
+# HOST: DECOY — spook the NPC in the player's interaction ring (the one they're facing) into bolting
+# away (it looks like a fleeing human, baiting a hunter into a wrong kill). The host owns NPC motion,
+# so the flee replicates to every client as ordinary movement.
+func _deploy_decoy(character: Player) -> bool:
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	var flee: float = item.decoy_flee_seconds if item != null else 4.0
+	var target := _tool_target_for(character)  # the NPC the client targeted (or our best guess)
+	if target == null or not target.has_method("flee_run"):
+		return false
+	# 2.0× walk = 180 px/s, comfortably below the player's 220 run so you can still chase it down.
+	target.call("flee_run", target.velocity, flee, 2.0)  # bolt in its current direction
+	return true
+
+
+# The NPC a tool should act on: prefer the EXACT one the controlling client sent (validated to be a
+# real crowd NPC near the player), so decoy/disguise hit what the player saw highlighted; fall back
+# to the host's own facing query (used for the host's own player, which sends no target). Consumed.
+func _tool_target_for(character: Player) -> Node2D:
+	var node := _consume_pending_target(character, false)  # NPC only
+	return node if node != null else character.interaction_target(false)
+
+
+# Like _tool_target_for but also allows a PLAYER (poison can kill your human target too).
+func _poison_target_for(character: Player) -> Node2D:
+	var node := _consume_pending_target(character, true)
+	return node if node != null else character.interaction_target(true)
+
+
+# Read + clear the client-sent target, validating it's a real character near the player. `allow_player`
+# lets a player target through (poison); otherwise only crowd NPCs (decoy/disguise). Null if invalid.
+func _consume_pending_target(character: Player, allow_player: bool) -> Node2D:
+	var path: NodePath = character.get("_pending_tool_target")
+	character.set("_pending_tool_target", NodePath(""))  # consume — don't leak to the next tool
+	if path == NodePath(""):
+		return null
+	var node := get_node_or_null(path) as Node2D
+	if node == null or not is_instance_valid(node) or node == character:
+		return null
+	var ok_kind := node.is_in_group("npc") or (allow_player and node.is_in_group("player"))
+	if not ok_kind:
+		return null
+	if node.global_position.distance_to(character.global_position) > character.interaction_radius * 1.6:
+		return null
+	return node
+
+
+# HOST: POISON — a delayed, quiet kill on the target in your ring (NPC mark or your human target).
+func _apply_poison(character: Player, peer_id: int) -> bool:
+	var kill := character.get_node_or_null("KillComponent") as KillComponent
+	if kill == null:
+		return false
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	var delay: float = item.poison_delay_seconds if item != null else 4.0
+	var target := _poison_target_for(character)
+	if target == null:
+		return false
+	if not kill.host_poison(target, delay):
+		return false
+	_notify_owner.rpc_id(peer_id, "Target poisoned — they drop in %ds." % int(delay))
+	return true
+
+
+# HOST: DISGUISE — this player looks like a random COMMONER to everyone else for the duration
+# (a replicated body index every other machine swaps in; the owner keeps their real look). Also
+# suppress the hunt arrow their hunter holds on them — the disguise breaks the visual lock.
+func _apply_disguise(character: Player, peer_id: int) -> bool:
+	# Must be aimed at an NPC in the ring — you disguise AS that civilian (take their look).
+	var target := _tool_target_for(character)
+	if target == null:
+		return false
+	character.set("_net_disguise_body", _appearance_of_node(target))
+	var hunter := _hunter_of_target(peer_id)
+	if hunter != 0:
+		_set_opponent_arrow_suppressed.rpc_id(hunter, true)
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	var secs: int = int(item.disguise_seconds) if item != null else 30
+	_notify_owner.rpc_id(peer_id, "Disguised as a civilian (%ds)." % secs)
+	return true
+
+
+# The look to put on a reveal plate for `character`: their real body index, or −1 ("?") if they're
+# DISGUISED right now — disguise hides your identity even from an exposure/target reveal.
+func _revealed_look(character: Node) -> int:
+	if character != null and int(character.get("_net_disguise_body")) >= 0:
+		return -1
+	return int(character.get("appearance_index"))
+
+
+# The body index a character is currently wearing (falls back to a random commoner).
+func _appearance_of_node(node: Node) -> int:
+	var v := node.get_node_or_null("CharacterVisual")
+	if v != null and v.has_method("get_appearance"):
+		return int(v.call("get_appearance"))
+	return _random_commoner_index()
+
+
+func _clear_disguise(peer_id: int) -> void:
+	var character := _players_by_peer.get(peer_id) as Player
+	if character != null and is_instance_valid(character):
+		character.set("_net_disguise_body", -1)
+	var hunter := _hunter_of_target(peer_id)
+	if hunter != 0:
+		_set_opponent_arrow_suppressed.rpc_id(hunter, false)
+
+
+func _random_commoner_index() -> int:
+	var ids: Array = CosmeticRegistry.COMMONER_BODY_IDS
+	if ids.is_empty():
+		return 1
+	return int(CosmeticRegistry.index_for_body_id(ids[randi() % ids.size()]))
+
+
+# HOST: MORPH — tell EVERY machine to reskin the nearest NPCs around this player to that player's
+# look for a while (so a hunter can't tell which is the real one). Each machine applies it locally
+# to its own crowd (the look is per-viewer), so it rides on top of the per-viewer crowd cleanly.
+func _apply_morph_host(character: Player, _peer_id: int) -> void:
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return
+	_apply_morph.rpc(int(character.get("controlling_peer_id")), item.morph_npc_count, item.morph_radius, item.morph_seconds)
+
+
+# Everyone: copy player `peer`'s CURRENT look onto the `count` nearest crowd NPCs within `radius`,
+# remembering each NPC's previous look so _process can revert it after `duration`.
+@rpc("authority", "call_local", "reliable")
+func _apply_morph(peer: int, count: int, radius: float, duration: float) -> void:
+	var player := _player_by_peer_local(peer)
+	if player == null:
+		return
+	var src := player.get_node_or_null("CharacterVisual")
+	if src == null or not src.has_method("get_appearance"):
+		return
+	var look_index := int(src.call("get_appearance"))
+	for npc in _nearest_npcs_local(player.global_position, count, radius):
+		var visual: Node = (npc as Node).get_node_or_null("CharacterVisual")
+		if visual == null or not visual.has_method("set_appearance"):
+			continue
+		_morph_active.append({"visual": visual, "restore": int(visual.call("get_appearance")), "left": duration})
+		visual.call("set_appearance", look_index)
+
+
+# Find a player node on THIS machine by the peer that controls it (clients don't have _players_by_peer).
+func _player_by_peer_local(peer: int) -> Node2D:
+	if _players_parent == null:
+		return null
+	for child in _players_parent.get_children():
+		if int(child.get("controlling_peer_id")) == peer:
+			return child as Node2D
+	return null
+
+
+# The `count` closest living crowd NPCs within `radius` of `pos` (host or client; local crowd).
+func _nearest_npcs_local(pos: Vector2, count: int, radius: float) -> Array:
+	var scored: Array = []
+	if _crowd_parent != null:
+		for child in _crowd_parent.get_children():
+			var npc := child as Npc
+			if npc == null or npc.is_dead():
+				continue
+			var dist := npc.global_position.distance_to(pos)
+			if dist <= radius:
+				scored.append({"npc": npc, "dist": dist})
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["dist"] < b["dist"])
+	var out: Array = []
+	for i in mini(count, scored.size()):
+		out.append(scored[i]["npc"])
+	return out
+
+
+# Per frame (every machine): count down active morphs and revert each NPC when its time is up.
+func _tick_morphs(delta: float) -> void:
+	for i in range(_morph_active.size() - 1, -1, -1):
+		var entry: Dictionary = _morph_active[i]
+		entry["left"] = float(entry["left"]) - delta
+		var visual = entry["visual"]
+		if visual == null or not is_instance_valid(visual):
+			_morph_active.remove_at(i)
+			continue
+		if float(entry["left"]) <= 0.0:
+			visual.call("set_appearance", int(entry["restore"]))
+			_morph_active.remove_at(i)
+
+
+# HOST-only, per frame: stun any (non-owner) player standing in a smoke cloud, for the cloud's
+# stun_seconds; tick the stun down and lift it (unfreeze + re-enable kills) when it ends.
+func _update_smoke_stuns(delta: float) -> void:
+	var clouds := get_tree().get_nodes_in_group("smoke_cloud")
+	for peer in _players_by_peer:
+		var character := _players_by_peer[peer] as Player
+		if character == null or not is_instance_valid(character) or bool(_dead_by_peer.get(peer, false)):
+			continue
+		# Refresh the stun if currently inside a cloud someone ELSE deployed.
+		for cloud in clouds:
+			var sc := cloud as SmokeCloud
+			if sc == null or sc.owner_peer == peer:
+				continue
+			if sc.contains(character.global_position):
+				# Cap the stun by the cloud's REMAINING life so it can never outlast the animation.
+				var capped := minf(float(sc.get("stun_seconds")), sc.remaining())
+				_stun_left_by_peer[peer] = maxf(float(_stun_left_by_peer.get(peer, 0.0)), capped)
+		var left := float(_stun_left_by_peer.get(peer, 0.0))
+		if left > 0.0:
+			left = maxf(0.0, left - delta)
+			_stun_left_by_peer[peer] = left
+		_set_player_stunned(character, left > 0.0)
+
+
+# Freeze/unfreeze a player and block/allow their kills (host-authoritative, replicated).
+func _set_player_stunned(character: Player, on: bool) -> void:
+	if bool(character.get("_net_stunned")) == on:
+		return
+	character.set("_net_stunned", on)
+	var kill := character.get_node_or_null("KillComponent")
+	if kill != null:
+		kill.set("attacks_disabled", on)
+
+
+# HOST: send a player their authoritative tool state (owner-only): per slot [tool, charges,
+# cooldown_left, active_left]. The client ticks the timers between pushes (in _tick_item_countdown).
 func _push_item_state_to(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
@@ -1654,19 +2058,16 @@ func _push_item_state_to(peer_id: int) -> void:
 	var item := character.get_node_or_null("ItemComponent") as ItemComponent
 	if item == null:
 		return
-	_receive_item_state.rpc_id(peer_id,
-		item.charges_left(ItemComponent.Item.SMOKE),
-		item.charges_left(ItemComponent.Item.CLOAK),
-		item.smoke_active(), item.cloak_active(),
-		item.smoke_seconds_left(), item.cloak_seconds_left())
+	var slots: Array = []
+	for slot in 2:
+		slots.append([item.tool_in_slot(slot), item.charges_left_slot(slot), item.cooldown_left_slot(slot), item.active_left_slot(slot)])
+	_receive_item_state.rpc_id(peer_id, slots)
 
 
-# Owner-only: update our item readout with the host's authoritative numbers. The host sends the
-# remaining seconds at the moment an effect turns on/off; between pushes the client counts them
-# down locally (in _process) so the readout ticks smoothly without per-frame network traffic.
+# Owner-only: store the host's authoritative tool numbers + refresh the readout.
 @rpc("authority", "call_local", "reliable")
-func _receive_item_state(smoke_left: int, cloak_left: int, smoke_on: bool, cloak_on: bool, smoke_secs: float = 0.0, cloak_secs: float = 0.0) -> void:
-	_item_state = {"smoke": smoke_left, "cloak": cloak_left, "smoke_on": smoke_on, "cloak_on": cloak_on, "smoke_secs": smoke_secs, "cloak_secs": cloak_secs}
+func _receive_item_state(slots: Array) -> void:
+	_item_state = {"slots": slots}
 	_refresh_item_label()
 
 

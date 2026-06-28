@@ -48,6 +48,13 @@ var _item: ItemComponent = null
 ## Round clock (5 minutes) + rough score, shown in the HUD banner / roster.
 var _round_time_left: float = 300.0
 var _score: int = 0
+## Offline smoke stun of the AI hunter: seconds left, and whether it's currently frozen.
+var _hunter_stun_left: float = 0.0
+var _hunter_stunned: bool = false
+## Offline DISGUISE: seconds left + the player's real body index to restore. MORPH: active overrides.
+var _disguise_left: float = 0.0
+var _disguise_real_index: int = -1
+var _offline_morphs: Array = []  # [{visual, restore, left}]
 
 
 func _ready() -> void:
@@ -215,6 +222,9 @@ func _build_hud(map: TestMap01) -> Label:
 			if is_locked: _mhud.add_log("Suspect locked."))
 
 	_item = _player.get_node_or_null("ItemComponent") as ItemComponent
+	# Offline we own the tool effects directly: apply each tool when the kit fires it.
+	if _item != null and _item.has_signal("tool_activated"):
+		_item.tool_activated.connect(_on_offline_tool)
 
 	# Rough scoring: +1 per valid kill, shown in the roster.
 	if kill_component != null and kill_component.has_signal("kill_resolved"):
@@ -237,13 +247,184 @@ func _process(delta: float) -> void:
 	if _contract_label != null:
 		_mhud.set_objective(_contract_label.text)
 	if _item != null:
-		var smoke_secs: String = " · %ds" % int(ceil(_item.smoke_seconds_left())) if _item.smoke_active() else ""
-		var cloak_secs: String = " · %ds" % int(ceil(_item.cloak_seconds_left())) if _item.cloak_active() else ""
-		var smoke_n := _item.charges_left(ItemComponent.Item.SMOKE)
-		var cloak_n := _item.charges_left(ItemComponent.Item.CLOAK)
-		_mhud.set_ability("smoke", "x%d  [R]%s" % [smoke_n, smoke_secs], smoke_n > 0 or _item.smoke_active())
-		_mhud.set_ability("cloak", "x%d  [T]%s" % [cloak_n, cloak_secs], cloak_n > 0 or _item.cloak_active())
+		for slot in 2:
+			var tool := _item.tool_in_slot(slot)
+			var charges := _item.charges_left_slot(slot)
+			var cooldown := _item.cooldown_left_slot(slot)
+			var active := _item.active_left_slot(slot)
+			var key := "slot%d" % slot
+			_mhud.set_ability_tool(key, ItemComponent.tool_name(tool), ItemComponent.tool_icon(tool))
+			var sub := "x%d" % charges
+			if active > 0.0:
+				sub = "ON %ds" % int(ceil(active))
+			elif cooldown > 0.0:
+				sub = "%ds" % int(ceil(cooldown))
+			_mhud.set_ability(key, sub, (charges > 0 and cooldown <= 0.0 and active <= 0.0) or active > 0.0)
 		_mhud.set_ability("emote", "[V]", true)
+	# Offline smoke: freeze the AI hunter while it's standing inside any smoke cloud.
+	if _hunter != null and is_instance_valid(_hunter):
+		for cloud in get_tree().get_nodes_in_group("smoke_cloud"):
+			var sc := cloud as SmokeCloud
+			if sc != null and sc.contains(_hunter.global_position):
+				# Cap by the cloud's remaining life so the stun never outlasts the animation.
+				_hunter_stun_left = maxf(_hunter_stun_left, minf(float(sc.get("stun_seconds")), sc.remaining()))
+		if _hunter_stun_left > 0.0:
+			_hunter_stun_left = maxf(0.0, _hunter_stun_left - delta)
+		_set_hunter_stunned(_hunter_stun_left > 0.0)
+	# Offline disguise: count down + restore the player's real body when it ends.
+	if _disguise_left > 0.0:
+		_disguise_left = maxf(0.0, _disguise_left - delta)
+		if _disguise_left == 0.0 and _disguise_real_index >= 0 and _player != null:
+			var pv := _player.get_node_or_null("CharacterVisual")
+			if pv != null and pv.has_method("set_appearance"):
+				pv.call("set_appearance", _disguise_real_index)
+			_disguise_real_index = -1
+	# Offline morph: count down each NPC override + restore it when done.
+	for i in range(_offline_morphs.size() - 1, -1, -1):
+		var m: Dictionary = _offline_morphs[i]
+		m["left"] = float(m["left"]) - delta
+		var mv = m["visual"]
+		if mv == null or not is_instance_valid(mv):
+			_offline_morphs.remove_at(i)
+		elif float(m["left"]) <= 0.0:
+			mv.call("set_appearance", int(m["restore"]))
+			_offline_morphs.remove_at(i)
+	# Top-left portrait shows "?" while your identity is hidden (disguise or morph active).
+	if _disguise_left > 0.0 or not _offline_morphs.is_empty():
+		_mhud.set_portrait_unknown()
+	else:
+		_mhud.set_portrait(_player.appearance_index if _player != null else 11)
+
+
+# Offline: the kit fired a tool — apply its world effect ourselves. (Disguise/morph/decoy/poison
+# arrive in later slices; for now they log so the player knows the kit triggered.)
+func _on_offline_tool(tool: int, slot: int) -> void:
+	var ok := true
+	if tool == ItemComponent.Tool.SMOKE:
+		_deploy_smoke_offline()
+	elif tool == ItemComponent.Tool.DECOY:
+		ok = _deploy_decoy_offline()
+	elif tool == ItemComponent.Tool.DISGUISE:
+		ok = _apply_disguise_offline()
+	elif tool == ItemComponent.Tool.MORPH:
+		_apply_morph_offline()
+	elif tool == ItemComponent.Tool.POISON:
+		ok = _apply_poison_offline()
+	elif _mhud != null:
+		_mhud.add_log("%s isn't wired up yet." % ItemComponent.tool_name(tool).capitalize())
+	# A target-needing tool fired with nothing in the ring — refund the charge + say why.
+	if not ok:
+		if _item != null:
+			_item.refund(slot)
+		if _mhud != null:
+			_mhud.add_log("Aim at someone in your ring first.")
+
+
+# Offline disguise: become a random commoner for the duration (single screen, so we just swap our
+# own body). _process reverts it and shows the "?" portrait while it's up.
+func _apply_disguise_offline() -> bool:
+	if _player == null or _item == null:
+		return false
+	var target := _player.interaction_target(false)  # must be aimed at an NPC
+	if target == null:
+		return false
+	var visual := _player.get_node_or_null("CharacterVisual")
+	if visual == null or not visual.has_method("set_appearance"):
+		return false
+	if _disguise_real_index < 0:
+		_disguise_real_index = int(visual.call("get_appearance"))
+	# Disguise AS the targeted civilian (take their look).
+	var tv := target.get_node_or_null("CharacterVisual")
+	var idx := int(tv.call("get_appearance")) if (tv != null and tv.has_method("get_appearance")) else _random_commoner_index()
+	visual.call("set_appearance", idx)
+	_disguise_left = _item.disguise_seconds
+	if _mhud != null:
+		_mhud.add_log("Disguised as a civilian (%ds)." % int(_item.disguise_seconds))
+	return true
+
+
+# Offline morph: reskin the nearest NPCs to the player's current look for the duration.
+func _apply_morph_offline() -> void:
+	if _player == null or _item == null:
+		return
+	var src := _player.get_node_or_null("CharacterVisual")
+	if src == null or not src.has_method("get_appearance"):
+		return
+	var look_index := int(src.call("get_appearance"))
+	var scored: Array = []
+	for node in get_tree().get_nodes_in_group("npc"):
+		var npc := node as Node2D
+		if npc == null or (npc.has_method("is_dead") and npc.is_dead()):
+			continue
+		var dist := npc.global_position.distance_to(_player.global_position)
+		if dist <= _item.morph_radius:
+			scored.append({"npc": npc, "dist": dist})
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["dist"] < b["dist"])
+	for i in mini(_item.morph_npc_count, scored.size()):
+		var visual = (scored[i]["npc"] as Node).get_node_or_null("CharacterVisual")
+		if visual != null and visual.has_method("set_appearance"):
+			_offline_morphs.append({"visual": visual, "restore": int(visual.call("get_appearance")), "left": _item.morph_seconds})
+			visual.call("set_appearance", look_index)
+
+
+func _random_commoner_index() -> int:
+	var ids: Array = CosmeticRegistry.COMMONER_BODY_IDS
+	if ids.is_empty():
+		return 1
+	return int(CosmeticRegistry.index_for_body_id(ids[randi() % ids.size()]))
+
+
+# Spook the NPC in the player's interaction ring into bolting in its current direction.
+func _deploy_decoy_offline() -> bool:
+	if _player == null or _item == null:
+		return false
+	var target := _player.interaction_target(false)  # NPC only
+	if target == null or not target.has_method("flee_run"):
+		return false
+	target.call("flee_run", target.velocity, _item.decoy_flee_seconds, 2.0)  # below player run speed
+	return true
+
+
+# Drop a smoke cloud at the player's feet; the _process loop freezes the hunter while it's inside.
+func _deploy_smoke_offline() -> void:
+	if _player == null or _item == null:
+		return
+	var cloud := SmokeCloud.new()
+	cloud.set("stun_seconds", _item.smoke_stun_seconds)
+	var parent: Node = _player.get_parent()
+	if parent == null:
+		parent = self
+	parent.add_child(cloud)
+	cloud.setup(_player.global_position, _item.smoke_cloud_radius, _item.smoke_cloud_seconds, -1)
+	var visual := _player.get_node_or_null("CharacterVisual")
+	if visual != null and visual.has_method("play_strike"):
+		visual.call("play_strike")
+
+
+# Offline poison: a delayed, quiet death on the targeted character (no crowd panic — is_poisoned).
+func _apply_poison_offline() -> bool:
+	if _player == null or _item == null:
+		return false
+	var target := _player.interaction_target(true)
+	if target == null or not target.has_method("die"):
+		return false
+	if target.get("is_poisoned") != null:
+		target.set("is_poisoned", true)
+	var delay: float = _item.poison_delay_seconds
+	get_tree().create_timer(maxf(0.05, delay)).timeout.connect(func() -> void:
+		if is_instance_valid(target) and target.has_method("die"):
+			target.call("die"))
+	if _mhud != null:
+		_mhud.add_log("Target poisoned — they drop in %ds." % int(delay))
+	return true
+
+
+# Freeze/unfreeze the AI hunter (offline smoke stun). Pausing its physics stops its chase + kill.
+func _set_hunter_stunned(on: bool) -> void:
+	if _hunter_stunned == on or _hunter == null or not is_instance_valid(_hunter):
+		return
+	_hunter_stunned = on
+	_hunter.set_physics_process(not on)
 
 
 # Reveals (buildplan §7.4): finishing your marks reveals the hunter's look (red plate) and flips

@@ -22,6 +22,10 @@ var _roster_label: Label = null
 var _status_label: Label = null
 var _start_button: Button = null
 var _map_picker: OptionButton = null
+var _tool1_picker: OptionButton = null
+var _tool2_picker: OptionButton = null
+## Tool names in ItemComponent.Tool order, so an OptionButton's selected index IS the tool id.
+const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison"]
 ## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
 var _chosen_assassin: StringName = &""
 var _npc_disguise: bool = false
@@ -106,6 +110,28 @@ func _build_ui() -> void:
 		_npc_disguise = on
 		_apply_look_choice())
 
+	# TOOLS: every player brings TWO tools, picked privately (like the assassin). The OptionButton
+	# index IS the ItemComponent.Tool id (TOOL_NAMES is in enum order), stored on NetworkManager and
+	# sent to the host at spawn (online_match._submit_tools).
+	var tools_label := Label.new()
+	tools_label.text = "Your two tools (private)"
+	tools_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(tools_label)
+	_tool1_picker = OptionButton.new()
+	_tool2_picker = OptionButton.new()
+	for i in TOOL_NAMES.size():
+		_tool1_picker.add_item(TOOL_NAMES[i], i)
+		_tool2_picker.add_item(TOOL_NAMES[i], i)
+	_tool1_picker.selected = int(NetworkManager.selected_tools[0])
+	_tool2_picker.selected = int(NetworkManager.selected_tools[1])
+	_tool1_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_tool2_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(_tool1_picker)
+	panel.add_child(_tool2_picker)
+	_tool1_picker.item_selected.connect(func(_i: int) -> void: _update_tools())
+	_tool2_picker.item_selected.connect(func(_i: int) -> void: _update_tools())
+	_update_tools()
+
 	if NetworkManager.is_host():
 		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.
 		if NetworkManager.is_using_steam():
@@ -166,6 +192,11 @@ func _apply_look_choice() -> void:
 	else:
 		inv.call("equip", CosmeticItem.Slot.BODY, _chosen_assassin)
 		inv.set("decoy_body_id", &"")
+
+
+# Store the two picked tools on NetworkManager (survives the scene change to the match).
+func _update_tools() -> void:
+	NetworkManager.selected_tools = [_tool1_picker.selected, _tool2_picker.selected]
 
 
 func _refresh() -> void:

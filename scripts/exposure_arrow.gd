@@ -10,8 +10,10 @@ class_name ExposureArrow
 # By the time the arrow is visible they've moved, so it gives a fuzzy hint, never
 # a precise "that one is your target".
 
-## Exposure (0-100) the target must exceed before its arrow can appear.
-@export var arrow_threshold: float = 50.0
+## Exposure (0-100) the target must exceed before its arrow can appear. Set to 100 so you only
+## become visible to enemy assassins at FULL exposure — letting players spend exposure on tools
+## freely without lighting up the moment they tick over halfway.
+@export var arrow_threshold: float = 100.0
 
 ## How far in from the screen edge the arrow sits, in pixels.
 @export var edge_margin: float = 90.0
