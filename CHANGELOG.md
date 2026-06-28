@@ -2,6 +2,92 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Phase 9 — Hidden-identity pillar (§0.3) + endgame experiments  ·  PHASE_9_EXPERIMENTS.md
+
+> **Phase 9 = everything on the `…/post-integration-checklist-…` branch beyond the Phase 8 tip:** the
+> §0.3 per-viewer appearance pillar (below) AND the endgame experiments (here). It integrates to `main`
+> on its OWN, after Phase 7 then Phase 8 land — see `PHASE_9_TO_MAIN.md`. (Note: one commit is messaged
+> "Phase 8: per-viewer crowd appearance" — that's Phase 9 work; this label is canonical.)
+
+### Part B — Endgame & commitment EXPERIMENTS (opt-in, isolated, removable)
+
+Built on top of Phase 8. A batch of *feel* experiments for two problems: rewarding map-smart
+discipline, and giving the endgame ways to resolve instead of stalling. **Every experiment is OFF by
+default** — the base game runs identically with the whole phase present. Targeted at the ONLINE match
+(the only surface with two humans, which is what the phase is judged on), server-authoritative.
+
+**The removability architecture (§1):**
+- **`ExperimentFlags` autoload** — one master bool per experiment, all `false`. The host's copy governs.
+- **Folder-scan loader** — `online_match._spawn_experiments()` loads whatever `.gd` files live in
+  `scripts/experiments/` and names NONE of them, so deleting an experiment file is a clean removal (the
+  delete test, §1.4). Every peer names each node after its file, so an experiment's owner-only cue RPCs
+  resolve across machines.
+- **One-way dependency (§1.2):** core emits signals / exposes read-only getters; it never references an
+  experiment. New neutral hooks core OWNS (default = no effect): `KillComponent.kill_resolved(killer,
+  victim, was_valid)` + `can_kill` gate + `exposure_penalty_multiplier`; `Npc.react_to_kill()` and
+  `Npc.walk_off_to()`; `OnlineMatch.host_kill_resolved` signal + `round_fraction()` / `host_hunt_edges()`
+  / `local_hud_layer()` accessors.
+- **Shared infra:** `components/behavior_history.gd` (inert unless 9C/9F attach it) — a host-recorded
+  rolling memory of each actor's recent tells (ran / sharp-turned / killed / used a tool).
+
+**The six (build order 9B→9A→9D→9E→9C→9F):**
+- **9B crowd_thinning** — NPCs leave the map after the round's halfway mark (walk to an exit, then
+  despawn), down to a handful by the end, sparse areas first (marks never removed). Forces an exposed
+  endgame through the world, no UI.
+- **9A whiff_recovery** — a *witnessed* wrong-target kill briefly disarms the killer (`can_kill=false`),
+  window scaling with exposure; softens the civilian-kill exposure penalty when it fires (anti-double-
+  jeopardy). Whiffing unseen falls back to the exposure cost alone. (Root mode stubbed — disarm only.)
+- **9D mutual_proximity** — two players who are each other's target and both contract-complete get a
+  symmetric hot/cold meter, NO direction, NO figure. Host computes distance, sends each only an intensity.
+- **9E crowd_reaction** — NPCs within range of a kill flinch/scatter for a moment (host drives the motion;
+  it replicates as ordinary movement), leaving a directional tell with zero UI.
+- **9C earned_read** — sustained low exposure charges a one-shot pulse (`earned_read_pulse`, default Q)
+  that lights soft AREA zones around behavioral anomalies in the crowd (never a figure — Pillar #1).
+  Host owns the charge + query; sends the earner a list of zone positions drawn by a fading overlay.
+- **9F behavioral_flag** — a reciprocal, behavior-triggered directional flag: a target who just produced
+  a tell flashes a screen-edge cue toward their AREA for the hunter (brightness scales with the target's
+  exposure; vanishes once they're on the hunter's screen), and the target gets a "spotted" cue back.
+  Overlaps the §3.1 exposure arrow — treat as a variant; don't judge both at once.
+
+**Caveats (honest):** no Godot here to compile-check — reviewed by hand; flags-off means the base game is
+unaffected regardless. The loader attaches scripts at runtime, which assumes `@rpc` registers on a
+set_script node (host-own cues are delivered directly, so worst case only *remote* clients miss a cue).
+Cue visuals (meters/markers/zones) are minimal placeholders to be tuned in playtest. Set wall mask /
+tunables per `PHASE_9_EXPERIMENTS.md`; record kept values here after playtest (§3.5).
+
+### Part A — per-viewer appearance, the §0.3 hidden-identity pillar (crowd = copies of the OTHER players)
+Phase 8 built the cosmetic *plumbing*; this lands the gameplay pillar it exists for (`buildplan.md`
+§0.3): **on your screen you never see your own look in the crowd.** Visibility (Slice B) already
+decided WHO you can see; this decides WHAT the crowd looks like to YOU. All local-only — it never
+touches the host sim or replication, so it stays a true per-machine hidden view.
+- **Per-viewer crowd reskin (`_assign_crowd_appearances`, online_match.gd).** Once per match, after
+  the whole crowd has replicated in, each machine rebuilds every crowd NPC's look from a per-viewer
+  pool: a tunable fraction (`clone_crowd_fraction`, default **0.25**) of the crowd are CLONES of the
+  OTHER players' exact loadouts — split evenly so each opponent hides in a pocket of look-alikes —
+  and the **rest is generic filler** civilians, with the **local player's own look removed** (filler
+  that would match it is re-rolled). Run once and frozen (`_crowd_appearance_done`): an NPC that
+  changed clothes mid-match would be a tell. *(Decision: the CLONES+FILLER combo — a believable
+  filler-majority crowd, clones ~25% and tunable up — over the monetization doc's strict pure-clone
+  §2A; reconciles buildplan §0.3 with `PHASE_8_MONETIZATION.md`. Knob renamed from the earlier
+  `look_copies_per_player` to a fraction.)*
+- **Why no new netcode:** it's built on the loadouts that already replicate (Phase 8 §5). Each peer
+  reads the players' looks off the spawned player nodes and computes its own crowd locally; the look
+  an NPC shows can differ per machine because no one compares screens. Each peer also knows the crowd
+  size from the shared lobby choice, so a client can tell when its crowd is fully present with no extra
+  message. The host's random NPC looks remain as the fallback when the reskin is off.
+- **Built on loadouts, future-proof (the COSMETIC_SYSTEM_SPEC success test).** `_look_key()` is the one
+  seam that defines "same visible identity" — today it's the BODY sheet (the only painted layer while
+  overlays are art-less), and when real overlay art lands you fold the other slot ids in there and the
+  "never see myself" rule sharpens automatically. Real cosmetics flow through unchanged: no code edits,
+  just content.
+- **Placeholder test aid (`placeholder_distinct_bodies`, default ON).** With no real cosmetics every
+  account defaults to the same body, which would make the per-viewer crowd invisible. This forces each
+  player onto a DISTINCT body sheet at spawn so you can SEE it work — you become the only "you" on your
+  screen while everyone else's crowd fills with copies of you. **Flip it OFF once players pick real,
+  distinct cosmetics**, and their chosen look is used as-is.
+- **Tunables (all `@export`, no magic numbers):** `clone_crowd_fraction`, `per_viewer_crowd_enabled`
+  (master switch / A-B compare), `placeholder_distinct_bodies`.
+
 ### Session: 8-monetization — taxonomy + PixelLab art pipeline + style-bible anchor
 Integrated `PHASE_8_MONETIZATION.md` (the monetization + PixelLab spec) into the repo and made the
 code/art coherent with it. Much of its "what to do" already exists (data model, equip, ownership gate

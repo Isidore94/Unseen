@@ -76,6 +76,13 @@ signal died
 ## Counts DOWN while the NPC is standing still at a spot. 0 or below = walking.
 var _pause_timer: float = 0.0
 
+## Phase 9 (9E) — a temporary "react to a nearby kill" state. While _react_timer > 0 the NPC
+## drives in _react_direction instead of wandering, then returns to normal. Driven entirely by the
+## crowd_reaction experiment calling react_to_kill(); zero effect if nothing ever calls it.
+var _react_timer: float = 0.0
+var _react_direction: Vector2 = Vector2.ZERO
+var _react_speed_scale: float = 1.0
+
 ## Set once killed, so we stop behaving and can't be killed twice.
 var _dead: bool = false
 
@@ -189,6 +196,32 @@ func is_dead() -> bool:
 	return _dead
 
 
+# Phase 9 (9E) HOOK — the crowd_reaction experiment asks this NPC to flinch in response to a
+# nearby kill. The NPC doesn't know WHY (direction experiment → core, §1.2); it just performs the
+# brief move. `away` true = flee outward (scatter); false = bolt toward (cluster). Host-only in
+# practice: the host owns NPC motion and the move replicates to clients as ordinary position updates.
+func react_to_kill(kill_position: Vector2, away: bool, duration_seconds: float, speed_scale: float) -> void:
+	if _dead:
+		return
+	var to_kill := global_position - kill_position
+	if to_kill.length() < 1.0:
+		to_kill = Vector2.RIGHT.rotated(randf() * TAU)  # right on top of it: pick any direction
+	_react_direction = to_kill.normalized() * (1.0 if away else -1.0)
+	_react_speed_scale = speed_scale
+	_react_timer = duration_seconds
+
+
+# Phase 9 (9B) HOOK — head to `point` as a one-way traveler (crowd_thinning uses this to send a
+# retiring NPC toward a map exit before it despawns). A neutral "go here" command; the NPC doesn't
+# know why. Host-only in practice, since the host owns NPC navigation.
+func walk_off_to(point: Vector2) -> void:
+	is_traveler = true
+	can_wander = true
+	home_position = point
+	if navigation_agent != null:
+		navigation_agent.target_position = point
+
+
 func _begin_wandering() -> void:
 	# Wait one physics frame so the map's navigation is ready to answer queries.
 	await get_tree().physics_frame
@@ -206,6 +239,13 @@ func _physics_process(delta: float) -> void:
 	if network_controlled:
 		_net_position = global_position
 		_net_velocity = velocity
+
+	# Phase 9 (9E) — reacting to a nearby kill: flee/cluster for a moment, then resume normal.
+	# Checked before the mark/wander logic so even a standing mark visibly flinches.
+	if _react_timer > 0.0:
+		_react_timer -= delta
+		_drive(_react_direction * move_speed * _react_speed_scale)
+		return
 
 	# A non-wandering NPC (a mark) just stands at its spot.
 	if not can_wander:

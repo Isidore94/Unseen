@@ -21,16 +21,18 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 ## Reloaded on a rematch (re-runs the whole start handshake with everyone still connected).
 const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 
-## Crowd size for the COMPACT arena (the lobby's "compact" toggle uses this instead of
-## npc_count — roughly two-thirds, to lighten the host).
-@export var compact_npc_count: int = 120
+## Crowd size for the COMPACT/Rome arenas (the lobby's small maps use this instead of npc_count).
+## Tighter crowd (Phase 9 decision): a smaller, readable haystack. At clone_crowd_fraction = 0.25
+## this is ~10 clones + ~30 filler. Raise it (or the fraction) if hiding feels too easy.
+@export var compact_npc_count: int = 40
 
 ## How many sprite sheets exist (assets/sprites). Characters cycle through them so a
 ## small match still looks varied. Keep in sync with CharacterVisual's sheet list.
 const NUM_SHEETS := 5
 
-## Size of the AI crowd the host simulates (the people you hide among).
-@export var npc_count: int = 180
+## Size of the AI crowd the host simulates (the people you hide among). Tightened in Phase 9 to a
+## smaller, readable crowd; at clone_crowd_fraction = 0.25 that's ~15 clones + ~45 filler.
+@export var npc_count: int = 60
 
 ## Fraction of the crowd that CROSSES the map (spawn at an edge, long paths). The rest
 ## are "homebodies" that mill around their spawn spot with short trips.
@@ -52,6 +54,29 @@ const NUM_SHEETS := 5
 ## Per-viewer visibility (§7.2b): may a ROOFTOP player see OTHER rooftop players? Defaulted
 ## ON so rooftops aren't a blind solo zone (a buildplan still-open decision — flip to taste).
 @export var rooftop_sees_rooftop: bool = true
+
+# === per-viewer crowd APPEARANCE (§0.3 — the hidden-identity PILLAR) ====================
+# Visibility (above) decides WHO you can see; this decides WHAT the crowd looks like to YOU.
+# On THIS screen the crowd is rebuilt from copies of the OTHER players' looks (so each real
+# opponent blends into a group of look-alikes) plus filler, with YOUR OWN look removed — you
+# are never shown a copy of yourself, and your look is never a tell. Local-only and frozen
+# once per match. It's keyed on the Loadout, so real cosmetics later flow through unchanged.
+## CLONES + FILLER mix (the chosen combo: buildplan §0.3 + PHASE_8_MONETIZATION.md §2A). The crowd
+## is mostly generic FILLER civilians with player-CLONES mixed in. This is the fraction of the crowd
+## that is clones (copies of the OTHER players' looks, split evenly across opponents); the rest is
+## filler. 0.25 = clones are ~a quarter of the crowd — a believable townsfolk crowd with each
+## opponent hidden in a pocket of look-alikes. Raise it for a stronger blend / cosmetic showcase.
+## Your own look is NEVER in the crowd. (Total crowd size is the host's npc_count / compact_npc_count.)
+@export_range(0.0, 1.0, 0.05) var clone_crowd_fraction: float = 0.25
+## Master switch for the per-viewer crowd reskin. Off = the crowd keeps the host's random
+## looks (the pre-pillar behaviour) — handy for an A/B comparison while tuning.
+@export var per_viewer_crowd_enabled: bool = true
+## TEMPORARY — placeholder-art era only. With no real cosmetics yet, every account defaults to
+## the SAME body, so the per-viewer crowd would be invisible (everyone identical). This forces
+## each player onto a DISTINCT body sheet at spawn so you can SEE the system work: you become
+## the only "you" on your screen while everyone else's crowd fills with copies of you. Turn
+## OFF the moment players pick real, distinct cosmetics — their chosen look is then used as-is.
+@export var placeholder_distinct_bodies: bool = true
 
 # === scoring (buildplan §7.5 — winner = most points; mirrors LocalMatchManager) ========
 # The match runs until ONE player is left alive (or time runs out); the WINNER is then
@@ -151,6 +176,10 @@ var _hunt_phase: bool = false
 ## Client-side: re-asks the host to spawn us until our player appears (covers the rare
 ## case where our first request outran the host's scene during the lobby transition).
 var _spawn_retry_timer: float = 0.0
+## Per-viewer crowd reskin (§0.3) runs ONCE per match, after the whole crowd has replicated
+## in. This latch makes sure it never re-runs — a stable disguise pool, because an NPC that
+## changed clothes mid-match would be an obvious tell.
+var _crowd_appearance_done: bool = false
 
 # === Phase 7 online state (visibility / claim / items / reveals) =============
 # Layer ints mirrored from LayerComponent.Layer (kept decoupled, like CharacterVisual).
@@ -183,12 +212,19 @@ var _debug_layer: CanvasLayer = null
 var _debug_label: Label = null
 var _debug_visible: bool = false
 
+## Phase 9 HOOK (PHASE_9_EXPERIMENTS.md). Re-announces every resolved kill at the MATCH level so
+## experiments can listen in one place instead of re-wiring per player spawn. online_match emits
+## this; it does not know or care who listens (the one-way dependency rule, §1.2).
+signal host_kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
+
 
 func _ready() -> void:
+	add_to_group("online_match")  # Phase 9 experiments find the match here (read-only accessors)
 	_build_world()
 	_build_hud()
 	_build_debug_overlay()
 	_wire_access_points()
+	_spawn_experiments()
 
 	# Portals are map-control teleporters. They must only fire on the HOST (the
 	# referee); on clients the player bodies are just replicas, so a client-side
@@ -369,6 +405,11 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	# build a sensible default (a body from their spawn order + the DEFAULT items). Either
 	# way the spawner replicates it to everyone, so all peers render this player identically.
 	var loadout_payload := _loadout_for_peer(peer_id)
+	# Placeholder-era test aid (§0.3): with no real cosmetics every account defaults to the same
+	# body, so the per-viewer crowd would be invisible. Force a DISTINCT body per player so you
+	# can SEE it working. Drop this flag once players pick real, distinct cosmetics.
+	if placeholder_distinct_bodies:
+		loadout_payload = _with_body_index(loadout_payload, _next_spawn_index % NUM_SHEETS)
 	var spawn_data := {
 		"peer": peer_id,
 		"pos": _spawn_position_for_index(_next_spawn_index),
@@ -402,6 +443,8 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	var kill := character.get_node_or_null("KillComponent") as KillComponent
 	if kill != null:
 		kill.kill_landed.connect(_on_peer_kill_landed.bind(peer_id))
+		# Phase 9: re-announce this player's kills (clean AND whiff) at the match level.
+		kill.kill_resolved.connect(_relay_kill_resolved)
 
 	# Host owns this player's item kit: relay cloak to the opponent's arrow and push the
 	# charges readout to the owner whenever it changes (Slice D).
@@ -592,6 +635,14 @@ func _default_loadout_payload(body_index: int) -> Dictionary:
 # A random crowd look drawn from the global pool (the §4 config hook lives in the registry).
 func _random_npc_loadout_payload() -> Dictionary:
 	return Loadout.randomized(CosmeticRegistry.npc_pool_by_slot()).to_payload()
+
+
+# Return a copy of `payload` with its BODY slot forced to the given sheet index, leaving the
+# rest of the look untouched. Used only by the placeholder_distinct_bodies test aid.
+func _with_body_index(payload: Dictionary, body_index: int) -> Dictionary:
+	var loadout := Loadout.from_payload(payload)
+	loadout.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.body_id_for_index(body_index))
+	return loadout.to_payload()
 
 
 # Pull the body sheet index back out of a loadout payload, for the legacy `appearance`
@@ -1065,6 +1116,7 @@ func _process(delta: float) -> void:
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
+	_maybe_assign_crowd_appearances()
 	_update_visibility()
 	_update_debug_overlay()
 
@@ -1290,6 +1342,98 @@ func _can_local_player_see(my_layer: int, other: Node2D) -> bool:
 			return other_layer == _LAYER_GROUND
 
 
+# === §0.3 — per-viewer crowd APPEARANCE (the hidden-identity pillar) ==========
+# Visibility (above) decides WHO you see; this decides WHAT they look like. On THIS screen the
+# crowd is rebuilt from copies of the OTHER players' looks (+ filler), with YOUR own look taken
+# out, so you're never shown a copy of yourself and each real opponent hides inside a group of
+# look-alikes. Local-only (it never touches the host's sim or replication) and run ONCE, frozen
+# — a stable disguise pool. Keyed on the Loadout, so real cosmetics later flow through unchanged.
+
+# Run the reskin once, as soon as it's safe: our own player exists AND the whole crowd has
+# replicated in (NPCs arrive over several frames on a client). Latched so it never repeats.
+func _maybe_assign_crowd_appearances() -> void:
+	if _crowd_appearance_done or not per_viewer_crowd_enabled:
+		return
+	if _local_player == null or _crowd_parent == null:
+		return
+	# Every peer can compute the crowd size itself (it knows the same lobby choice), so a client
+	# can tell when its crowd is fully here without any extra network message.
+	var expected_crowd := compact_npc_count if NetworkManager.small_arena else npc_count
+	if _crowd_parent.get_child_count() < expected_crowd:
+		return  # still arriving — wait for the last NPC so the dupe/filler counts come out right
+	_crowd_appearance_done = true
+	_assign_crowd_appearances()
+
+
+# Rebuild every crowd NPC's look on THIS machine from the per-viewer pool (§0.3).
+func _assign_crowd_appearances() -> void:
+	# Our own look — the one thing that must NEVER appear out in our crowd.
+	var my_key := _look_key(_loadout_of_player(_local_player))
+
+	# The looks we DUPLICATE into the crowd: every OTHER player's loadout (never our own).
+	var other_looks: Array = []  # Array[Loadout]
+	for child in _players_parent.get_children():
+		var other := child as Player
+		if other != null and other != _local_player:
+			other_looks.append(_loadout_of_player(other))
+
+	# The crowd NPCs on THIS machine (marks included — they're ordinary crowd folk to look at).
+	var npcs: Array = []
+	for child in _crowd_parent.get_children():
+		if child is Npc:
+			npcs.append(child)
+	if npcs.is_empty():
+		return
+	var crowd_size := npcs.size()
+
+	# CLONES + FILLER. Most of the crowd is generic filler civilians; a tunable fraction
+	# (clone_crowd_fraction) are CLONES of the OTHER players, split evenly across opponents so each
+	# is hidden in a pocket of look-alikes (§2A). Your own look never appears. With no opponents yet
+	# the crowd is all filler.
+	var looks: Array = []  # Array[Loadout]
+	var clone_total := 0
+	if not other_looks.is_empty():
+		clone_total = int(round(crowd_size * clampf(clone_crowd_fraction, 0.0, 1.0)))
+	for i in clone_total:
+		looks.append(other_looks[i % other_looks.size()])  # round-robin = balanced groups
+	# Fill the rest with filler base looks, re-rolling any that would match OUR look.
+	var pool := CosmeticRegistry.npc_pool_by_slot()
+	var guard := 0  # stop a pathological pool (e.g. a single body) from looping forever
+	while looks.size() < crowd_size:
+		var filler := Loadout.randomized(pool)
+		guard += 1
+		if _look_key(filler) != my_key or guard > crowd_size * 8:
+			looks.append(filler)
+	# Scatter the clones through the crowd instead of clumping one player's look together.
+	looks.shuffle()
+
+	for i in npcs.size():
+		var visual := (npcs[i] as Node).get_node_or_null("CharacterVisual")
+		if visual != null and visual.has_method("apply_loadout"):
+			visual.call("apply_loadout", (looks[i] as Loadout).duplicate_loadout())
+
+
+# A character's VISIBLE identity, used to keep our own look out of the crowd. Today only the
+# BODY layer is painted (outfit/head/weapon are art-less placeholders), so the body sheet IS
+# the visible identity. THIS is the seam: when overlay art lands, fold the other slot ids in
+# here and the "never see myself" rule sharpens automatically — every caller routes through it.
+func _look_key(loadout: Loadout) -> StringName:
+	return loadout.get_item(CosmeticItem.Slot.BODY) if loadout != null else &""
+
+
+# Read a spawned character's equipped look back out as a Loadout — its host-assigned payload,
+# or the legacy body index as a fallback. Used to source the per-viewer crowd from the players.
+func _loadout_of_player(character: Node) -> Loadout:
+	if character == null:
+		return Loadout.new()
+	var payload: Dictionary = character.get("loadout_payload")
+	if payload != null and not payload.is_empty():
+		return Loadout.from_payload(payload)
+	var loadout := Loadout.new()
+	loadout.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.body_id_for_index(int(character.get("appearance_index"))))
+	return loadout
+
+
 # Build the sewer screen overlay and wire it (+ the arrow's 100% uptime) to OUR layer.
 func _build_layer_feedback() -> void:
 	if _player_hud_layer == null or _local_player == null:
@@ -1480,3 +1624,82 @@ func _unhandled_input(event: InputEvent) -> void:
 			_debug_visible = not _debug_visible
 			if _debug_layer != null:
 				_debug_layer.visible = _debug_visible
+
+
+# ===========================================================================
+# PHASE 9 EXPERIMENT SUPPORT (PHASE_9_EXPERIMENTS.md) — host-side hooks + read-only accessors.
+# online_match emits one kill signal and offers a few getters. It names NO experiment, so any
+# experiment can be deleted with zero impact here (the delete test, §1.4).
+# ===========================================================================
+
+# Re-emit a player's resolved kill at the match level (wired from each KillComponent on spawn).
+func _relay_kill_resolved(killer: Node, victim: Node, was_valid: bool) -> void:
+	host_kill_resolved.emit(killer, victim, was_valid)
+
+
+# Spin up whatever experiment scripts live in scripts/experiments/. This loop loads whatever .gd
+# files are present and names none of them, so deleting an experiment file is a clean removal.
+# Every peer runs this and names each node after its file, so an experiment's owner-only cue RPCs
+# resolve to the matching node on every machine. Each experiment is inert unless its flag is on.
+func _spawn_experiments() -> void:
+	var dir := DirAccess.open("res://scripts/experiments")
+	if dir == null:
+		return  # folder absent (all experiments removed) — base game runs untouched
+	var holder := Node.new()
+	holder.name = "Experiments"
+	add_child(holder)
+	for file_name in dir.get_files():
+		if not file_name.ends_with(".gd"):
+			continue
+		var script: Script = load("res://scripts/experiments/" + file_name)
+		if script == null:
+			continue
+		var node := Node.new()
+		node.name = file_name.get_basename()
+		node.set_script(script)
+		holder.add_child(node)
+
+
+# How far through the round we are, 0..1 (host clock; 0 if there's no time limit). Used by 9B.
+func round_fraction() -> float:
+	if round_time_limit <= 0.0:
+		return 0.0
+	return clampf(_elapsed / round_time_limit, 0.0, 1.0)
+
+
+# The local machine's HUD layer, where a client renders any cue the host sends it (9C/9D/9F).
+func local_hud_layer() -> CanvasLayer:
+	return _player_hud_layer
+
+
+# The player controlled at THIS machine (for a client to position a direction/intensity cue).
+func local_player_body() -> Node2D:
+	return _local_player
+
+
+# Host-only: every hunter→target edge in the ring whose BOTH ends are still alive, with whether
+# each end has finished its marks (is in the hunt phase). 9D/9F read this to find pairs to cue.
+func host_hunt_edges() -> Array:
+	var edges: Array = []
+	if not multiplayer.is_server():
+		return edges
+	for hunter_peer in _ring_target:
+		var target_peer: int = int(_ring_target[hunter_peer])
+		var hunter := _players_by_peer.get(hunter_peer) as Node2D
+		var target := _players_by_peer.get(target_peer) as Node2D
+		if hunter == null or target == null or not is_instance_valid(hunter) or not is_instance_valid(target):
+			continue
+		if bool(_dead_by_peer.get(hunter_peer, false)) or bool(_dead_by_peer.get(target_peer, false)):
+			continue
+		edges.append({
+			"hunter": hunter, "target": target,
+			"hunter_peer": hunter_peer, "target_peer": target_peer,
+			"hunter_ready": _is_hunt_ready(hunter_peer),
+			"target_ready": _is_hunt_ready(target_peer),
+		})
+	return edges
+
+
+# Host-only: has this peer cleared all its NPC marks (so the human-hunt phase is open for them)?
+func _is_hunt_ready(peer: int) -> bool:
+	return int(_marks_remaining_by_peer.get(peer, marks_per_player)) <= 0
