@@ -1,0 +1,7 @@
+id,asset_type,tool_model,reference_image,settings_seed,prompt,credits,date,hand_finished,notes
+# UNSEEN generation manifest (ART_PIPELINE.md §4). One row per generated asset — the record that makes
+# generation reproducible, tracks PixelLab spend, and is your Steam AI-disclosure log (§8). Fill a row
+# for EVERY asset you generate. asset_type: character|npc|cosmetic|weapon|tile|ui. tool_model:
+# PixFlux|BitForge|tileset. reference_image: the style-bible file passed (never generate cold).
+# hand_finished: no|yes (Aseprite pass done?). Example row below — delete it once real rows exist:
+civilian_base,character,BitForge,assets/style_bible/civilian_base_s.png,seed=0,"top-down pixel townsperson, neutral tunic, 32x32",40,YYYY-MM-DD,no,style-bible anchor
