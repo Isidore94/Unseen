@@ -92,6 +92,9 @@ enum Zone { NW, NE, SW, SE, HUB }
 @export var rooftop_stairs_per_street_zone: int = 2
 ## How many sewer entrances to mark in EACH sewer zone (NE, SW).
 @export var sewer_entrances_per_sewer_zone: int = 2
+## When false, this map spawns NO map-control portals (teleporters / trapdoor / underground
+## passage). Street-only maps like Rome set this false — just tight lanes, no shortcuts (§8).
+@export var enable_portals: bool = true
 
 # ===== colours =====
 ## Out-of-bounds border behind everything.
@@ -132,7 +135,8 @@ func _ready() -> void:
 	_build_walls()
 	_build_fountain()
 	_build_navigation()
-	_spawn_portals()
+	if enable_portals:
+		_spawn_portals()
 	_spawn_access_points()
 	_verify_connectivity()
 	queue_redraw()

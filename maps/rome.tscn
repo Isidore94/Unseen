@@ -1,0 +1,30 @@
+[gd_scene load_steps=2 format=3 uid="uid://bromemap01unsn"]
+
+[ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
+
+; Rome — UNSEEN, Phase 10. A small STREET-ONLY arena: a dense warren of tight 1-cell
+; lanes between Roman insulae blocks, a central fountain piazza, and two small market
+; squares. SAME play size as the compact arena (1440x1120) but a denser 19x15 grid for
+; cramped, winding streets. NO rooftops, NO sewers, NO portals — just roads (the brief).
+; Reuses the WHOLE test_map_01 generator; only the grid, size, feature counts, the
+; portal toggle, and the warm Roman palette change. Connectivity flood-fill verified
+; (scratchpad/gen_rome.py): 148 open cells, all reachable, spawn corners open.
+
+[node name="Rome" type="Node2D"]
+script = ExtResource("1_map")
+play_half_width = 1440.0
+play_half_height = 1120.0
+layout_override = Array[String](["###################", "#.................#", "#.#....##.##.##.#.#", "#.#....##.##.##.#.#", "#.................#", "#.#.##.##.##.##.#.#", "#.#.##.##.##.##.#.#", "#........F........#", "#.#.##.##.##.##.#.#", "#.#.##.##.##.##.#.#", "#.................#", "#.#.##.##.##....#.#", "#.#.##.##.##....#.#", "#.................#", "###################"])
+rooftop_stairs_per_street_zone = 0
+sewer_entrances_per_sewer_zone = 0
+enable_portals = false
+building_color = Color(0.3, 0.2, 0.15, 1)
+wall_color = Color(0.52, 0.47, 0.4, 1)
+zone_nw_color = Color(0.34, 0.27, 0.19, 1)
+zone_se_color = Color(0.32, 0.29, 0.23, 1)
+zone_ne_color = Color(0.33, 0.28, 0.21, 1)
+zone_sw_color = Color(0.35, 0.26, 0.19, 1)
+zone_hub_color = Color(0.36, 0.31, 0.24, 1)
+density_color = Color(0.3, 0.26, 0.18, 1)
+
+[node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]
