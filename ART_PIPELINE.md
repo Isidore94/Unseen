@@ -64,13 +64,14 @@ direction, and you own the outputs commercially. The math holds (see §1).
 These ripple through every asset. Changing them later means regenerating work.
 Status below: **[x] = locked this session**, **[ ] = still to do.**
 
-- [x] **Canonical resolution / grid:** **32×32 base** (matches the current rig — no rework, and
-      ~16 anim frames per PixelLab request vs ~4 at 128px, §6 → far cheaper to produce/animate at a
-      live-service cadence). The "clean vs blocky" test proved 32px reads **clean** when the craft is
-      right (palette + soft shadows + orderly tiling + hand-finish), so clean comes from craft, not
-      from going hi-res. *Flippable to 48px ONLY if you want more architectural detail and accept the
-      rig rework + higher credit/hand-finish cost per asset — decide before generating at scale.*
-- [x] **Tile size + view angle:** **32px square tiles, top-down**, matching the character camera
+- [x] **Canonical resolution / grid:** **48×48 base** (Aaron's call — chosen for the richer, cleaner
+      urban look: more detail headroom per tile + character — skylights, roof trim, defined faces,
+      smoother curves). Accepted trade-offs: more credits + hand-finish per asset (fewer anim frames per
+      PixelLab request than 32px), and the rig's `FRAME_PX` flips 32→48 **when the first 48px sheets
+      replace the placeholders** (it's still 32 today because it's tied to the 32px placeholder art —
+      don't flip the const before the new sheets exist or the placeholders mis-slice). Sheets are now
+      4×4 of 48px = **192×192**. Lock 48px before generating at scale; changing it later = regenerate.
+- [x] **Tile size + view angle:** **48px square tiles, top-down**, matching the character camera
       angle (the existing top-down view). Tiles + sprites share one perspective.
 - [~] **Master palette:** **clean / refined, MUTED urban** (not saturated/retro). Starting set seeded
       in `tools/ingest_sprite.py` + `assets/style_bible/README.md`; **finalize from the first

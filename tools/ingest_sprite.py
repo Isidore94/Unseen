@@ -23,7 +23,9 @@ except ImportError:
     sys.exit("ingest_sprite.py needs Pillow:  pip install pillow")
 
 # === locked conventions (ART_PIPELINE.md §2, scripts/character_visual.gd) =========================
-FRAME_PX = 32                 # canonical frame size — DO NOT change without re-cutting every asset
+FRAME_PX = 48                 # canonical frame size (Aaron's call) — 4x4 sheet = 192x192. DO NOT change
+                              # without re-cutting every asset. The rig's FRAME_PX flips 32->48 when the
+                              # first real 48px sheets replace the 32px placeholders.
 DEFAULT_COLS = 4              # walk-cycle frames per direction
 DEFAULT_ROWS = 4              # directions: down / up / left / right (matches the rig's row order)
 

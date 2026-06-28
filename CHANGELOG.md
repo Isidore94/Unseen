@@ -8,10 +8,11 @@ Hardlines **PixelLab** as the canonical art source for **sprites AND maps**. Int
 (order 7→8→9→10→11→main). This phase locks the **foundations + scaffolding only** — the big SVG→TileMap
 map migration is sequenced *later*, district by district (ART_PIPELINE.md §7), not in this integration.
 - **ART DIRECTION LOCKED:** **full pixel art, map included** — the **clean/refined** end (muted urban
-  palette, soft shadows, orderly tiling, mandatory hand-finish), NOT chunky/retro. **32×32 base** kept
-  (matches the rig; ~4× cheaper to animate than hi-res; clean comes from craft, not resolution — flippable
-  to 48px only if you accept the rework + cost). 4-direction, feet pivot, Nearest filter project-wide.
-  A starting muted-urban master palette is seeded in `tools/ingest_sprite.py` + the style bible.
+  palette, soft shadows, orderly tiling, mandatory hand-finish), NOT chunky/retro. **48×48 base**
+  (Aaron's call — chosen for richer urban detail headroom; sheets are 4×4 of 48px = 192×192). The rig's
+  `FRAME_PX` stays 32 until the first 48px sheets replace the placeholders, then flips to 48. 4-direction,
+  feet pivot, Nearest filter project-wide. A starting muted-urban master palette is seeded in
+  `tools/ingest_sprite.py` + the style bible.
 - **`ART_PIPELINE.md`** committed as the canonical spec, with an adaptation note: the doc's
   "MapBuilder/DISTRICTS layout authority" ≙ this repo's **`test_map_01.gd` grid layout**; the migration
   target is to keep that grid as authority and swap only the *render* layer (code-built boxes → a Godot
