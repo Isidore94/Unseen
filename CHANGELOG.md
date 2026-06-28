@@ -2,6 +2,86 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — stylized "AC:B" map render (all maps)
+
+Scrapped the PixelLab pixel-tile approach for the maps (it looked busy/woven and the Wang tileset
+was low quality) in favour of a clean, smooth, procedural look matching the reference Aaron shared.
+- **`test_map_01.gd` `_draw_stylized()` (new, gated by `@export stylized_render`, default ON for all
+  maps):** instead of repeating tiles — which always reads as repetition — the ground is ONE soft
+  noise texture (`FastNoiseLite`, baked to an `ImageTexture`) stretched over the whole map with LINEAR
+  filtering, so variation is map-scale and never a repeating stamp. Buildings are drawn as solid
+  extruded blocks (shadow → side face → lifted roof → lit top edge) from FULL cell rects, with a teal
+  "water" margin and a plaza decal. Variation comes from building shapes + shadows, not surface
+  texture (the reference's trick). Smooth, not pixel-art — a deliberate deviation from the style bible.
+- **Collision match:** when stylized, building collision uses FULL cell boxes (was nav-inset nubs),
+  so the solid blocks are solid to the player and the interior seam gaps are closed. Nav polygon is
+  unchanged. NEEDS a playtest pass for NPC pathing near corners (couldn't verify headless).
+- Verified by rendering Rome + the four-zone map to screenshots (whole-map and play scale).
+- Dropped (vs the earlier scrapped attempt): the Wang tileset, the 18 PixelLab map props (they're
+  pixel-art and would clash with the smooth look), and the per-cell zone floor colours on the 4-zone
+  map (now uniform sand — re-add a subtle zone tint later if the quarter cue is missed).
+
+## Session: prayer — bugfix: offline crowd bunched at map centre
+
+Playtest surfaced every offline NPC walking to the middle and getting stuck. Cause: `CrowdManager`
+added each NPC to the tree (running its `_ready`) BEFORE setting its position, so `Npc._ready`
+captured `home_position = global_position = (0,0)`. The Phase 9 homebody wander keeps an NPC near
+its home, so the whole crowd anchored to the map centre. Fix: `crowd_manager` now picks the spawn
+point and sets `npc.position` BEFORE `add_child`, so each NPC anchors to where it actually spawns.
+Online was unaffected (it sets `home_position` explicitly). Offline-only change.
+
+## Session: prayer — first real PixelLab sprite (Ancient Rome base civilian)
+
+First art generated through the PixelLab pipeline, replacing placeholder body index 0.
+- **MCP fix:** `.mcp.json` had two problems — the token was pasted literally inside `${...}` (env-var
+  substitution syntax, so it resolved to empty) and the server used `"transport": "http"` instead of
+  `"type": "http"`. Fixed both; token now lives in the `PIXELLAB_API_TOKEN` user env var (never committed).
+- **Generated `civilian_base` (PixelLab character `cf11d8a2…`):** Ancient-Rome commoner — off-white belted
+  tunic, sandals, short dark hair, no weapon — 4 directions, low top-down, standard mode. Then a v3 4-frame
+  walk per direction. Output came back at 68px (size is soft guidance in standard mode).
+- **Packed to the rig spec:** trimmed each direction to its union box (zero inter-frame jitter), one global
+  scale (50→46px so the character is the same size in every facing), feet bottom-aligned, into a 192×192
+  4×4 sheet — rows down/up/left/right, col0 = idle (the standing reference frame), cols 1–3 = walk.
+  Saved `assets/sprites/civilian_base_sheet.png`, the south anchor frame to
+  `assets/style_bible/civilian_base_s.png`, and all raw frames/gifs under `assets/source/civilian_base/`.
+- **Wired in:** `CharacterVisual.SHEET_TEXTURES[0]` now points at the new sheet (player's default
+  `appearance_index = 0`, so the offline player wears it); `FRAME_PX` flipped 32→48 per ART_PIPELINE.
+  Re-imported headless (Nearest filter) — no errors. The other 4 bodies stay 32px placeholders for now
+  (the rig derives per-sheet scale, so mixed sizes coexist).
+- **Known nits (raw AI output):** the east/right-side stride frames have a faint grayish tone on the tunic;
+  no hand-finish pass yet (style bible wants one for the anchor). Re-roll or polish later.
+
+## Session: prayer — onboarding HUD (controls legend + numbered cooldowns)
+
+New-player discoverability pass after the first `prayer` playtest (rooftops/items/claim felt like
+"nothing" because nothing on screen named the keys). All additive; no gameplay logic changed.
+- **Controls legend (`scripts/ui/controls_hint.gd`, new `ControlsHint` node).** A small top-left
+  panel listing the core keys (Move/Run/Attack/Use stair·sewer/Drop off roof/Claim/Smoke/Cloak/
+  Emote). Reads each key from the **Input Map by action name** (Principle #2 — never hardcoded), so
+  rebinding updates the legend automatically. Added to BOTH the online HUD (`online_match._build_
+  player_hud`) and the offline HUD (`single_player_game._build_hud`); the left-column readouts
+  reflow down to y≈224 to sit under it.
+- **Numbered cooldowns on the map.** `AccessPoint._draw` and `Portal._draw` now draw the whole-
+  seconds countdown over a locked-out marker (outlined for legibility), not just the existing dim —
+  so you can see exactly when a stair/sewer/teleporter comes back up. Redraws via their existing
+  per-frame `_process` cooldown tick.
+- **Smoke/cloak countdown (when you can kill / be seen again).** `ItemComponent` exposes
+  `smoke_seconds_left()` / `cloak_seconds_left()`; the item readout shows `(ON Ns)` while active.
+  Online: the host pushes the authoritative seconds in `_receive_item_state` (two new optional
+  float args), and the client ticks them down locally in `_process` (`_tick_item_countdown`) so the
+  number moves smoothly without per-frame RPCs — server stays authoritative for the real effect.
+  Offline: read straight off the locally-owned `ItemComponent` each frame.
+- **Smoke self-feedback (online).** Playtest: in MP popping smoke gave the user no on-screen
+  signal (others correctly saw them vanish, but they stayed fully drawn to themselves). Added a
+  SELF-ONLY cue: `_update_visibility` fades your own rig to 0.45 opacity while your replicated
+  `_net_smoked` flag is up (`_apply_self_smoke_cue`), reading the same flag the hiding uses so the
+  two can't disagree. `CharacterVisual.set_smoked` gained an `alpha_when_on` arg (offline keeps the
+  near-invisible 0.12 that fakes invisibility on the shared body; online uses 0.45 so you can still
+  steer). Pillar-safe — it's local to the smoker's own screen and your own body is always visible
+  to you anyway.
+- Verified with the headless `--import` compile gate (all classes register, no errors). Runtime
+  (the 2-instance online view) still needs a hands-on Godot pass.
+
 ## Session: the `prayer` branch — staged 7→11 integration + audit fixes
 
 Integrated all five unmerged phase branches (7, 8, 9, 10, 11) into ONE branch, `prayer`, one at a

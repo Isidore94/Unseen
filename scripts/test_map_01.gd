@@ -131,6 +131,8 @@ var _portal_links: Array = []
 
 func _ready() -> void:
 	add_to_group("map")
+	if stylized_render:
+		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR  # smooth the stretched noise ground
 	_define_features()
 	_build_walls()
 	_build_fountain()
@@ -456,8 +458,17 @@ func _build_navigation() -> void:
 func _build_walls() -> void:
 	for rect in _outer_wall_rects():
 		_add_static_box(rect.get_center(), rect.size)
-	for rect in _building_rects():
-		_add_static_box(rect.get_center(), rect.size)
+	if stylized_render:
+		# Solid FULL-CELL building collision so it matches the solid drawn blocks (and closes the
+		# interior seam gaps the inset per-cell boxes leave). Players can't enter a building.
+		for row in _rows():
+			for col in _cols():
+				if _is_building(col, row):
+					var r := _cell_rect(col, row)
+					_add_static_box(r.get_center(), r.size)
+	else:
+		for rect in _building_rects():
+			_add_static_box(rect.get_center(), rect.size)
 
 
 # The central fountain is a round solid you walk around. Its whole grid cell is
@@ -559,8 +570,94 @@ func _verify_connectivity() -> void:
 		push_warning("TestMap01: %d open cells unreachable from centre — a pocket is walled off. Check LAYOUT." % (open_count - seen.size()))
 
 
+# === stylized render (smooth AC:B look — opt-in) ===========================
+# A clean, low-frequency look instead of repeating tiles: one sand ground with broad SOFT
+# noise variation (no repetition), buildings drawn as extruded blocks (roof + side + shadow)
+# with a per-building shade so no two are identical, a plaza decal, and water-coloured margins.
+# Purely visual; collision/nav still come from the grid. On for all maps (the clean AC:B look).
+@export var stylized_render: bool = true
+## Stylized palette (warm sand + terracotta-ish blocks + teal water), tuned to the reference.
+@export var sand_light: Color = Color(0.85, 0.78, 0.59)
+@export var sand_dark: Color = Color(0.72, 0.64, 0.46)
+@export var block_roof: Color = Color(0.62, 0.50, 0.34)
+@export var block_side: Color = Color(0.40, 0.32, 0.21)
+@export var water_color: Color = Color(0.17, 0.43, 0.47)
+## Fake height of buildings (px the roof is lifted) and the soft shadow offset.
+@export var block_height: float = 18.0
+@export var block_shadow_offset: Vector2 = Vector2(16, 18)
+
+var _noise_tex: ImageTexture = null
+
+
+# A baked, smooth two-tone sand texture (broad patches). Stretched over the whole map with
+# LINEAR filtering, so variation reads at MAP scale — never a repeating stamp.
+func _stylized_ground() -> ImageTexture:
+	if _noise_tex != null:
+		return _noise_tex
+	var n := FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.frequency = 0.022
+	n.seed = 1207
+	var size := 160
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	for y in size:
+		for x in size:
+			var v: float = n.get_noise_2d(float(x), float(y)) * 0.5 + 0.5  # 0..1
+			img.set_pixel(x, y, sand_light.lerp(sand_dark, v))
+	_noise_tex = ImageTexture.create_from_image(img)
+	return _noise_tex
+
+
+# Cheap deterministic 0..1 hash so each building gets a stable, repeatable shade.
+func _hash01(i: int) -> float:
+	return fmod(abs(sin(float(i) * 12.9898) * 43758.5453), 1.0)
+
+
+func _draw_stylized() -> void:
+	var ox := play_half_width + solid_clearance
+	var oy := play_half_height + solid_clearance
+	# Teal "water" margin around the play area (echoes the reference's edges).
+	draw_rect(Rect2(Vector2(-ox, -oy), Vector2(2 * ox, 2 * oy)), water_color, true)
+	# Sand ground with broad soft variation (one stretched, smoothed noise texture).
+	var play := Rect2(Vector2(-play_half_width, -play_half_height),
+		Vector2(2 * play_half_width, 2 * play_half_height))
+	draw_texture_rect(_stylized_ground(), play, false)
+	# Central plaza decal — a lighter paved circle to anchor the eye.
+	var centre := _fountain_center() if _has_fountain() else Vector2.ZERO
+	draw_circle(centre, 360.0, Color(sand_light.r, sand_light.g, sand_light.b, 0.55))
+	draw_arc(centre, 360.0, 0.0, TAU, 64, Color(0.58, 0.52, 0.38, 0.6), 4.0)
+	# Buildings as solid extruded blocks. We use FULL cell rects (not the nav-inset ones), drawn
+	# in three passes so adjacent cells merge into solid blocks: shadows first (neighbours cover
+	# the interior ones, leaving a clean block-edge shadow), then side faces, then lifted roofs.
+	for row in _rows():
+		for col in _cols():
+			if _is_building(col, row):
+				var r := _cell_rect(col, row)
+				draw_rect(Rect2(r.position + block_shadow_offset, r.size), Color(0, 0, 0, 0.18), true)
+	for row in _rows():
+		for col in _cols():
+			if _is_building(col, row):
+				draw_rect(_cell_rect(col, row), block_side, true)
+	for row in _rows():
+		for col in _cols():
+			if _is_building(col, row):
+				var r := _cell_rect(col, row)
+				draw_rect(Rect2(r.position + Vector2(0, -block_height), r.size), block_roof, true)
+	# A thin lit edge along the top of each block (cells with open space above) for depth/pop.
+	var roof_lit := block_roof.lightened(0.22)
+	for row in _rows():
+		for col in _cols():
+			if _is_building(col, row) and not _is_building(col, row - 1):
+				var r := _cell_rect(col, row)
+				draw_rect(Rect2(r.position + Vector2(0, -block_height), Vector2(r.size.x, 6.0)), roof_lit, true)
+	_draw_fountain()
+
+
 # === drawing ===============================================================
 func _draw() -> void:
+	if stylized_render:
+		_draw_stylized()
+		return
 	var ox := play_half_width + solid_clearance
 	var oy := play_half_height + solid_clearance
 	draw_rect(Rect2(Vector2(-ox, -oy), Vector2(2 * ox, 2 * oy)), exposed_color, true)
