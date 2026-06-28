@@ -109,3 +109,21 @@ func _draw() -> void:
 	# A bright ring marks a point someone has claimed for the match (note 5b).
 	if is_claimed():
 		draw_arc(Vector2.ZERO, 36.0, 0.0, TAU, 28, claimed_ring_color, 3.0)
+
+	# While locked out, draw the whole-seconds countdown over the marker so a player can see
+	# exactly when it comes back up (not just that it's dimmed). _process redraws each frame.
+	if _cooldown_remaining > 0.0:
+		_draw_cooldown_seconds(_cooldown_remaining)
+
+
+# Shared helper: draw the remaining whole seconds, centred, with a dark outline for legibility.
+func _draw_cooldown_seconds(seconds: float) -> void:
+	var font := ThemeDB.fallback_font
+	var font_size := 26
+	var text := str(int(ceil(seconds)))
+	var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size).x
+	var pos := Vector2(-width * 0.5, font_size * 0.35)  # roughly centred on the marker
+	# Cheap outline: draw the text offset in black 4 ways, then white on top.
+	for offset in [Vector2(-2, 0), Vector2(2, 0), Vector2(0, -2), Vector2(0, 2)]:
+		draw_string(font, pos + offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0, 0, 0, 0.9))
+	draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(1, 1, 1, 1))

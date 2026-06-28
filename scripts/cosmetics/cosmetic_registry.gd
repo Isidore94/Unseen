@@ -23,20 +23,71 @@ var _by_id: Dictionary = {}
 # slot (int) -> Array[StringName] of the ids in that slot (the "pool" the crowd draws from).
 var _by_slot: Dictionary = {}
 
-# === placeholder body art ===================================================
-# The five existing character sprite sheets double as our placeholder BODY items, so the
-# rig has real content to show today. Index order is preserved for back-compat with the
-# existing int-based `appearance_index` netcode (see body_id_for_index / index_for_body_id).
+# === body art (PixelLab, 48px) ==============================================
+# Index order MUST match CharacterVisual.SHEET_TEXTURES (the rig maps a BODY id -> this index ->
+# that texture) and is preserved for the int-based `appearance_index` netcode. Indices 0–10 are
+# the Roman COMMONER crowd looks; 11–14 are the premium ASSASSIN player skins.
 const BODY_SHEETS := [
-	"res://assets/sprites/villager_sheet.png",
-	"res://assets/sprites/merchant_sheet.png",
-	"res://assets/sprites/guard_sheet.png",
-	"res://assets/sprites/mage_sheet.png",
-	"res://assets/sprites/townswoman_sheet.png",
+	"res://assets/sprites/civilian_base_sheet.png",
+	"res://assets/sprites/crowd/com_brown.png",
+	"res://assets/sprites/crowd/com_shawl.png",
+	"res://assets/sprites/crowd/com_red.png",
+	"res://assets/sprites/crowd/com_hooded.png",
+	"res://assets/sprites/crowd/com_toga.png",
+	"res://assets/sprites/crowd/com_merchant.png",
+	"res://assets/sprites/crowd/com_green.png",
+	"res://assets/sprites/crowd/com_laborer.png",
+	"res://assets/sprites/crowd/com_elder.png",
+	"res://assets/sprites/crowd/com_water.png",
+	"res://assets/sprites/assassins/norse_hammer.png",
+	"res://assets/sprites/assassins/crusader_longsword.png",
+	"res://assets/sprites/assassins/revolution_rapiers.png",
+	"res://assets/sprites/assassins/egyptian_maces.png",
 ]
 const BODY_IDS: Array[StringName] = [
-	&"body_villager", &"body_merchant", &"body_guard", &"body_mage", &"body_townswoman",
+	&"body_civilian", &"body_com_brown", &"body_com_shawl", &"body_com_red", &"body_com_hooded",
+	&"body_com_toga", &"body_com_merchant", &"body_com_green", &"body_com_laborer",
+	&"body_com_elder", &"body_com_water",
+	&"body_norse_hammer", &"body_crusader", &"body_revolution", &"body_egyptian",
 ]
+## Commoner looks the NPC crowd draws from (indices 0–10). Assassins are deliberately NOT here.
+const COMMONER_BODY_IDS: Array[StringName] = [
+	&"body_civilian", &"body_com_brown", &"body_com_shawl", &"body_com_red", &"body_com_hooded",
+	&"body_com_toga", &"body_com_merchant", &"body_com_green", &"body_com_laborer",
+	&"body_com_elder", &"body_com_water",
+]
+## Premium assassin player skins (indices 11–14) — battlepass / item-shop tier.
+const ASSASSIN_BODY_IDS: Array[StringName] = [
+	&"body_norse_hammer", &"body_crusader", &"body_revolution", &"body_egyptian",
+]
+
+## The 3–5 commoner looks chosen for the CURRENT match (see roll_filler_bodies). Empty = all of
+## them. A real street has a few recurring faces, not 11 — this keeps each game's crowd coherent
+## while varying between games.
+var active_filler_bodies: Array[StringName] = []
+## The assassin looks the crowd uses this match (so player-assassins blend in). All four by default.
+var active_assassin_bodies: Array[StringName] = []
+## Fraction of crowd NPCs that wear an ASSASSIN look (the rest are commoners). 0.5 = a 50/50 mix.
+var assassin_crowd_fraction: float = 0.5
+
+
+# Pick this match's crowd looks: a fresh 3–5 commoner subset + the assassin set. Call at match start.
+func roll_filler_bodies() -> void:
+	var pool := COMMONER_BODY_IDS.duplicate()
+	pool.shuffle()
+	var count: int = clampi(3 + (randi() % 3), 3, pool.size())  # 3..5
+	active_filler_bodies = pool.slice(0, count)
+	active_assassin_bodies = ASSASSIN_BODY_IDS.duplicate()
+
+
+# A body id for one crowd NPC: assassin_crowd_fraction of the time an assassin look (so player
+# assassins have look-alikes to hide among), otherwise one of this match's commoner looks.
+func random_crowd_body() -> StringName:
+	var commoners: Array = active_filler_bodies if not active_filler_bodies.is_empty() else COMMONER_BODY_IDS
+	var assassins: Array = active_assassin_bodies if not active_assassin_bodies.is_empty() else ASSASSIN_BODY_IDS
+	if not assassins.is_empty() and randf() < assassin_crowd_fraction:
+		return assassins[randi() % assassins.size()]
+	return commoners[randi() % commoners.size()]
 
 
 func _ready() -> void:
@@ -52,9 +103,12 @@ func _build_catalogue() -> void:
 	var PURCHASE := CosmeticItem.Acquisition.PURCHASE
 	var EARNABLE := CosmeticItem.Acquisition.EARNABLE
 
-	# BODY — the five base looks; everyone owns all of them (the crowd needs variety).
+	# BODY — commoner looks everyone owns (the crowd needs variety); assassin skins are PREMIUM
+	# (PURCHASE) end-game player skins, not granted by default and not in the NPC filler pool.
 	for i in BODY_IDS.size():
-		_register(CosmeticItem.make(BODY_IDS[i], S.BODY, "Body %d" % i, BODY_SHEETS[i], CosmeticItem.NO_RECOLOR, DEFAULT))
+		var is_assassin := BODY_IDS[i] in ASSASSIN_BODY_IDS
+		var how := PURCHASE if is_assassin else DEFAULT
+		_register(CosmeticItem.make(BODY_IDS[i], S.BODY, str(BODY_IDS[i]).replace("body_", ""), BODY_SHEETS[i], CosmeticItem.NO_RECOLOR, how))
 
 	# OUTFIT — overlay layer. "none" is the free default; the others are recolour-only
 	# placeholders (no art yet, so they draw nothing until an SVG is dropped in).
@@ -131,14 +185,16 @@ func ids_with_acquisition(how: int) -> Array[StringName]:
 # players' equipped cosmetics instead, WITHOUT changing the crowd spawner. The seam is
 # here on purpose; we just don't implement the lobby-sourced version yet.
 func npc_pool_by_slot() -> Dictionary:
-	var pool := {}
-	for slot in [
-			CosmeticItem.Slot.BODY,
-			CosmeticItem.Slot.OUTFIT,
-			CosmeticItem.Slot.HEAD,
-			CosmeticItem.Slot.WEAPON]:
-		pool[slot] = _crowd_safe_ids_in_slot(slot)
-	return pool
+	# BODY: this match's 3–5 chosen commoner looks (or all commoners if none rolled yet). Assassins
+	# are excluded so a premium skin never spawns as random filler. Overlays stay "none" — our
+	# commoner art is whole baked looks, so we don't stack art-less placeholder overlays on them.
+	var bodies: Array = active_filler_bodies if not active_filler_bodies.is_empty() else COMMONER_BODY_IDS
+	return {
+		CosmeticItem.Slot.BODY: bodies.duplicate(),
+		CosmeticItem.Slot.OUTFIT: [&"outfit_none"],
+		CosmeticItem.Slot.HEAD: [&"hat_none"],
+		CosmeticItem.Slot.WEAPON: [&"weapon_none"],
+	}
 
 
 # PILLAR INVARIANT (§0.3 hidden identity): the NPC crowd may ONLY wear CROWD_SAFE cosmetics. This

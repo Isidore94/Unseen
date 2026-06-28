@@ -2,6 +2,85 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — attack anims, crowd movement variety, experiment GUI + crowd-reaction fix
+
+Four follow-ups (to test, then commit):
+- **Attack animations** for the player-capable looks (civilian + 4 assassins; commoners don't attack).
+  PixelLab v3 `attack` anims (6 frames, all 4 dirs) packed to separate 4×4 `*_attack.png` sheets. The
+  rig (`CharacterVisual`) plays them via a texture-SWAP: `play_strike()` (already called on every
+  attack swing) starts `_attack_timer`; `_process` swaps the body to its `ATTACK_SHEETS[index]` and
+  plays the 4 swing frames once over `ATTACK_DURATION` (0.5s), then reverts to the walk sheet. Walk
+  sheets/commoners untouched. Swings have baked VFX (slash arc, impact, etc.).
+- **Crowd movement variety** (`crowd_manager`): ~45% LOITERERS (tiny 70px wander radius — stand
+  around), ~40% local wanderers (320px), ~15% travellers who cross the map. Fixes "everyone roams the
+  same / too much".
+- **crowd_reaction now actually works** (`scripts/experiments/crowd_reaction.gd`): it hooked only the
+  online match's kill signal, so OFFLINE it never fired. Rewrote it to listen to each NPC's `died`
+  signal (works offline + online host), widened the radius 250→**560**, and upped the flee to a real
+  panic sprint (2.2× speed, scatter). Single-player now also spawns the experiments folder
+  (`_spawn_experiments`) so they run offline. (`crowd_reaction_enabled` is on.)
+- **Experiment GUI** (`scripts/ui/experiment_toast.gd`, `ExperimentToast`): bottom-centre HUD element
+  on both the offline and online HUDs showing which experiments are ACTIVE and popping a transient
+  message when one fires (crowd_reaction → "The crowd panics and scatters!"). So the player can tell
+  what the experiment stuff is doing.
+
+### Follow-ups (lobby character select + NPC disguise)
+- **6-second scatter:** crowd_reaction `reaction_duration_seconds` 2.6→6.0, uniform (only flee SPEED
+  falls off with distance, for the directional shape).
+- **Lobby assassin picker (private):** every player gets a "Your assassin" dropdown in the lobby
+  (`lobby.gd`); the pick is LOCAL-only (never broadcast → opponents never learn your sprite), granted
+  for now (`CosmeticInventory` grants `ASSASSIN_BODY_IDS` — TEMP until a shop), and rides to the match
+  via the existing `equipped_payload`/`_submit_loadout`. `placeholder_distinct_bodies` turned OFF so
+  the choice is honoured.
+- **NPC disguise (lobby checkbox):** if checked, your in-match BODY is a random COMMONER while your
+  picked assassin is sent as a `decoy_body` in the loadout payload; `_assign_crowd_appearances` clones
+  BOTH your commoner look AND the decoy assassin into the crowd — so opponents can't track players by
+  assassin OR commoner sprites. Movement/gameplay unchanged. Reveals already send `appearance_index`
+  (your actual = commoner) so the over-exposed PORTRAIT is correct for free.
+- **Rematch → lobby:** `_do_rematch` now returns everyone to the lobby (instead of reloading the
+  match) so they can re-pick assassin/disguise/map, then the host's Start confirms a fresh round.
+- **Caveat:** the lobby picker + disguise + rematch-to-lobby are ONLINE paths — compile-verified but
+  NOT 2-instance playtested (offline single-player ignores the lobby; it still spawns the Norse
+  assassin and the 50/50 crowd). Needs a hands-on online pass.
+- **Portrait fix:** the top exposure/target faceplates cropped a hardcoded 32px corner of the new
+  48px sheets (off-centre). `faceplate_row` now derives the frame size from the sheet (width / 4) and
+  crops the whole down-facing frame, so portraits are centred for any sheet size.
+- **Repo cleanup:** removed superfluous planning docs (the `PHASE_*_TO_MAIN`, audit/feature/plan
+  `.md`s, `buildplan.md`, `thingstochange.md`). CHANGELOG.md is the running record going forward.
+
+## Session: prayer — 14 PixelLab character sprites + cosmetic/crowd wiring
+
+Populated the cosmetic + per-viewer-crowd systems with real art, taking advantage of the §0.3
+hidden-identity pillar and showing off the rig for a future battlepass.
+- **4 premium assassin player skins** (v3, 48px, 4-dir walk): Norse warhammer-on-back, Crusader
+  longsword, Revolution dual rapiers, Egyptian dual maces — varied AC eras/colours, weapons baked in.
+- **10 Roman commoner looks** (+ the existing civilian = 11) for the NPC crowd: brown/red/green/blue
+  tunics, veiled woman, toga citizen, hooded peasant, elder, water-carrier, laborer.
+- **Pipeline:** create_character → animate_character template "walking" (real gait all 4 dirs) →
+  packed to 192×192 4×4 sheets (`scratchpad/pack_all.py`: per-direction union box, one global scale,
+  feet-aligned, 6 template frames sampled to the rig's idle+3). Saved to `assets/sprites/crowd/` and
+  `assets/sprites/assassins/`. (Rate limits forced a lot of re-queuing — PixelLab caps concurrent jobs.)
+- **Wiring:** `CharacterVisual.SHEET_TEXTURES` + `CosmeticRegistry.BODY_IDS/BODY_SHEETS` rebuilt to the
+  15 new bodies (index-aligned). Commoners (0–10) are DEFAULT/owned; assassins (11–14) are PURCHASE
+  (premium, NOT in the NPC filler pool). `npc_pool_by_slot` now returns only commoner bodies + "none"
+  overlays. New `roll_filler_bodies()` picks **3–5 commoner looks per match** (called in
+  `single_player._ready` and `online_match._ready`) so each game's crowd is coherent but varies.
+  Showcase config: `placeholder_distinct_bodies` puts each online player on a distinct ASSASSIN skin
+  (11–14); offline the player is the Norse assassin (index 11). Verified in-engine via a screenshot
+  (assassin walking among commoners on the stylized map). Old 32px placeholder sheets retired.
+- **Crowd mix + density (follow-up):** the crowd is now ~**50% commoners / 50% assassin look-alikes**
+  so player-assassins have a crowd to hide in. `CosmeticRegistry.random_crowd_body()` flips a coin
+  (`assassin_crowd_fraction = 0.5`) between this match's rolled commoners and the assassin set; used by
+  both offline (`npc._assign_random_loadout`) and online filler (`_assign_crowd_appearances`). Counts
+  raised: offline 30→50, online 60→78, compact 40→55. (Online: clones-of-players add a few more
+  assassins on top, so online skews a bit past 50% — fine for the showcase; tune later. Watch host
+  bandwidth at 78.)
+- **Caveats:** assassins are flashy in-match looks, which is in tension with the §0 crowd-safe veto
+  (a paid skin shouldn't make you a tell) — the per-viewer crowd clones a player's look into a
+  look-alike pocket, but balance this later (maybe gate showy skins to reveal-moments). Weapons are
+  baked into each whole-character sheet (not separate swappable rig layers). Online path is
+  compile-verified but not 2-instance playtested.
+
 ## Session: prayer — stylized "AC:B" map render (all maps)
 
 Scrapped the PixelLab pixel-tile approach for the maps (it looked busy/woven and the Wang tileset

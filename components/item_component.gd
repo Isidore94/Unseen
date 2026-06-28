@@ -61,6 +61,14 @@ func smoke_active() -> bool:
 func cloak_active() -> bool:
 	return _cloak_timer > 0.0
 
+## Seconds left on each active effect (0 = not active). The HUD reads these to show a
+## countdown — for SMOKE that's how long until you can attack / be seen again.
+func smoke_seconds_left() -> float:
+	return _smoke_timer
+
+func cloak_seconds_left() -> float:
+	return _cloak_timer
+
 func charges_left(item: int) -> int:
 	return _smoke_left if item == Item.SMOKE else _cloak_left
 

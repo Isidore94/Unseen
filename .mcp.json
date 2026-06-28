@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "pixellab": {
+      "type": "http",
       "url": "https://api.pixellab.ai/mcp",
-      "transport": "http",
       "headers": { "Authorization": "Bearer ${PIXELLAB_API_TOKEN}" }
     }
   }

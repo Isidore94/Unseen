@@ -44,11 +44,29 @@ func _spawn_crowd() -> void:
 
 	for i in npc_count:
 		var npc: Node2D = npc_scene.instantiate()
-		add_child(npc)
+		# Choose the spawn spot FIRST, then set it BEFORE add_child. The NPC's _ready()
+		# captures its "home" from its position the moment it enters the tree, so if we add
+		# first and position after, every homebody anchors to (0,0) — the map centre — and
+		# the whole crowd walks into the middle and bunches up. (CrowdManager sits at the
+		# origin, so the local `position` we set here equals the world position.)
+		var spawn_point: Vector2
 		if use_map_spread:
-			npc.global_position = map.call("random_walkable_point")
+			spawn_point = map.call("random_walkable_point")
 		else:
-			npc.global_position = NavigationServer2D.map_get_random_point(navigation_map, 1, true)
+			spawn_point = NavigationServer2D.map_get_random_point(navigation_map, 1, true)
+		npc.position = spawn_point
+		# Movement variety so the crowd doesn't all roam the same: ~45% LOITERERS who barely leave
+		# a small patch, ~40% local wanderers, ~15% travellers who cross the map.
+		var roll := randf()
+		if roll < 0.45:
+			npc.is_traveler = false
+			npc.wander_radius = 70.0    # stays within a small area (the "standing around" feel)
+		elif roll < 0.85:
+			npc.is_traveler = false
+			npc.wander_radius = 320.0   # mills around its own patch
+		else:
+			npc.is_traveler = true      # crosses the map
+		add_child(npc)
 
 
 # Counts how many living NPCs are within `radius` pixels of a world position.

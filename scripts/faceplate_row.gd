@@ -10,7 +10,6 @@ class_name FaceplateRow
 # for that look. It reads straight off the SAME appearance index the crowd wears (§0.3) —
 # today that's a soft narrowing (only 5 sheets), and it sharpens for free when cosmetics land.
 
-const FACE_FRAME_PX := 32   ## the 32x32 down-facing frame at the sheet's top-left
 
 @export var plate_size: float = 56.0
 @export var plate_gap: float = 8.0
@@ -56,7 +55,10 @@ func _draw_plate(x: float, appearance_index: int, border: Color) -> void:
 	var sheets := CharacterVisual.SHEET_TEXTURES
 	var sheet: Texture2D = sheets[wrapi(appearance_index, 0, sheets.size())]
 	var destination := Rect2(x, 0.0, plate_size, plate_size)
-	var source := Rect2(0.0, 0.0, FACE_FRAME_PX, FACE_FRAME_PX)  # down-facing, frame 0
+	# Crop the FULL down-facing frame 0 (top-left cell). Derive the frame size from the sheet
+	# (width / columns) so it's correct for any sheet size — 48px now, not the old hardcoded 32.
+	var frame_px: float = float(sheet.get_width()) / float(CharacterVisual.SHEET_COLUMNS)
+	var source := Rect2(0.0, 0.0, frame_px, frame_px)  # down-facing, frame 0, whole cell
 	draw_rect(destination, Color(0, 0, 0, 0.55), true)
 	draw_texture_rect_region(sheet, destination, source)
 	draw_rect(destination, border, false, 3.0)

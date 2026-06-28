@@ -35,15 +35,40 @@ class_name CharacterVisual
 # Each sheet is 128x128, made of 32x32 frames in a 4-column x 4-row grid.
 #   Rows = facing direction.  Columns = walk-cycle frames.
 # These double as the placeholder BODY cosmetics in CosmeticRegistry (same order).
+# All 48px PixelLab bodies, index-aligned with CosmeticRegistry.BODY_IDS. Indices 0–10 are the
+# Roman COMMONER crowd looks; 11–14 are the premium ASSASSIN player skins (battlepass/shop).
 const SHEET_TEXTURES := [
-	preload("res://assets/sprites/villager_sheet.png"),
-	preload("res://assets/sprites/merchant_sheet.png"),
-	preload("res://assets/sprites/guard_sheet.png"),
-	preload("res://assets/sprites/mage_sheet.png"),
-	preload("res://assets/sprites/townswoman_sheet.png"),
+	preload("res://assets/sprites/civilian_base_sheet.png"),      # 0  civilian (commoner)
+	preload("res://assets/sprites/crowd/com_brown.png"),          # 1
+	preload("res://assets/sprites/crowd/com_shawl.png"),          # 2
+	preload("res://assets/sprites/crowd/com_red.png"),            # 3
+	preload("res://assets/sprites/crowd/com_hooded.png"),         # 4
+	preload("res://assets/sprites/crowd/com_toga.png"),           # 5
+	preload("res://assets/sprites/crowd/com_merchant.png"),       # 6
+	preload("res://assets/sprites/crowd/com_green.png"),          # 7
+	preload("res://assets/sprites/crowd/com_laborer.png"),        # 8
+	preload("res://assets/sprites/crowd/com_elder.png"),          # 9
+	preload("res://assets/sprites/crowd/com_water.png"),          # 10
+	preload("res://assets/sprites/assassins/norse_hammer.png"),       # 11 assassin
+	preload("res://assets/sprites/assassins/crusader_longsword.png"), # 12 assassin
+	preload("res://assets/sprites/assassins/revolution_rapiers.png"), # 13 assassin
+	preload("res://assets/sprites/assassins/egyptian_maces.png"),     # 14 assassin
 ]
 
-const FRAME_PX := 32          ## FALLBACK frame size (px) used ONLY before a sheet is loaded.
+# Optional ATTACK sheets (same 4x4 layout) keyed by body index — only the player-capable looks have
+# one (civilian + the 4 assassins). On an attack the rig swaps the body to this sheet, plays its 4
+# swing frames once, then reverts to the walk sheet. Commoners have no entry → they never attack.
+const ATTACK_SHEETS := {
+	0: preload("res://assets/sprites/civilian_base_attack.png"),
+	11: preload("res://assets/sprites/assassins/norse_hammer_attack.png"),
+	12: preload("res://assets/sprites/assassins/crusader_longsword_attack.png"),
+	13: preload("res://assets/sprites/assassins/revolution_rapiers_attack.png"),
+	14: preload("res://assets/sprites/assassins/egyptian_maces_attack.png"),
+}
+## How long one attack swing plays before reverting to the walk sheet (seconds).
+const ATTACK_DURATION := 0.5
+
+const FRAME_PX := 48          ## FALLBACK frame size (px) used ONLY before a sheet is loaded.
                               ## The real on-screen scale is DERIVED from each layer's actual
                               ## texture (see _rescale_layer), so 32px and 48px art both render
                               ## at display_height with no second constant to hand-sync. The art
@@ -99,6 +124,7 @@ var _appearance_index: int = -1   ## Which body sheet we're wearing (-1 = none y
 var _facing_row: int = ROW_DOWN   ## Held between steps so a stopped body keeps facing.
 var _walk_time: float = 0.0       ## Drives which walk-cycle column we show.
 var _strike_timer: float = 0.0    ## Counts down a quick "I just struck" pop.
+var _attack_timer: float = 0.0    ## While >0, the body plays its ATTACK sheet (swing) instead of walk.
 var _highlighted: bool = false    ## Draw the mark ring this frame?
 var _highlight_pulse: float = 0.0 ## Animates the ring so it reads as "alive".
 ## Per-layer tint multiplied into every layer each frame (set by set_layer_visual).
@@ -272,9 +298,12 @@ func set_highlight(enabled: bool) -> void:
 	queue_redraw()
 
 
-# Called by the kill component when this character swings, for a readable "pop".
+# Called by the kill component when this character swings: the quick scale "pop" plus, if this
+# body has an attack sheet (player-capable looks), a one-shot weapon-swing animation.
 func play_strike() -> void:
 	_strike_timer = STRIKE_DURATION
+	if ATTACK_SHEETS.has(_appearance_index):
+		_attack_timer = ATTACK_DURATION
 
 
 # Tint the body to read its current layer (buildplan §7.2). The LayerComponent calls this.
@@ -288,10 +317,12 @@ func set_layer_visual(layer: int) -> void:
 			_layer_tint = Color(1, 1, 1, 1)              # ground: normal
 
 
-# Smoke grenade: fade the whole rig to near-invisible (placeholder for true per-viewer
-# invisibility). Folded into the per-frame modulate alpha of every layer.
-func set_smoked(on: bool) -> void:
-	_smoke_alpha = 0.12 if on else 1.0
+# Smoke grenade: fade the whole rig. Folded into the per-frame modulate alpha of every layer.
+# `alpha_when_on` lets the caller pick how faint: offline uses the near-invisible default (it
+# fakes invisibility on the one shared body); online uses a stronger value as a SELF-ONLY cue,
+# since the real hiding is done per-viewer on other machines and you must still see yourself play.
+func set_smoked(on: bool, alpha_when_on: float = 0.12) -> void:
+	_smoke_alpha = alpha_when_on if on else 1.0
 
 
 func _process(delta: float) -> void:
@@ -309,8 +340,19 @@ func _process(delta: float) -> void:
 		column = int(_walk_time) % SHEET_COLUMNS
 	else:
 		_walk_time = 0.0
+	# ATTACK overrides the walk: while the timer runs, swap the body to its attack sheet and play
+	# its 4 swing frames once; revert to the walk sheet when done. Commoners have no attack sheet.
+	var attacking := _attack_timer > 0.0 and ATTACK_SHEETS.has(_appearance_index)
+	if _attack_timer > 0.0:
+		_attack_timer -= delta
 	var body_frame := _facing_row * SHEET_COLUMNS + column
+	if attacking:
+		var progress := 1.0 - clampf(_attack_timer / ATTACK_DURATION, 0.0, 1.0)  # 0..1 over the swing
+		body_frame = _facing_row * SHEET_COLUMNS + mini(int(progress * SHEET_COLUMNS), SHEET_COLUMNS - 1)
 	if _sprite != null:
+		var want_tex: Texture2D = ATTACK_SHEETS[_appearance_index] if attacking else (SHEET_TEXTURES[_appearance_index] if _appearance_index >= 0 else _sprite.texture)
+		if want_tex != null and _sprite.texture != want_tex:
+			_sprite.texture = want_tex
 		_sprite.frame = body_frame
 	# Animated overlays share the body's frame exactly — ONE animation clock, no desync.
 	if _outfit != null and _outfit.visible:

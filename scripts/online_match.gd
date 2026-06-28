@@ -25,15 +25,18 @@ const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 ## Crowd size for the COMPACT/Rome arenas (the lobby's small maps use this instead of npc_count).
 ## Tighter crowd (Phase 9 decision): a smaller, readable haystack. At clone_crowd_fraction = 0.25
 ## this is ~10 clones + ~30 filler. Raise it (or the fraction) if hiding feels too easy.
-@export var compact_npc_count: int = 40
+@export var compact_npc_count: int = 55
 
-## How many sprite sheets exist (assets/sprites). Characters cycle through them so a
-## small match still looks varied. Keep in sync with CharacterVisual's sheet list.
-const NUM_SHEETS := 5
+## How many sprite sheets exist (assets/sprites). Keep in sync with CharacterVisual's sheet list.
+const NUM_SHEETS := 15
+## Body index of the first ASSASSIN skin in CharacterVisual.SHEET_TEXTURES / CosmeticRegistry. The
+## 4 premium assassin looks sit at 11–14; showcase config puts each player on a distinct one.
+const ASSASSIN_BODY_BASE := 11
+const ASSASSIN_BODY_COUNT := 4
 
 ## Size of the AI crowd the host simulates (the people you hide among). Tightened in Phase 9 to a
 ## smaller, readable crowd; at clone_crowd_fraction = 0.25 that's ~15 clones + ~45 filler.
-@export var npc_count: int = 60
+@export var npc_count: int = 78
 
 ## Fraction of the crowd that CROSSES the map (spawn at an edge, long paths). The rest
 ## are "homebodies" that mill around their spawn spot with short trips.
@@ -76,8 +79,9 @@ const NUM_SHEETS := 5
 ## the SAME body, so the per-viewer crowd would be invisible (everyone identical). This forces
 ## each player onto a DISTINCT body sheet at spawn so you can SEE the system work: you become
 ## the only "you" on your screen while everyone else's crowd fills with copies of you. Turn
-## OFF the moment players pick real, distinct cosmetics — their chosen look is then used as-is.
-@export var placeholder_distinct_bodies: bool = true
+## OFF now that players pick their assassin in the lobby — their chosen look is used as-is
+## (the lobby always equips one, so each player still spawns as a distinct assassin).
+@export var placeholder_distinct_bodies: bool = false
 
 # === scoring (buildplan §7.5 — winner = most points; mirrors LocalMatchManager) ========
 # The match runs until ONE player is left alive (or time runs out); the WINNER is then
@@ -197,7 +201,7 @@ var _access_points_by_index: Dictionary = {}
 
 ## Slice D — our own item kit readout, driven by host pushes (the host owns the charges).
 var _item_label: Label = null
-var _item_state: Dictionary = {"smoke": 0, "cloak": 0, "smoke_on": false, "cloak_on": false}
+var _item_state: Dictionary = {"smoke": 0, "cloak": 0, "smoke_on": false, "cloak_on": false, "smoke_secs": 0.0, "cloak_secs": 0.0}
 
 ## Slice E — the faceplate row + any reveal that arrived before the HUD existed.
 var _faceplates: FaceplateRow = null
@@ -221,6 +225,7 @@ signal host_kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
 
 func _ready() -> void:
 	add_to_group("online_match")  # Phase 9 experiments find the match here (read-only accessors)
+	CosmeticRegistry.roll_filler_bodies()  # this match's 3–5 commoner crowd looks
 	_build_world()
 	_build_hud()
 	_build_debug_overlay()
@@ -418,7 +423,9 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	# body, so the per-viewer crowd would be invisible. Force a DISTINCT body per player so you
 	# can SEE it working. Drop this flag once players pick real, distinct cosmetics.
 	if placeholder_distinct_bodies:
-		loadout_payload = _with_body_index(loadout_payload, _next_spawn_index % NUM_SHEETS)
+		# Showcase: put each player on a distinct premium ASSASSIN skin (11–14) so the per-viewer
+		# crowd fills with assassin look-alikes around them, hidden in the Roman commoner crowd.
+		loadout_payload = _with_body_index(loadout_payload, ASSASSIN_BODY_BASE + (_next_spawn_index % ASSASSIN_BODY_COUNT))
 	var spawn_data := {
 		"peer": peer_id,
 		"pos": _spawn_position_for_index(_next_spawn_index),
@@ -1057,7 +1064,7 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 		box.add_child(line)
 
 	var rematch_button := Button.new()
-	rematch_button.text = "Rematch"
+	rematch_button.text = "Rematch (re-pick in lobby)"
 	rematch_button.process_mode = Node.PROCESS_MODE_ALWAYS
 	box.add_child(rematch_button)
 	rematch_button.pressed.connect(func() -> void:
@@ -1097,11 +1104,12 @@ func _request_rematch() -> void:
 		_do_rematch.rpc()
 
 
-# Everyone: clear the pause and reload the match scene together for a fresh round.
+# Everyone: clear the pause and return to the LOBBY together, so each player can re-pick their
+# assassin + NPC-disguise (and the host the map) before confirming a fresh round (their request).
 @rpc("authority", "call_local", "reliable")
 func _do_rematch() -> void:
 	get_tree().paused = false
-	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
+	get_tree().change_scene_to_file("res://scenes/lobby.tscn")
 
 
 # Owner-only: the host tells US which crowd NPCs are our marks. We just remember the
@@ -1134,7 +1142,25 @@ func _process(delta: float) -> void:
 	_update_local_view()
 	_maybe_assign_crowd_appearances()
 	_update_visibility()
+	_tick_item_countdown(delta)
 	_update_debug_overlay()
+
+
+# Count our own active item timers down locally so the "(ON Ns)" readout ticks every frame.
+# The host still owns the real effect (it pushes the authoritative seconds on start/end); this
+# only keeps the displayed number moving between those pushes.
+func _tick_item_countdown(delta: float) -> void:
+	if _item_label == null:
+		return
+	var changed := false
+	if bool(_item_state["smoke_on"]) and float(_item_state["smoke_secs"]) > 0.0:
+		_item_state["smoke_secs"] = maxf(0.0, float(_item_state["smoke_secs"]) - delta)
+		changed = true
+	if bool(_item_state["cloak_on"]) and float(_item_state["cloak_secs"]) > 0.0:
+		_item_state["cloak_secs"] = maxf(0.0, float(_item_state["cloak_secs"]) - delta)
+		changed = true
+	if changed:
+		_refresh_item_label()
 
 
 # Builds the (hidden) network debug overlay. Toggle it in-match with F3.
@@ -1225,9 +1251,16 @@ func _build_player_hud() -> void:
 	_player_hud_layer.name = "PlayerHUD"
 	add_child(_player_hud_layer)
 
+	# Top-left key legend so a new player can learn the controls (climb, items, claim) at a
+	# glance. It auto-sizes to ~210px tall, so the live HUD below starts at y = 224.
+	var controls := ControlsHint.new()
+	controls.name = "ControlsHint"
+	controls.position = Vector2(24.0, 12.0)
+	_player_hud_layer.add_child(controls)
+
 	# Your OWN exposure bar (private — the host sends only your value to you).
 	var exposure_caption := Label.new()
-	exposure_caption.position = Vector2(24.0, 78.0)
+	exposure_caption.position = Vector2(24.0, 224.0)
 	exposure_caption.add_theme_font_size_override("font_size", 14)
 	exposure_caption.text = "EXPOSURE"
 	_player_hud_layer.add_child(exposure_caption)
@@ -1237,13 +1270,13 @@ func _build_player_hud() -> void:
 	_exposure_bar.min_value = 0.0
 	_exposure_bar.max_value = 100.0
 	_exposure_bar.show_percentage = false
-	_exposure_bar.position = Vector2(24.0, 100.0)
+	_exposure_bar.position = Vector2(24.0, 246.0)
 	_exposure_bar.custom_minimum_size = Vector2(300.0, 22.0)
 	_exposure_bar.size = Vector2(300.0, 22.0)
 	_player_hud_layer.add_child(_exposure_bar)
 
 	_objective_label = Label.new()
-	_objective_label.position = Vector2(24.0, 132.0)
+	_objective_label.position = Vector2(24.0, 278.0)
 	_objective_label.add_theme_font_size_override("font_size", 18)
 	_objective_label.text = "Locating your mark..."
 	_player_hud_layer.add_child(_objective_label)
@@ -1259,6 +1292,12 @@ func _build_player_hud() -> void:
 	_build_layer_feedback()   # sewer overlay + arrow uptime (Slice B)
 	_build_item_hud()         # smoke/cloak charges readout (Slice D)
 	_build_faceplate_row()    # red/blue identity reveals (Slice E)
+
+	# Phase 9 experiment status + event toast (so the player knows what's on / what just fired).
+	var toast := ExperimentToast.new()
+	toast.name = "ExperimentToast"
+	toast.position = Vector2(screen_width * 0.5 - 180.0, get_viewport().get_visible_rect().size.y - 150.0)
+	_player_hud_layer.add_child(toast)
 
 
 func _highlight_mark(mark: Node) -> void:
@@ -1329,8 +1368,19 @@ func _update_visibility() -> void:
 				continue
 			if character == _local_player:
 				character.visible = true  # you always see yourself
+				_apply_self_smoke_cue(character)  # ...but show YOU that you're hidden
 			else:
 				character.visible = _can_local_player_see(my_layer, character)
+
+
+# Self-only feedback: while YOUR smoke is up you stay fully visible to yourself (others can't
+# see you), so fade your own rig to a clear-but-playable opacity so you KNOW you're hidden.
+# Reads the same replicated `_net_smoked` flag the hiding uses, so it can never disagree with it.
+func _apply_self_smoke_cue(character: Node2D) -> void:
+	var visual := character.get_node_or_null("CharacterVisual")
+	if visual == null or not visual.has_method("set_smoked"):
+		return
+	visual.call("set_smoked", bool(character.get("_net_smoked")), 0.45)
 
 
 func _layer_of_character(character: Node) -> int:
@@ -1386,12 +1436,20 @@ func _assign_crowd_appearances() -> void:
 	# Our own look — the one thing that must NEVER appear out in our crowd.
 	var my_key := _look_key(_loadout_of_player(_local_player))
 
-	# The looks we DUPLICATE into the crowd: every OTHER player's loadout (never our own).
+	# The looks we DUPLICATE into the crowd: every OTHER player's visible loadout (never our own),
+	# PLUS any NPC-disguise decoy (their hidden assassin) so BOTH their commoner and their assassin
+	# appear as crowd look-alikes — opponents can't track them by sprite type.
 	var other_looks: Array = []  # Array[Loadout]
 	for child in _players_parent.get_children():
 		var other := child as Player
 		if other != null and other != _local_player:
 			other_looks.append(_loadout_of_player(other))
+			var payload: Dictionary = other.get("loadout_payload")
+			var decoy: StringName = payload.get("decoy_body", &"") if payload != null else &""
+			if decoy != &"":
+				var decoy_look := Loadout.new()
+				decoy_look.set_item(CosmeticItem.Slot.BODY, decoy)
+				other_looks.append(decoy_look)
 
 	# The crowd NPCs on THIS machine (marks included — they're ordinary crowd folk to look at).
 	var npcs: Array = []
@@ -1412,11 +1470,11 @@ func _assign_crowd_appearances() -> void:
 		clone_total = int(round(crowd_size * clampf(clone_crowd_fraction, 0.0, 1.0)))
 	for i in clone_total:
 		looks.append(other_looks[i % other_looks.size()])  # round-robin = balanced groups
-	# Fill the rest with filler base looks, re-rolling any that would match OUR look.
-	var pool := CosmeticRegistry.npc_pool_by_slot()
+	# Fill the rest with a 50/50 commoner/assassin crowd mix, re-rolling any that match OUR look.
 	var guard := 0  # stop a pathological pool (e.g. a single body) from looping forever
 	while looks.size() < crowd_size:
-		var filler := Loadout.randomized(pool)
+		var filler := Loadout.new()
+		filler.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.random_crowd_body())
 		guard += 1
 		if _look_key(filler) != my_key or guard > crowd_size * 8:
 			looks.append(filler)
@@ -1517,7 +1575,7 @@ func _apply_access_cooldown(index: int) -> void:
 func _build_item_hud() -> void:
 	_item_label = Label.new()
 	_item_label.name = "ItemLabel"
-	_item_label.position = Vector2(24.0, 168.0)
+	_item_label.position = Vector2(24.0, 314.0)
 	_item_label.add_theme_font_size_override("font_size", 16)
 	_player_hud_layer.add_child(_item_label)
 	_refresh_item_label()
@@ -1526,8 +1584,10 @@ func _build_item_hud() -> void:
 func _refresh_item_label() -> void:
 	if _item_label == null:
 		return
-	var smoke_on: String = " (ON)" if bool(_item_state["smoke_on"]) else ""
-	var cloak_on: String = " (ON)" if bool(_item_state["cloak_on"]) else ""
+	# While an effect is ON show a live "Ns" countdown — for SMOKE that's the seconds until
+	# you can attack / be seen again; for CLOAK, until your hunt arrow returns to the opponent.
+	var smoke_on: String = " (ON %ds)" % int(ceil(_item_state["smoke_secs"])) if bool(_item_state["smoke_on"]) else ""
+	var cloak_on: String = " (ON %ds)" % int(ceil(_item_state["cloak_secs"])) if bool(_item_state["cloak_on"]) else ""
 	_item_label.text = "SMOKE x%d%s   CLOAK x%d%s" % [
 		int(_item_state["smoke"]), smoke_on, int(_item_state["cloak"]), cloak_on]
 
@@ -1563,13 +1623,16 @@ func _push_item_state_to(peer_id: int) -> void:
 	_receive_item_state.rpc_id(peer_id,
 		item.charges_left(ItemComponent.Item.SMOKE),
 		item.charges_left(ItemComponent.Item.CLOAK),
-		item.smoke_active(), item.cloak_active())
+		item.smoke_active(), item.cloak_active(),
+		item.smoke_seconds_left(), item.cloak_seconds_left())
 
 
-# Owner-only: update our item readout with the host's authoritative numbers.
+# Owner-only: update our item readout with the host's authoritative numbers. The host sends the
+# remaining seconds at the moment an effect turns on/off; between pushes the client counts them
+# down locally (in _process) so the readout ticks smoothly without per-frame network traffic.
 @rpc("authority", "call_local", "reliable")
-func _receive_item_state(smoke_left: int, cloak_left: int, smoke_on: bool, cloak_on: bool) -> void:
-	_item_state = {"smoke": smoke_left, "cloak": cloak_left, "smoke_on": smoke_on, "cloak_on": cloak_on}
+func _receive_item_state(smoke_left: int, cloak_left: int, smoke_on: bool, cloak_on: bool, smoke_secs: float = 0.0, cloak_secs: float = 0.0) -> void:
+	_item_state = {"smoke": smoke_left, "cloak": cloak_left, "smoke_on": smoke_on, "cloak_on": cloak_on, "smoke_secs": smoke_secs, "cloak_secs": cloak_secs}
 	_refresh_item_label()
 
 

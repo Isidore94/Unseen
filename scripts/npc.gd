@@ -172,9 +172,11 @@ func _assign_random_loadout() -> void:
 	if visual == null or not visual.has_method("apply_loadout"):
 		return
 	var reg := get_node_or_null("/root/CosmeticRegistry")
-	if reg == null or not reg.has_method("npc_pool_by_slot"):
+	if reg == null or not reg.has_method("random_crowd_body"):
 		return
-	var loadout := Loadout.randomized(reg.call("npc_pool_by_slot"))
+	# Body only (our crowd art is whole baked looks): a 50/50 commoner/assassin pick this match.
+	var loadout := Loadout.new()
+	loadout.set_item(CosmeticItem.Slot.BODY, reg.call("random_crowd_body"))
 	visual.call("apply_loadout", loadout)
 
 

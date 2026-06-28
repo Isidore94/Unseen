@@ -22,6 +22,11 @@ var _roster_label: Label = null
 var _status_label: Label = null
 var _start_button: Button = null
 var _map_picker: OptionButton = null
+## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
+var _chosen_assassin: StringName = &""
+var _npc_disguise: bool = false
+## The commoner look the player shows IF they pick NPC disguise (chosen once, this lobby).
+var _disguise_commoner: StringName = &""
 
 
 func _ready() -> void:
@@ -66,6 +71,41 @@ func _build_ui() -> void:
 	_roster_label.add_theme_font_size_override("font_size", 22)
 	panel.add_child(_roster_label)
 
+	# EVERY player privately picks their assassin look. This is LOCAL — it never broadcasts to the
+	# lobby, so opponents never learn your sprite (the hidden-identity pillar starts at character
+	# select). It's stored on your CosmeticInventory and submitted to the host at spawn.
+	var skin_label := Label.new()
+	skin_label.text = "Your assassin (private)"
+	skin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(skin_label)
+	var skin_picker := OptionButton.new()
+	for i in CosmeticRegistry.ASSASSIN_BODY_IDS.size():
+		var id: StringName = CosmeticRegistry.ASSASSIN_BODY_IDS[i]
+		skin_picker.add_item(str(id).replace("body_", "").capitalize(), i)
+	skin_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(skin_picker)
+
+	# NPC DISGUISE: if checked, you appear in-match as a regular COMMONER (your picked assassin is
+	# still duplicated as crowd decoys, and so is your commoner look) — so opponents can't track you
+	# by assassin OR commoner sprites. Movement/gameplay are unchanged; reveals still show your real
+	# (commoner) portrait. Committed here at the lobby.
+	var disguise_check := CheckBox.new()
+	disguise_check.text = "NPC disguise (blend in as a commoner)"
+	panel.add_child(disguise_check)
+
+	# Defaults: a random assassin + a random commoner-disguise look, equipped now so a player who
+	# never touches the controls still spawns correctly.
+	_disguise_commoner = CosmeticRegistry.COMMONER_BODY_IDS[randi() % CosmeticRegistry.COMMONER_BODY_IDS.size()]
+	_chosen_assassin = CosmeticRegistry.ASSASSIN_BODY_IDS[randi() % CosmeticRegistry.ASSASSIN_BODY_IDS.size()]
+	skin_picker.selected = CosmeticRegistry.ASSASSIN_BODY_IDS.find(_chosen_assassin)
+	_apply_look_choice()
+	skin_picker.item_selected.connect(func(i: int) -> void:
+		_chosen_assassin = CosmeticRegistry.ASSASSIN_BODY_IDS[i]
+		_apply_look_choice())
+	disguise_check.toggled.connect(func(on: bool) -> void:
+		_npc_disguise = on
+		_apply_look_choice())
+
 	if NetworkManager.is_host():
 		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.
 		if NetworkManager.is_using_steam():
@@ -109,6 +149,23 @@ func _build_ui() -> void:
 	leave_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	leave_button.pressed.connect(_return_to_menu)
 	panel.add_child(leave_button)
+
+
+# Apply the player's private look choice locally. It rides to the match in the loadout the client
+# submits to the host at spawn (online_match._submit_loadout / equipped_payload).
+#   - No disguise: visible BODY = your assassin; no decoy.
+#   - NPC disguise: visible BODY = a commoner; your assassin is sent as a DECOY to also be cloned
+#     into the crowd, so opponents can't track you by sprite type. Reveals show the commoner.
+func _apply_look_choice() -> void:
+	var inv := get_node_or_null("/root/CosmeticInventory")
+	if inv == null:
+		return
+	if _npc_disguise:
+		inv.call("equip", CosmeticItem.Slot.BODY, _disguise_commoner)
+		inv.set("decoy_body_id", _chosen_assassin)
+	else:
+		inv.call("equip", CosmeticItem.Slot.BODY, _chosen_assassin)
+		inv.set("decoy_body_id", &"")
 
 
 func _refresh() -> void:

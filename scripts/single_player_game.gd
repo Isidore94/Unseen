@@ -26,7 +26,7 @@ const ROUND_MANAGER_SCRIPT := preload("res://scripts/round_manager.gd")
 const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 
 ## Civilian crowd size for the offline test (lighter than online — one local machine).
-@export var npc_count: int = 30
+@export var npc_count: int = 50
 
 ## NPC marks to kill before the bot hunter becomes your valid target (buildplan §7.0, note 9).
 @export var marks_to_kill: int = 2
@@ -41,11 +41,18 @@ var _hud: CanvasLayer = null
 var _faceplates: FaceplateRow = null
 var _arrow: ExposureArrow = null
 var _mini: MiniMap = null
+## The item readout + the component it watches, kept as members so _process can tick the
+## live "(ON Ns)" smoke/cloak countdown every frame (offline this machine owns the timers).
+var _item: ItemComponent = null
+var _item_label: Label = null
 
 
 func _ready() -> void:
 	# Pause survives scene changes; clear it on the way in (e.g. after an end screen → menu).
 	get_tree().paused = false
+
+	# Pick this game's 3–5 commoner crowd looks (varies each run) before the crowd spawns.
+	CosmeticRegistry.roll_filler_bodies()
 
 	var map := MAP_SCENE.instantiate() as TestMap01
 	map.name = "Map"
@@ -58,8 +65,11 @@ func _ready() -> void:
 
 func _build_match(map: TestMap01) -> void:
 	# --- the player (full-screen view via its own embedded camera) ---
+	# Showcase: offline you play as a premium ASSASSIN skin (index 11 = Norse hammer) so you can
+	# see an end-game look walking among the Roman commoner crowd.
 	_player = PLAYER_SCENE.instantiate() as Player
 	_player.name = "Player"
+	_player.appearance_index = 11
 	add_child(_player)
 	_player.global_position = _first_spawn(map)
 
@@ -107,7 +117,44 @@ func _build_match(map: TestMap01) -> void:
 	round_manager.name = "RoundManager"
 	add_child(round_manager)
 
+	# Phase 9 experiments + their on-screen feedback also run offline now (they used to be online-only,
+	# which is why crowd-reaction did nothing here). Each experiment self-gates on its ExperimentFlags.
+	_spawn_experiments()
+	_build_experiment_toast()
+
 	_wire_reveals(contract)
+
+
+# Load every experiment script in scripts/experiments/ as a child (mirrors online_match). Each is
+# inert unless its ExperimentFlags switch is on, so this is safe to always run.
+func _spawn_experiments() -> void:
+	var dir := DirAccess.open("res://scripts/experiments")
+	if dir == null:
+		return
+	var holder := Node.new()
+	holder.name = "Experiments"
+	add_child(holder)
+	for file_name in dir.get_files():
+		if not file_name.ends_with(".gd"):
+			continue
+		var script: Script = load("res://scripts/experiments/" + file_name)
+		if script == null:
+			continue
+		var node := Node.new()
+		node.name = file_name.get_basename()
+		node.set_script(script)
+		holder.add_child(node)
+
+
+# The experiment status/toast GUI, bottom-centre of the HUD.
+func _build_experiment_toast() -> void:
+	if _hud == null:
+		return
+	var toast := ExperimentToast.new()
+	toast.name = "ExperimentToast"
+	var vp := get_viewport().get_visible_rect().size
+	toast.position = Vector2(vp.x * 0.5 - 180.0, vp.y - 150.0)
+	_hud.add_child(toast)
 
 
 # Builds the on-screen HUD: exposure bar, contract label, the arrow that points at the hunter,
@@ -116,12 +163,19 @@ func _build_match(map: TestMap01) -> void:
 func _build_hud(map: TestMap01) -> Label:
 	var screen_width: float = get_viewport().get_visible_rect().size.x
 
+	# Top-left key legend (same component the online HUD uses). It auto-sizes to ~210px tall,
+	# so the live readouts below start at y = 224.
+	var controls := ControlsHint.new()
+	controls.name = "ControlsHint"
+	controls.position = Vector2(40.0, 12.0)
+	_hud.add_child(controls)
+
 	var exposure_bar := ProgressBar.new()
 	exposure_bar.name = "ExposureBar"
 	exposure_bar.min_value = 0.0
 	exposure_bar.max_value = 100.0
 	exposure_bar.show_percentage = false
-	exposure_bar.position = Vector2(40.0, 40.0)
+	exposure_bar.position = Vector2(40.0, 224.0)
 	exposure_bar.custom_minimum_size = Vector2(320.0, 24.0)
 	exposure_bar.size = Vector2(320.0, 24.0)
 	_hud.add_child(exposure_bar)
@@ -129,7 +183,7 @@ func _build_hud(map: TestMap01) -> Label:
 
 	var contract_label := Label.new()
 	contract_label.name = "ContractLabel"
-	contract_label.position = Vector2(40.0, 78.0)
+	contract_label.position = Vector2(40.0, 262.0)
 	contract_label.add_theme_font_size_override("font_size", 18)
 	contract_label.text = "CONTRACT"
 	_hud.add_child(contract_label)
@@ -168,7 +222,7 @@ func _build_hud(map: TestMap01) -> Label:
 	# "Suspect locked" cue.
 	var lock_label := Label.new()
 	lock_label.name = "LockLabel"
-	lock_label.position = Vector2(40.0, 118.0)
+	lock_label.position = Vector2(40.0, 298.0)
 	lock_label.add_theme_font_size_override("font_size", 18)
 	_hud.add_child(lock_label)
 	var kill_component := _player.get_node_or_null("KillComponent") as KillComponent
@@ -176,21 +230,19 @@ func _build_hud(map: TestMap01) -> Label:
 		kill_component.lock_changed.connect(
 			func(is_locked: bool) -> void: lock_label.text = "SUSPECT LOCKED" if is_locked else "")
 
-	# Item charges readout.
-	var item_label := Label.new()
-	item_label.name = "ItemLabel"
-	item_label.position = Vector2(40.0, 150.0)
-	item_label.add_theme_font_size_override("font_size", 16)
-	_hud.add_child(item_label)
-	var item := _player.get_node_or_null("ItemComponent") as ItemComponent
-	if item != null:
-		var refresh := func() -> void:
-			var smoke := "SMOKE x%d%s" % [item.charges_left(ItemComponent.Item.SMOKE), " (ON)" if item.smoke_active() else ""]
-			var cloak := "CLOAK x%d%s" % [item.charges_left(ItemComponent.Item.CLOAK), " (ON)" if item.cloak_active() else ""]
-			item_label.text = "%s   %s" % [smoke, cloak]
-		refresh.call()
-		item.item_activated.connect(func(_which: int, _duration: float) -> void: refresh.call())
-		item.item_expired.connect(func(_which: int) -> void: refresh.call())
+	# Item charges readout. Kept on members so _process can tick the live "(ON Ns)" countdown.
+	_item_label = Label.new()
+	_item_label.name = "ItemLabel"
+	_item_label.position = Vector2(40.0, 330.0)
+	_item_label.add_theme_font_size_override("font_size", 16)
+	_hud.add_child(_item_label)
+	_item = _player.get_node_or_null("ItemComponent") as ItemComponent
+	if _item != null:
+		# Edges (charge spent / effect ended) refresh immediately; _process handles the
+		# smooth per-second countdown in between.
+		_item.item_activated.connect(func(_which: int, _duration: float) -> void: _refresh_item_label())
+		_item.item_expired.connect(func(_which: int) -> void: _refresh_item_label())
+	_refresh_item_label()
 
 	# Faceplate row (red target / blue exposed), top-centre.
 	var faces := FaceplateRow.new()
@@ -202,6 +254,25 @@ func _build_hud(map: TestMap01) -> Label:
 	_arrow = arrow
 
 	return contract_label
+
+
+# Per-frame: keep the item readout's "(ON Ns)" smoke/cloak countdown ticking. Offline this
+# machine owns the item timers, so we just read them straight off the component each frame.
+func _process(_delta: float) -> void:
+	if _item != null and (_item.smoke_active() or _item.cloak_active()):
+		_refresh_item_label()
+
+
+# Draw the item charges line, with a live seconds countdown while an effect is ON. For SMOKE
+# that countdown is how long until you can attack / be seen again.
+func _refresh_item_label() -> void:
+	if _item_label == null or _item == null:
+		return
+	var smoke_on: String = " (ON %ds)" % int(ceil(_item.smoke_seconds_left())) if _item.smoke_active() else ""
+	var cloak_on: String = " (ON %ds)" % int(ceil(_item.cloak_seconds_left())) if _item.cloak_active() else ""
+	_item_label.text = "SMOKE x%d%s   CLOAK x%d%s" % [
+		_item.charges_left(ItemComponent.Item.SMOKE), smoke_on,
+		_item.charges_left(ItemComponent.Item.CLOAK), cloak_on]
 
 
 # Reveals (buildplan §7.4): finishing your marks reveals the hunter's look (red plate) and flips

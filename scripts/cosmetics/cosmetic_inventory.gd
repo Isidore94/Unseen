@@ -28,6 +28,9 @@ signal item_granted(id: StringName)
 var _owned: Dictionary = {}
 ## The player's currently equipped look (pure data — see Loadout).
 var _equipped: Loadout = null
+## NPC-disguise (lobby): when non-empty, the equipped BODY is a commoner and this is the hidden
+## assassin id, sent to the match so it ALSO gets cloned as crowd decoys. "" = not disguised.
+var decoy_body_id: StringName = &""
 ## The player's account identity (banner/badge/title — see PlayerProfile, §7).
 var _profile: PlayerProfile = null
 
@@ -44,6 +47,10 @@ func _ready() -> void:
 # items are free; we just own all of them. (CosmeticRegistry is an autoload global.)
 func _grant_defaults() -> void:
 	for id in CosmeticRegistry.ids_with_acquisition(CosmeticItem.Acquisition.DEFAULT):
+		_owned[id] = true
+	# TEMP (no shop yet): grant the premium assassin skins so players can pick one in the lobby.
+	# Remove this once a real shop/battlepass grants them — they're PURCHASE-tier on purpose.
+	for id in CosmeticRegistry.ASSASSIN_BODY_IDS:
 		_owned[id] = true
 
 
@@ -121,7 +128,12 @@ func equipped_loadout() -> Loadout:
 # The equipped look as a compact payload for the network layer (§5). OnlineMatch calls this
 # to tell the host what this player looks like.
 func equipped_payload() -> Dictionary:
-	return _equipped.to_payload() if _equipped != null else {}
+	var payload := _equipped.to_payload() if _equipped != null else {}
+	# NPC-disguise: when set, the player's visible BODY is a commoner and THIS hidden assassin id
+	# rides along so the match also clones it into the crowd as decoys (online_match reads it).
+	if decoy_body_id != &"":
+		payload["decoy_body"] = decoy_body_id
+	return payload
 
 
 # === profile identity (§7) ==================================================

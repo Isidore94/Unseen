@@ -105,3 +105,15 @@ func _draw() -> void:
 	fill.a *= dim
 	draw_circle(Vector2.ZERO, portal_radius, fill)
 	draw_arc(Vector2.ZERO, portal_radius, 0.0, TAU, 32, Color(1, 1, 1, 0.5 * dim), 2.0)
+
+	# While locked out, draw the whole-seconds countdown over the pad so a player can see exactly
+	# when it comes back up. _process redraws each frame while the cooldown ticks down.
+	if _cooldown_remaining > 0.0:
+		var font := ThemeDB.fallback_font
+		var font_size := 26
+		var text := str(int(ceil(_cooldown_remaining)))
+		var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size).x
+		var pos := Vector2(-width * 0.5, font_size * 0.35)
+		for offset in [Vector2(-2, 0), Vector2(2, 0), Vector2(0, -2), Vector2(0, 2)]:
+			draw_string(font, pos + offset, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0, 0, 0, 0.9))
+		draw_string(font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(1, 1, 1, 1))

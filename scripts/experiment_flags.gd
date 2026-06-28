@@ -20,14 +20,14 @@ extends Node
 # play a block of rounds, then flip it back. Never run two at once when judging feel (§3.1).
 
 ## 9A — WHIFF RECOVERY: killing the wrong target briefly disarms you (a punishable commitment).
-@export var whiff_recovery_enabled: bool = false
+@export var whiff_recovery_enabled: bool = true
 ## 9B — CROWD THINNING: NPCs leave the map as the round ages, forcing an exposed endgame.
 @export var crowd_thinning_enabled: bool = false
 ## 9C — EARNED READ: sustained discipline charges a one-shot "anomaly pulse" over the crowd.
-@export var earned_read_enabled: bool = false
+@export var earned_read_enabled: bool = true
 ## 9D — MUTUAL PROXIMITY: two players who are each other's target both get a hot/cold cue.
 @export var mutual_proximity_enabled: bool = false
 ## 9E — CROWD REACTION: NPCs near a kill flinch/scatter, leaving a directional tell.
-@export var crowd_reaction_enabled: bool = false
+@export var crowd_reaction_enabled: bool = true
 ## 9F — BEHAVIORAL FLAG: a reciprocal, behavior-triggered directional flag that scales with exposure.
-@export var behavioral_flag_enabled: bool = false
+@export var behavioral_flag_enabled: bool = true
