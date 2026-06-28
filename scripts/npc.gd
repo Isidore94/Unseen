@@ -36,8 +36,14 @@ class_name Npc
 ## Offline play leaves this false and the NPC behaves exactly as before.
 @export var network_controlled: bool = false
 ## (Online) Which sprite sheet (0-4) this NPC wears. The host assigns it so the crowd
-## looks identical on every screen.
+## looks identical on every screen. Kept for back-compat; the full look now travels as
+## `loadout_payload` below (which supersedes this when present).
 @export var appearance_index: int = 0
+
+## (Online) The compact cosmetic loadout the HOST assigned to this NPC, replicated to
+## clients in the spawn data so the whole crowd looks identical on every screen (§5).
+## Empty offline — each NPC then randomises its own look locally. Ids only, no textures.
+@export var loadout_payload: Dictionary = {}
 
 # === wander behaviour ======================================================
 ## When true this NPC CROSSES the map (long paths, spawns at an edge); when false it's
@@ -97,6 +103,11 @@ func _ready() -> void:
 		_setup_network_role()
 		return
 
+	# OFFLINE crowd: give this NPC a randomised look across ALL four rig layers (body +
+	# outfit + head + weapon) drawn from the global cosmetic pool (§4), so no NPC is
+	# guaranteed to mirror any one player's exact outfit. (Online assigns this on the host.)
+	_assign_random_loadout()
+
 	# Marks don't wander; the crowd does. The navigation mesh isn't registered on
 	# the very first frame, so we defer the first destination pick a frame.
 	if can_wander:
@@ -106,9 +117,14 @@ func _ready() -> void:
 # Online setup, run on every machine. The host keeps simulating; clients freeze the
 # local AI and let the position replicator drive the body. (MULTIPLAYER_PLAN.md §2.)
 func _setup_network_role() -> void:
-	# Wear the sheet the host assigned (sent identically to every peer at spawn).
+	# Wear what the host assigned (sent identically to every peer at spawn). Prefer the
+	# full loadout (all four layers); fall back to the legacy body-only index if none.
 	var visual := get_node_or_null("CharacterVisual")
-	if visual != null and visual.has_method("set_appearance"):
+	if visual == null:
+		return
+	if not loadout_payload.is_empty() and visual.has_method("apply_loadout"):
+		visual.call("apply_loadout", Loadout.from_payload(loadout_payload))
+	elif visual.has_method("set_appearance"):
 		visual.call("set_appearance", appearance_index)
 
 	# Start the follow/publish target at our spawn position so nothing lurches on frame 1.
@@ -137,6 +153,22 @@ func _build_position_synchronizer() -> void:
 	synchronizer.replication_config = replication
 	synchronizer.replication_interval = net_send_interval
 	add_child(synchronizer)
+
+
+# Build a randomised loadout from the global cosmetic pool and wear it. Used by offline
+# NPCs (and reusable by the host online). The pool comes from CosmeticRegistry — the
+# CONFIG HOOK for "lobby players' cosmetics later" lives there (§4), so this spawner
+# never needs to change when that arrives. Guarded so a missing registry can't break
+# the crowd (it just falls back to the visual's own body-only randomiser).
+func _assign_random_loadout() -> void:
+	var visual := get_node_or_null("CharacterVisual")
+	if visual == null or not visual.has_method("apply_loadout"):
+		return
+	var reg := get_node_or_null("/root/CosmeticRegistry")
+	if reg == null or not reg.has_method("npc_pool_by_slot"):
+		return
+	var loadout := Loadout.randomized(reg.call("npc_pool_by_slot"))
+	visual.call("apply_loadout", loadout)
 
 
 # Called by the player's KillComponent when this NPC is a valid (marked) target.

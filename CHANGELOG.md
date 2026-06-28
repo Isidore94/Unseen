@@ -2,6 +2,60 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+### Session: 8-monetization — taxonomy + PixelLab art pipeline + style-bible anchor
+Integrated `PHASE_8_MONETIZATION.md` (the monetization + PixelLab spec) into the repo and made the
+code/art coherent with it. Much of its "what to do" already exists (data model, equip, ownership gate
+here; the §2A player-derived clone crowd as the Phase 9 per-viewer system — `clones_per_player` ≙
+`look_copies_per_player`). This session adds the parts the doc introduces:
+- **Crowd-safe taxonomy in the data model (`CosmeticItem`).** New `Bucket { CROWD_SAFE, REVEAL_MOMENT,
+  OUT_OF_MATCH }` (the §0 veto: only crowd-safe items may touch the in-match civilian silhouette), plus
+  `Rarity` and `season` (§4.1, for battle-pass/store sorting). `make()` auto-assigns the bucket from the
+  slot via `bucket_for_slot()` (visual layers → crowd-safe, anim → reveal-moment, profile → out-of-match),
+  and `is_crowd_safe()` is the one-call veto downstream equip/store code gates on. Additive — existing
+  rows get the right bucket for free.
+- **Art pipeline scaffolding.** `assets/style_bible/` (the immovable anchor) with a README that fixes the
+  art direction (ONE base civilian; cosmetics differentiate; crowd-safe silhouette), the exact rig format
+  (32×32, 4×4 sheet, locked feet/centre origin), the **base-civilian PixelLab recipe** (PixFlux concept →
+  BitForge style-lock → hand-finish → rotate 4-dir → animate), palette discipline, the §7.9 naming
+  conventions, and the AI/Steam disclosure reminders. Plus `assets/cosmetics/` for generated art.
+- **Still to build per §4 (sequenced after the crowd is proven fun):** battle-pass backend (XP/track,
+  free vs premium, claim), store/entitlements, Steam MTX. Not built speculatively — the doc itself gates
+  them behind a proven crowd.
+
+## Phase 8 — Cosmetic & identity foundation (monetization plumbing)  ·  COSMETIC_SYSTEM_SPEC.md  ·  v0.8.0
+
+The architecture cosmetics/monetization later sit on. **Plumbing only — no shop, no currency,
+no progression.** Branched from `phase-7-online-integration`. The success test: adding a new hat
+later = one art file + one data row; adding the shop later = UI on top of an inventory that
+already exists. Built and committed step-by-step (one commit per spec section):
+
+- **Composable 4-layer rig (§1).** `CharacterVisual` is now THE one rig everything draws a person
+  with (player, remote players, NPCs, previews) — built from body / outfit / head / weapon layers
+  composited against a single **locked centre origin**, so swapping a hat can't shift the character
+  a pixel. `apply_loadout()` is the *only* place cosmetics touch the rig; overlays animate in
+  lockstep on the body's one clock and stay hidden until art exists (no visual regression).
+  `set_appearance()` kept as a body-only shim so the existing int-based crowd netcode is untouched.
+- **Cosmetic data (§2-3).** `CosmeticItem` (Resource: id/slot/display_name/art_path/default_palette/
+  acquisition), `Loadout` (equipped ids + palette overrides, compact `to_payload`/`from_payload`
+  with ids only, `randomized()` for the crowd), and a `CosmeticRegistry` autoload — the catalogue
+  looked up by id and by slot, seeded with 2-3 placeholder items per slot.
+- **NPC crowd on the shared rig (§4).** NPCs build a randomized loadout across all four layers from
+  the global pool (`CosmeticRegistry.npc_pool_by_slot()` — the documented hook for lobby-sourced
+  cosmetics later), applied via `apply_loadout`.
+- **Network replication (§5).** Each player's/NPC's look travels as a compact loadout payload (ids
+  only) inside the existing host spawn data — replicated once on join, never per-frame. Clients
+  submit their equipped loadout to the host before spawn; legacy `appearance_index` still shipped
+  as a fallback. On-change re-apply seam left explicitly.
+- **Animation trigger hooks (§6).** `play_cosmetic_animation()` wired to real events with stub
+  animations: KILL_ANIM (killer, on a clean kill), WIN_ANIM (winner, results screen), EMOTE (local
+  input via a new `emote` Input Map action — keyboard V + gamepad). `kill_card` stubbed (event +
+  no-op handler) on the victim's rig.
+- **Profile identity (§7).** `PlayerProfile` (banner/badge/title), account-level and fully separate
+  from the rig; text display hook on the results screen.
+- **Inventory + ownership gate (§8).** `CosmeticInventory` autoload: owned-set + equipped loadout +
+  profile; everyone is granted the free DEFAULT items, and `equip()` refuses anything unowned. That
+  gate is the only seam between free items and a shop — the shop later just `grant()`s ownership.
+
 ## Phase 7 — Playtest refinement (started)  ·  buildplan.md
 
 ### Session: 7-online — offline mode is now single-player only (split-screen retired)

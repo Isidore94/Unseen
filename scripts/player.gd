@@ -37,6 +37,8 @@ class_name Player
 @export var drop_down_action: String = "drop_down"
 ## Claim the access point you're on for the rest of the match (pays exposure). §7.3.
 @export var secondary_action: String = "action_secondary"
+## Play your equipped EMOTE cosmetic (Input Map action — never a hardcoded key). §6.
+@export var emote_action: String = "emote"
 ## Per-player debounce (seconds) between access-point uses, so a press can't flip-flop you.
 @export var access_reuse_cooldown: float = 0.8
 
@@ -58,7 +60,14 @@ class_name Player
 @export var network_camera_zoom: Vector2 = Vector2(1.1, 1.1)
 ## (Online) Which sprite sheet (0-4) this character wears. The host assigns it; every
 ## peer receives the same value at spawn, so the crowd looks identical on all screens.
+## Kept for back-compat; the full look now travels as `loadout_payload` (which wins
+## when present).
 @export var appearance_index: int = 0
+
+## (Online) The compact cosmetic loadout the host replicated for this player at spawn
+## (§5). Ids only, no textures — reconstructed into a Loadout and applied to the rig.
+## Empty = fall back to the legacy body-only appearance_index above.
+@export var loadout_payload: Dictionary = {}
 
 # --- client-side prediction tuning (the "feel" pass, MULTIPLAYER_PLAN.md §2) ---
 ## (Online) How fast a character you DON'T control slides toward its latest replicated
@@ -146,10 +155,14 @@ func _setup_network_role() -> void:
 	# Is this character controlled by the human sitting at THIS machine?
 	_is_locally_controlled = (controlling_peer_id == multiplayer.get_unique_id())
 
-	# Wear the sheet the host assigned (every peer got the same number at spawn).
+	# Wear what the host assigned at spawn (every peer got the same data). Prefer the full
+	# loadout (all four rig layers); fall back to the legacy body-only index if none.
 	var visual := get_node_or_null("CharacterVisual")
-	if visual != null and visual.has_method("set_appearance"):
-		visual.call("set_appearance", appearance_index)
+	if visual != null:
+		if not loadout_payload.is_empty() and visual.has_method("apply_loadout"):
+			visual.call("apply_loadout", Loadout.from_payload(loadout_payload))
+		elif visual.has_method("set_appearance"):
+			visual.call("set_appearance", appearance_index)
 
 	# Only my own character gets the camera; the others are just people I watch.
 	var camera := get_node_or_null("Camera2D") as Camera2D
@@ -381,10 +394,22 @@ func _move_with(direction: Vector2, run_held: bool) -> void:
 	move_and_slide()
 
 
+# Play this player's equipped EMOTE through the rig's one animation entry point (§6).
+func _play_emote() -> void:
+	var visual := get_node_or_null("CharacterVisual")
+	if visual != null and visual.has_method("play_cosmetic_animation"):
+		visual.call("play_cosmetic_animation", CosmeticItem.Slot.EMOTE)
+
+
 # === layers: rooftops & sewers (buildplan §7.2) ============================
 # Read this player's own input to climb/drop/enter/exit. Called only for the human at
 # this machine (offline: always; online: only for the locally-controlled character).
 func _handle_layer_input(delta: float) -> void:
+	# EMOTE (§6): manual, mid-match, this player's own input. Fires the equipped EMOTE
+	# cosmetic on our rig through the one animation entry point — stubbed pop for now.
+	if Input.is_action_just_pressed(emote_action):
+		_play_emote()
+
 	if layer_component == null:
 		return
 	if _access_reuse_timer > 0.0:

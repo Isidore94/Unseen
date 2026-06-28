@@ -84,6 +84,11 @@ var _status_label: Label = null
 var _players_by_peer: Dictionary = {}
 var _next_spawn_index: int = 0
 
+## Host-only: each peer's chosen cosmetic loadout payload (ids only), submitted by that
+## client on join (§5). Used to fill the player's spawn_data so everyone renders them the
+## same. Missing = the host builds a default look. Static during a match.
+var _loadout_by_peer: Dictionary = {}
+
 ## Host-only: which crowd NPCs are each peer's secret marks (an Array of Npc, since a
 ## player now has `marks_per_player` of them — §7.0). The mapping never leaves the host;
 ## each peer is told only ITS OWN marks (MULTIPLAYER_PLAN.md §4).
@@ -272,9 +277,15 @@ func _spawn_crowd() -> void:
 		var spawn_position := Vector2.ZERO
 		if map != null:
 			spawn_position = map.random_edge_walkable_point() if is_traveler else map.random_walkable_point()
+		# The host picks this NPC's whole look ONCE here as a compact loadout payload
+		# (ids only). The spawner replicates spawn_data verbatim to every client, so all
+		# peers rebuild the identical NPC with near-zero ongoing bandwidth (§5).
+		var loadout_payload := _random_npc_loadout_payload()
 		var spawn_data := {
 			"pos": spawn_position,
-			"appearance": randi() % NUM_SHEETS,
+			# appearance kept as a fallback for older paths; loadout below is authoritative.
+			"appearance": _body_index_from_payload(loadout_payload),
+			"loadout": loadout_payload,
 			"traveler": is_traveler,
 			"wander_radius": randf_range(250.0, 500.0),
 		}
@@ -354,10 +365,15 @@ func _receive_target(target_name: String) -> void:
 
 
 func _spawn_player_for_peer(peer_id: int) -> void:
+	# This peer's chosen look. If they submitted a loadout on join we use it; otherwise we
+	# build a sensible default (a body from their spawn order + the DEFAULT items). Either
+	# way the spawner replicates it to everyone, so all peers render this player identically.
+	var loadout_payload := _loadout_for_peer(peer_id)
 	var spawn_data := {
 		"peer": peer_id,
 		"pos": _spawn_position_for_index(_next_spawn_index),
-		"appearance": _next_spawn_index % NUM_SHEETS,
+		"appearance": _body_index_from_payload(loadout_payload),
+		"loadout": loadout_payload,
 	}
 	var character := _player_spawner.spawn(spawn_data)
 	_players_by_peer[peer_id] = character
@@ -475,6 +491,10 @@ func _is_connected() -> bool:
 
 
 func _announce_ready_to_host() -> void:
+	# Tell the host our chosen look FIRST (a reliable RPC, so it arrives before the spawn
+	# request that follows), then ask to be spawned. Sending it once here is the whole
+	# join-time loadout sync (§5) — it's static for the match, so nothing repeats per-frame.
+	_submit_loadout.rpc_id(1, _local_loadout_payload())
 	# "Host, my scene is up — please spawn my character." Runs the host's _request_spawn.
 	_request_spawn.rpc_id(1)
 	_update_status()
@@ -490,6 +510,9 @@ func _create_networked_player(spawn_data: Dictionary) -> Node:
 	character.network_controlled = true
 	character.controlling_peer_id = int(spawn_data["peer"])
 	character.appearance_index = int(spawn_data["appearance"])
+	# Full host-replicated look (ids only). player._setup_network_role applies it via
+	# apply_loadout; falls back to appearance_index when absent.
+	character.loadout_payload = spawn_data.get("loadout", {})
 	character.player_id = int(spawn_data["peer"])
 	character.position = spawn_data["pos"]
 	# The host decides the look, so stop the visual from picking its own at random.
@@ -505,6 +528,9 @@ func _create_networked_npc(spawn_data: Dictionary) -> Node:
 	var npc := NPC_SCENE.instantiate() as Npc
 	npc.network_controlled = true
 	npc.appearance_index = int(spawn_data["appearance"])
+	# Full host-chosen look (ids only). npc._setup_network_role applies it via apply_loadout;
+	# it falls back to appearance_index if this is somehow absent.
+	npc.loadout_payload = spawn_data.get("loadout", {})
 	npc.position = spawn_data["pos"]
 	npc.is_traveler = bool(spawn_data["traveler"])
 	npc.home_position = spawn_data["pos"]  # homebodies mill around where they spawned
@@ -513,6 +539,68 @@ func _create_networked_npc(spawn_data: Dictionary) -> Node:
 	if visual != null:
 		visual.set("randomize_on_ready", false)
 	return npc
+
+
+# === cosmetic loadouts (network replication, §5) ===========================
+
+# Client → host: "here is the look I have equipped." Sent once on join (see
+# _announce_ready_to_host). The host stores it and stamps it into this peer's spawn_data
+# so every machine renders them identically. Ids only — near-zero bandwidth, never per-frame.
+@rpc("any_peer", "reliable")
+func _submit_loadout(payload: Dictionary) -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	_loadout_by_peer[sender] = payload
+	# ON-CHANGE seam: if this peer already has a live character (a mid-match wardrobe
+	# change), we'd re-broadcast + re-apply here. Loadouts are static during a match today
+	# (§5), so we only stash it for the (re)spawn. Hook left intentionally for later.
+
+
+# The loadout payload for the human at THIS machine, read from the account inventory if
+# present (built later in CosmeticInventory). Empty when there's no inventory yet — the
+# host then falls back to a default look.
+func _local_loadout_payload() -> Dictionary:
+	var inv := get_node_or_null("/root/CosmeticInventory")
+	if inv != null and inv.has_method("equipped_payload"):
+		return inv.call("equipped_payload")
+	return {}
+
+
+# Host-only: the payload to spawn `peer_id` with — their submitted loadout if we have it,
+# our own inventory for the host's own player, else a sensible default.
+func _loadout_for_peer(peer_id: int) -> Dictionary:
+	if _loadout_by_peer.has(peer_id):
+		return _loadout_by_peer[peer_id]
+	if peer_id == multiplayer.get_unique_id():
+		var mine := _local_loadout_payload()
+		if not mine.is_empty():
+			return mine
+	return _default_loadout_payload(_next_spawn_index % NUM_SHEETS)
+
+
+# A baseline loadout: the given body sheet + the DEFAULT (free) items for the other slots.
+func _default_loadout_payload(body_index: int) -> Dictionary:
+	var loadout := Loadout.new()
+	loadout.set_item(CosmeticItem.Slot.BODY, CosmeticRegistry.body_id_for_index(body_index))
+	loadout.set_item(CosmeticItem.Slot.OUTFIT, &"outfit_none")
+	loadout.set_item(CosmeticItem.Slot.HEAD, &"hat_none")
+	loadout.set_item(CosmeticItem.Slot.WEAPON, &"weapon_none")
+	return loadout.to_payload()
+
+
+# A random crowd look drawn from the global pool (the §4 config hook lives in the registry).
+func _random_npc_loadout_payload() -> Dictionary:
+	return Loadout.randomized(CosmeticRegistry.npc_pool_by_slot()).to_payload()
+
+
+# Pull the body sheet index back out of a loadout payload, for the legacy `appearance`
+# field we still ship alongside the loadout for back-compat.
+func _body_index_from_payload(payload: Dictionary) -> int:
+	var body_id := Loadout.from_payload(payload).get_item(CosmeticItem.Slot.BODY)
+	if body_id == &"":
+		return 0
+	return CosmeticRegistry.index_for_body_id(body_id)
 
 
 func _spawn_position_for_index(index: int) -> Vector2:
@@ -819,6 +907,29 @@ func _declare_match_over(rows: Array, winner_peer: int, reason: String) -> void:
 	_show_scoreboard(rows, winner_peer, reason)
 
 
+# Fire the local winner's equipped WIN_ANIM on their own rig through the one animation
+# entry point (§6). Finds our character by the peer id that controls it. Stub pop today.
+func _play_local_win_animation() -> void:
+	var my_id := multiplayer.get_unique_id()
+	for node in get_tree().get_nodes_in_group("player"):
+		if int(node.get("controlling_peer_id")) == my_id:
+			var visual := node.get_node_or_null("CharacterVisual")
+			if visual != null and visual.has_method("play_cosmetic_animation"):
+				visual.call("play_cosmetic_animation", CosmeticItem.Slot.WIN_ANIM)
+			return
+
+
+# The local account's profile identity label ("Badge · Title"), or "" if none / no
+# inventory. Display hook for §7 — guarded so play still works without the inventory autoload.
+func _local_profile_label() -> String:
+	var inv := get_node_or_null("/root/CosmeticInventory")
+	if inv != null and inv.has_method("profile"):
+		var profile = inv.call("profile")
+		if profile != null:
+			return profile.label()
+	return ""
+
+
 func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	var my_id := multiplayer.get_unique_id()
 	var overlay := CanvasLayer.new()
@@ -838,6 +949,8 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 
 	var headline := Label.new()
 	var we_won := winner_peer == my_id
+	if we_won:
+		_play_local_win_animation()  # fire the winner's WIN_ANIM cosmetic on the results screen (§6)
 	headline.text = "YOU WIN" if we_won else ("PLAYER %d WINS" % _num_of(rows, winner_peer))
 	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	headline.add_theme_font_size_override("font_size", 52)
@@ -847,6 +960,17 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	sub.text = "Last assassin standing — most points wins" if reason == "last_standing" else "Time up — most points wins"
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(sub)
+
+	# IDENTITY DISPLAY HOOK (§7): surface THIS account's profile (badge · title) on the
+	# results screen — one of the places account identity shows (scoreboard / results /
+	# name tag). Placeholder text today; real banner/badge art reads the same ids later.
+	var identity := _local_profile_label()
+	if identity != "":
+		var identity_label := Label.new()
+		identity_label.text = identity
+		identity_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		identity_label.modulate = Color(0.8, 0.85, 1.0)
+		box.add_child(identity_label)
 
 	# One line per player, already sorted highest-first.
 	for row in rows:

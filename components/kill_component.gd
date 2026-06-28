@@ -133,6 +133,7 @@ func request_kill(target_path: NodePath) -> void:
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 		# Stamp who eliminated this PLAYER so OnlineMatch can attribute the kill (and award a
 		# completed-contract bonus if we were their assigned hunter). NPC marks ignore this.
 		if target.is_in_group("player"):
@@ -190,6 +191,7 @@ func _resolve_on(target: Node2D) -> void:
 		# spike). Count it before they die (killing a player ends the round).
 		_exposure.add_exposure(kill_exposure_spike, "kill")
 		kill_landed.emit()
+		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 		if target.has_method("die"):
 			target.die()
 	else:
@@ -263,3 +265,21 @@ func _play_strike() -> void:
 	var visual := _body.get_node_or_null("CharacterVisual")
 	if visual != null and visual.has_method("play_strike"):
 		visual.play_strike()
+
+
+# Trigger path for a clean assassination (COSMETIC_SYSTEM_SPEC.md §6). Fires the KILLER's
+# equipped KILL_ANIM on our own rig, and the kill_card the VICTIM sees on death on theirs.
+# Both are stubs today (a placeholder pop / a no-op card) — the point is that the events
+# are wired to the real kill, so dropping in real animations later is content-only.
+func _on_clean_kill(target: Node) -> void:
+	var my_visual := _body.get_node_or_null("CharacterVisual")
+	if my_visual != null and my_visual.has_method("play_cosmetic_animation"):
+		my_visual.play_cosmetic_animation(CosmeticItem.Slot.KILL_ANIM)
+	if target == null:
+		return
+	var victim_visual := target.get_node_or_null("CharacterVisual")
+	if victim_visual != null and victim_visual.has_method("show_kill_card"):
+		var killer_appearance := -1
+		if _body.get("appearance_index") != null:
+			killer_appearance = int(_body.get("appearance_index"))
+		victim_visual.show_kill_card(killer_appearance)
