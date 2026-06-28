@@ -33,6 +33,8 @@ const NUM_SHEETS := 15
 ## 4 premium assassin looks sit at 11–14; showcase config puts each player on a distinct one.
 const ASSASSIN_BODY_BASE := 11
 const ASSASSIN_BODY_COUNT := 4
+## Per-player roster colours (top-right scoreboard), by spawn order.
+const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95, 0.6, 0.25), Color(0.7, 0.5, 0.95)]
 
 ## Size of the AI crowd the host simulates (the people you hide among). Tightened in Phase 9 to a
 ## smaller, readable crowd; at clone_crowd_fraction = 0.25 that's ~15 clones + ~45 filler.
@@ -145,7 +147,8 @@ var _exposure_samples: Dictionary = {}  # peer -> sample count
 var _kills_by_peer: Dictionary = {}     # peer -> clean kills landed
 var _completed_by_peer: Dictionary = {} # peer -> killed their assigned target?
 var _dead_by_peer: Dictionary = {}      # peer -> eliminated?
-var _elapsed: float = 0.0               # match time, host clock (drives speed bonus + timeout)
+var _elapsed: float = 0.0               # match time (host clock; clients tick locally for the timer)
+var _roster_accum: float = 0.0          # throttle for the host's ~1Hz roster broadcast
 
 ## Host-only: peers that have pressed "Rematch" on the end screen. When everyone still
 ## connected has voted, the host reloads the match for all of them.
@@ -166,6 +169,11 @@ var _player_hud_layer: CanvasLayer = null
 var _mini_map: MiniMap = null
 var _objective_label: Label = null
 var _exposure_bar: ProgressBar = null
+var _mhud: MatchHud = null   ## the premium themed HUD (panels); _player_hud_layer keeps the cues/overlays
+## A CanvasLayer ABOVE the HUD panels, just for the exposure/hunt arrow, so the arrow is never
+## hidden behind a corner panel (the sewer-dim overlay must stay BELOW the panels, so the arrow
+## can't share _player_hud_layer with it).
+var _arrow_layer: CanvasLayer = null
 ## Our marks, as the host named them (owner-only). We resolve each name to its local
 ## node once that NPC has replicated to us, highlight it, and point the mini-map at the
 ## nearest living one. The host tells us when each dies so we can drop it.
@@ -506,8 +514,8 @@ func _receive_opponent_exposure(value: float) -> void:
 # Owner-only: update OUR exposure bar with the host's authoritative value.
 @rpc("authority", "call_local", "unreliable")
 func _receive_exposure(value: float) -> void:
-	if _exposure_bar != null:
-		_exposure_bar.value = value
+	if _mhud != null:
+		_mhud.set_exposure(value / 100.0)
 
 
 func _on_player_left(peer_id: int) -> void:
@@ -802,8 +810,8 @@ func _enter_hunt_phase() -> void:
 	_clear_mark_highlights()
 	_my_mark_names.clear()
 	_resolved_marks.clear()
-	if _objective_label != null:
-		_objective_label.text = "Marks down — HUNT YOUR OPPONENT."
+	if _mhud != null:
+		_mhud.set_objective("Marks down — HUNT YOUR OPPONENT.")
 	if _target_arrow != null:
 		_target_arrow.set_flashing(true)
 
@@ -1143,14 +1151,54 @@ func _process(delta: float) -> void:
 	_maybe_assign_crowd_appearances()
 	_update_visibility()
 	_tick_item_countdown(delta)
+	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
+	# started together via the lobby, so it stays roughly in sync without extra messages).
+	if not NetworkManager.is_host():
+		_elapsed += delta
+	if _mhud != null:
+		_mhud.set_timer("Round 1", _format_time(maxf(0.0, round_time_limit - _elapsed)))
+	# Host broadcasts a rough roster (names + live scores) ~once a second.
+	if NetworkManager.is_host():
+		_roster_accum += delta
+		if _roster_accum >= 1.0:
+			_roster_accum = 0.0
+			_receive_roster.rpc(_build_roster_rows())
 	_update_debug_overlay()
+
+
+func _format_time(seconds: float) -> String:
+	var s := int(ceil(seconds))
+	return "%d:%02d" % [s / 60, s % 60]
+
+
+# Host-only: a rough scoreboard — each player's name (by spawn order), colour, and total score.
+func _build_roster_rows() -> Array:
+	var rows: Array = []
+	var peers := _players_by_peer.keys()
+	peers.sort()
+	var i := 0
+	for peer in peers:
+		rows.append({
+			"name": "PLAYER %d" % (i + 1),
+			"color": ROSTER_COLORS[i % ROSTER_COLORS.size()],
+			"score": int(_score_for_peer(peer).get("total", 0)),
+		})
+		i += 1
+	return rows
+
+
+# Everyone: render the host's roster snapshot in the HUD scoreboard.
+@rpc("authority", "call_local", "reliable")
+func _receive_roster(rows: Array) -> void:
+	if _mhud != null:
+		_mhud.set_roster(rows)
 
 
 # Count our own active item timers down locally so the "(ON Ns)" readout ticks every frame.
 # The host still owns the real effect (it pushes the authoritative seconds on start/end); this
 # only keeps the displayed number moving between those pushes.
 func _tick_item_countdown(delta: float) -> void:
-	if _item_label == null:
+	if _mhud == null:
 		return
 	var changed := false
 	if bool(_item_state["smoke_on"]) and float(_item_state["smoke_secs"]) > 0.0:
@@ -1247,57 +1295,43 @@ func _find_local_player() -> Player:
 
 
 func _build_player_hud() -> void:
+	# The cue/overlay layer (experiments, hunt arrow, sewer darken, faceplate reveals attach here).
 	_player_hud_layer = CanvasLayer.new()
 	_player_hud_layer.name = "PlayerHUD"
 	add_child(_player_hud_layer)
 
-	# Top-left key legend so a new player can learn the controls (climb, items, claim) at a
-	# glance. It auto-sizes to ~210px tall, so the live HUD below starts at y = 224.
-	var controls := ControlsHint.new()
-	controls.name = "ControlsHint"
-	controls.position = Vector2(24.0, 12.0)
-	_player_hud_layer.add_child(controls)
+	# The premium themed HUD (panels, roster, abilities, minimap slot). It joins the
+	# "experiment_toast" group, so experiment events route into its log (no middle-screen text).
+	_mhud = MatchHud.new()
+	_mhud.name = "MatchHud"
+	add_child(_mhud)
+	var my_idx := int(_local_player.get("appearance_index")) if _local_player != null else 0
+	_mhud.set_player("YOU", "", my_idx)
+	_mhud.set_objective("Locating your marks…")
+	_mhud.add_log("Match started.")
 
-	# Your OWN exposure bar (private — the host sends only your value to you).
-	var exposure_caption := Label.new()
-	exposure_caption.position = Vector2(24.0, 224.0)
-	exposure_caption.add_theme_font_size_override("font_size", 14)
-	exposure_caption.text = "EXPOSURE"
-	_player_hud_layer.add_child(exposure_caption)
+	# A layer ABOVE the HUD just for the arrow, so panels never cover it (layer 5 > the default 1).
+	_arrow_layer = CanvasLayer.new()
+	_arrow_layer.name = "ArrowLayer"
+	_arrow_layer.layer = 5
+	add_child(_arrow_layer)
 
-	_exposure_bar = ProgressBar.new()
-	_exposure_bar.name = "ExposureBar"
-	_exposure_bar.min_value = 0.0
-	_exposure_bar.max_value = 100.0
-	_exposure_bar.show_percentage = false
-	_exposure_bar.position = Vector2(24.0, 246.0)
-	_exposure_bar.custom_minimum_size = Vector2(300.0, 22.0)
-	_exposure_bar.size = Vector2(300.0, 22.0)
-	_player_hud_layer.add_child(_exposure_bar)
-
-	_objective_label = Label.new()
-	_objective_label.position = Vector2(24.0, 278.0)
-	_objective_label.add_theme_font_size_override("font_size", 18)
-	_objective_label.text = "Locating your mark..."
-	_player_hud_layer.add_child(_objective_label)
-
+	# Mini-map into the HUD's minimap slot, scaled to fit.
 	_mini_map = MINI_MAP_SCRIPT.new() as MiniMap
 	_mini_map.name = "MiniMap"
-	_player_hud_layer.add_child(_mini_map)
+	if _mhud.minimap_slot != null:
+		_mhud.minimap_slot.add_child(_mini_map)
+	else:
+		_player_hud_layer.add_child(_mini_map)
+	_mini_map.position = Vector2.ZERO
 	_mini_map.setup(_map as TestMap01, _local_player, null)
-	# Top-right corner of this player's screen.
-	var screen_width := get_viewport().get_visible_rect().size.x
-	_mini_map.position = Vector2(screen_width - _mini_map.map_size_px.x - 24.0, 24.0)
+	if _mhud.minimap_slot != null and _mini_map.map_size_px.x > 0.0:
+		var fit := minf(_mhud.minimap_slot.size.x / _mini_map.map_size_px.x, _mhud.minimap_slot.size.y / _mini_map.map_size_px.y)
+		_mini_map.scale = Vector2(fit, fit)
 
 	_build_layer_feedback()   # sewer overlay + arrow uptime (Slice B)
-	_build_item_hud()         # smoke/cloak charges readout (Slice D)
+	_build_item_hud()         # smoke/cloak readout → MatchHud ability slots (Slice D)
 	_build_faceplate_row()    # red/blue identity reveals (Slice E)
-
-	# Phase 9 experiment status + event toast (so the player knows what's on / what just fired).
-	var toast := ExperimentToast.new()
-	toast.name = "ExperimentToast"
-	toast.position = Vector2(screen_width * 0.5 - 180.0, get_viewport().get_visible_rect().size.y - 150.0)
-	_player_hud_layer.add_child(toast)
 
 
 func _highlight_mark(mark: Node) -> void:
@@ -1316,11 +1350,11 @@ func _refresh_mark_tracking() -> void:
 			living.append(mark)
 	if _mini_map != null:
 		_mini_map.track_objective(living[0] if not living.is_empty() else null)
-	if _objective_label != null and not _hunt_phase:
+	if _mhud != null and not _hunt_phase:
 		if _my_mark_names.is_empty():
-			_objective_label.text = "Locating your marks..."
+			_mhud.set_objective("Locating your marks…")
 		else:
-			_objective_label.text = "Kill your marks (gold dots) — %d left." % living.size()
+			_mhud.set_objective("Kill your marks (gold dots) — %d left." % living.size())
 
 
 # Drop the highlight on every mark we still hold a reference to (used when the hunt
@@ -1342,7 +1376,9 @@ func _build_target_arrow(opponent: Node2D) -> void:
 		return
 	_target_arrow = ExposureArrow.new()
 	_target_arrow.name = "TargetArrow"
-	_player_hud_layer.add_child(_target_arrow)
+	# Sits on the dedicated top layer so HUD panels never cover the bearing.
+	var arrow_parent: Node = _arrow_layer if _arrow_layer != null else _player_hud_layer
+	arrow_parent.add_child(_target_arrow)
 	_target_arrow.track_target(opponent)
 	if _hunt_phase:
 		_target_arrow.set_flashing(true)
@@ -1573,23 +1609,21 @@ func _apply_access_cooldown(index: int) -> void:
 
 # === Slice D — item kit HUD + cloak routing (§7.6) ==========================
 func _build_item_hud() -> void:
-	_item_label = Label.new()
-	_item_label.name = "ItemLabel"
-	_item_label.position = Vector2(24.0, 314.0)
-	_item_label.add_theme_font_size_override("font_size", 16)
-	_player_hud_layer.add_child(_item_label)
 	_refresh_item_label()
 
 
+# Drive the MatchHud ability slots from our authoritative item state (smoke/cloak charges + the
+# live "Ns" countdown — for SMOKE that's the seconds until you can attack/be seen again).
 func _refresh_item_label() -> void:
-	if _item_label == null:
+	if _mhud == null:
 		return
-	# While an effect is ON show a live "Ns" countdown — for SMOKE that's the seconds until
-	# you can attack / be seen again; for CLOAK, until your hunt arrow returns to the opponent.
-	var smoke_on: String = " (ON %ds)" % int(ceil(_item_state["smoke_secs"])) if bool(_item_state["smoke_on"]) else ""
-	var cloak_on: String = " (ON %ds)" % int(ceil(_item_state["cloak_secs"])) if bool(_item_state["cloak_on"]) else ""
-	_item_label.text = "SMOKE x%d%s   CLOAK x%d%s" % [
-		int(_item_state["smoke"]), smoke_on, int(_item_state["cloak"]), cloak_on]
+	var smoke_secs: String = " · %ds" % int(ceil(_item_state["smoke_secs"])) if bool(_item_state["smoke_on"]) else ""
+	var cloak_secs: String = " · %ds" % int(ceil(_item_state["cloak_secs"])) if bool(_item_state["cloak_on"]) else ""
+	var smoke_n := int(_item_state["smoke"])
+	var cloak_n := int(_item_state["cloak"])
+	_mhud.set_ability("smoke", "x%d  [R]%s" % [smoke_n, smoke_secs], smoke_n > 0 or bool(_item_state["smoke_on"]))
+	_mhud.set_ability("cloak", "x%d  [T]%s" % [cloak_n, cloak_secs], cloak_n > 0 or bool(_item_state["cloak_on"]))
+	_mhud.set_ability("emote", "[V]", true)
 
 
 # HOST: a player's item turned on. Update the owner's readout; for CLOAK, suppress the hunt
@@ -1645,24 +1679,21 @@ func _set_opponent_arrow_suppressed(on: bool) -> void:
 
 # === Slice E — identity reveals + faceplates (§7.4) =========================
 func _build_faceplate_row() -> void:
-	_faceplates = FaceplateRow.new()
-	_faceplates.name = "FaceplateRow"
-	var screen_width := get_viewport().get_visible_rect().size.x
-	_faceplates.position = Vector2(screen_width * 0.5 - 130.0, 16.0)
-	_faceplates.custom_minimum_size = Vector2(260.0, 60.0)
-	_player_hud_layer.add_child(_faceplates)
-	# Apply any reveal that arrived before this HUD existed.
+	# Reveals now render as MatchHud portrait plates. Apply any that arrived before the HUD existed.
+	if _mhud == null:
+		return
 	if _pending_target_face >= 0:
-		_faceplates.set_target_face(_pending_target_face)
+		_mhud.set_target_reveal(_pending_target_face)
 	for index in _pending_exposed_faces:
-		_faceplates.add_exposed_face(index)
+		_mhud.add_exposed_reveal(index)
 
 
 # Owner-only: we finished our marks first — here's our target's look (red plate).
 @rpc("authority", "call_local", "reliable")
 func _receive_target_reveal(appearance_index: int) -> void:
-	if _faceplates != null:
-		_faceplates.set_target_face(appearance_index)
+	if _mhud != null:
+		_mhud.set_target_reveal(appearance_index)
+		_mhud.add_log("Marks down — your target is revealed.")
 	else:
 		_pending_target_face = appearance_index
 
@@ -1670,8 +1701,8 @@ func _receive_target_reveal(appearance_index: int) -> void:
 # Owner-only: an opponent hit 100% exposure — here's their look (blue plate).
 @rpc("authority", "call_local", "reliable")
 func _receive_exposure_reveal(appearance_index: int) -> void:
-	if _faceplates != null:
-		_faceplates.add_exposed_face(appearance_index)
+	if _mhud != null:
+		_mhud.add_exposed_reveal(appearance_index)
 	elif not _pending_exposed_faces.has(appearance_index):
 		_pending_exposed_faces.append(appearance_index)
 

@@ -47,13 +47,16 @@ signal steam_lobby_failed(reason: String)
 ## Lives here (an autoload) so it survives the lobby → match scene change. Kept as the
 ## "is this a small map?" flag (drives the compact crowd count); the SCENE is now chosen by
 ## `selected_map` below, and the lobby sets both together.
-var small_arena: bool = false
+## Defaults to true: the COMPACT arena is our main map now (see selected_map below), so an
+## un-touched lobby still loads it with the lighter compact crowd. The lobby overrides both.
+var small_arena: bool = true
 
 ## Which map the lobby picked (Phase 10). Index into the lobby's map list — the match reads
 ## it to load the right scene. FOUR_ZONE is the full main map; COMPACT and ROME are small
 ## (so they also set small_arena = true for the lighter crowd). Survives the scene change.
 enum Map { FOUR_ZONE, COMPACT, ROME }
-var selected_map: int = Map.FOUR_ZONE
+## Defaults to COMPACT — our main map for now (matches small_arena = true above).
+var selected_map: int = Map.COMPACT
 
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.

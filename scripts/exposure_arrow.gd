@@ -125,12 +125,16 @@ func _process_exposure(delta: float) -> void:
 
 
 # FLASHING STYLE — ignores exposure; pulses toward the target every flash_interval
-# while they're off-screen (no hint at all when they're on-screen).
+# while they're off-screen (no hint at all when they're on-screen). This is the post-mark
+# "hunt your human target" arrow, so it is deliberately IMPRECISE: it points in only one of
+# four directions (up/down/left/right) — the cardinal that best matches the target's relative
+# bearing — instead of an exact angle. A rough "they're that way", never "that exact figure".
 func _process_flashing(delta: float) -> void:
 	if not _compute_offscreen_arrow():
 		_alpha = 0.0
 		_flash_timer = 0.0
 		return
+	_snap_to_cardinal()
 	_flash_timer += delta
 	var t: float = fmod(_flash_timer, flash_interval)
 	if t < flash_duration:
@@ -167,6 +171,23 @@ func _compute_offscreen_arrow(ignore_onscreen: bool = false) -> bool:
 	var radius: float = minf(viewport_size.x, viewport_size.y) * 0.5 - edge_margin
 	_arrow_pos = screen_center + _arrow_dir * radius
 	return true
+
+
+# Round the bearing to the nearest of the four cardinal directions and re-place the arrow on the
+# middle of that screen edge. Used only by the hunt (flashing) arrow — the dominant axis wins, so a
+# target up-and-slightly-right reads as a clean "UP". Keeping it mid-edge also dodges the corner
+# HUD panels. The exposure arrow never calls this, so it stays a precise bearing.
+func _snap_to_cardinal() -> void:
+	if absf(_arrow_dir.x) >= absf(_arrow_dir.y):
+		_arrow_dir = Vector2(signf(_arrow_dir.x), 0.0)
+	else:
+		_arrow_dir = Vector2(0.0, signf(_arrow_dir.y))
+	if _arrow_dir == Vector2.ZERO:
+		_arrow_dir = Vector2.RIGHT
+	var viewport_size: Vector2 = get_viewport_rect().size
+	var screen_center: Vector2 = viewport_size * 0.5
+	var radius: float = minf(viewport_size.x, viewport_size.y) * 0.5 - edge_margin
+	_arrow_pos = screen_center + _arrow_dir * radius
 
 
 func _draw() -> void:

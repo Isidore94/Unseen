@@ -31,8 +31,9 @@ class_name TestMap01
 #   - a trapdoor             (medium hop, small exposure tell)
 #   - an underground passage (free, links the two sewer corners — pure map knowledge)
 
-# The layout grid. '#' = building, '.' = open street/plaza, 'F' = the central
-# fountain (solid — you walk AROUND it). Generated + connectivity-verified offline;
+# The layout grid. '#' = building, '.' = open street/plaza, 'F' = the central fountain (solid),
+# 'W' = canal water (solid — you can't walk on it), 'B' = bridge (walkable, crosses the canal).
+# Generated + connectivity-verified offline;
 # edit it and the runtime check will warn you if you accidentally seal a pocket off.
 const LAYOUT := [
 	"#########################",
@@ -87,11 +88,17 @@ enum Zone { NW, NE, SW, SE, HUB }
 ## Radius of the central fountain's solid collision (you route around it), in pixels.
 @export var fountain_radius: float = 120.0
 
-# ===== access points (visual placeholders now; §7.2 wires the layer mechanics) =====
-## How many rooftop stairs to mark in EACH street zone (NW, SE).
+# ===== access points (sewer entrances; §7.2 wires the layer mechanics) =====
+## ROOFTOPS ARE REMOVED. The rooftop layer "didn't really do anything" in playtest, so we no
+## longer spawn rooftop stairs (flip this on only if rooftops are ever re-designed). The rooftop
+## LayerComponent code stays dormant — with no stairs to climb, no one ever reaches that layer.
+@export var enable_rooftops: bool = false
+## How many rooftop stairs to mark in EACH street zone (NW, SE) — only used if enable_rooftops.
 @export var rooftop_stairs_per_street_zone: int = 2
-## How many sewer entrances to mark in EACH sewer zone (NE, SW).
-@export var sewer_entrances_per_sewer_zone: int = 2
+## SEWERS ARE CORNER POCKETS now: a small huddle of entrances in two opposite corners, so the
+## sewer is a place to DUCK FOR COVER and pop up a short hop away — never a tunnel across the map.
+## How many sewer entrances cluster in EACH corner pocket.
+@export var sewer_entrances_per_pocket: int = 3
 ## When false, this map spawns NO map-control portals (teleporters / trapdoor / underground
 ## passage). Street-only maps like Rome set this false — just tight lanes, no shortcuts (§8).
 @export var enable_portals: bool = true
@@ -268,12 +275,27 @@ func _point_to_cell(point: Vector2) -> Vector2i:
 func _is_building(col: int, row: int) -> bool:
 	return (_layout()[row] as String)[col] == "#"
 
+# Bounds-safe building test: anything off the grid counts as NOT a building (open), so neighbour
+# checks at the map edge don't index out of range.
+func _building_at(col: int, row: int) -> bool:
+	if col < 0 or col >= _cols() or row < 0 or row >= _rows():
+		return false
+	return _is_building(col, row)
+
 func _is_fountain(col: int, row: int) -> bool:
 	return (_layout()[row] as String)[col] == "F"
 
-# Anything an actor cannot walk through: a building OR the fountain.
+# Canal WATER — solid, drawn as water, you can't walk on it (cross via the bridges).
+func _is_water(col: int, row: int) -> bool:
+	return (_layout()[row] as String)[col] == "W"
+
+# A BRIDGE cell — walkable (NOT solid), drawn as planks where it crosses the canal.
+func _is_bridge(col: int, row: int) -> bool:
+	return (_layout()[row] as String)[col] == "B"
+
+# Anything an actor cannot walk through: a building, the fountain, OR canal water.
 func _is_solid(col: int, row: int) -> bool:
-	return _is_building(col, row) or _is_fountain(col, row)
+	return _is_building(col, row) or _is_fountain(col, row) or _is_water(col, row)
 
 func _has_fountain() -> bool:
 	for row in _rows():
@@ -395,14 +417,18 @@ func _define_features() -> void:
 		_cell_center(_center_col(), _rows() - 2),
 	]
 
-	# Rooftop stairs live in the STREET zones (NW, SE); sewer entrances in the SEWER
-	# zones (NE, SW). Spread within each zone so they're not bunched together.
+	# Rooftop stairs: only if rooftops are explicitly re-enabled (removed by default — see the
+	# enable_rooftops note). Spread within each STREET zone so they're not bunched together.
 	_rooftop_stairs = []
-	for zone in [Zone.NW, Zone.SE]:
-		_rooftop_stairs.append_array(_pick_spread_points(_open_centers_in_zone(zone), rooftop_stairs_per_street_zone))
+	if enable_rooftops:
+		for zone in [Zone.NW, Zone.SE]:
+			_rooftop_stairs.append_array(_pick_spread_points(_open_centers_in_zone(zone), rooftop_stairs_per_street_zone))
+	# Sewer entrances: CLUSTERED into two corner POCKETS (NE + SW corners). Clustering — not
+	# spreading — is the point: the entrances huddle in a corner, so the sewer lets you reposition
+	# a short hop within that corner, not traverse the whole map underground.
 	_sewer_entrances = []
-	for zone in [Zone.NE, Zone.SW]:
-		_sewer_entrances.append_array(_pick_spread_points(_open_centers_in_zone(zone), sewer_entrances_per_sewer_zone))
+	_sewer_entrances.append_array(_corner_pocket_points(Zone.NE, sewer_entrances_per_pocket))
+	_sewer_entrances.append_array(_corner_pocket_points(Zone.SW, sewer_entrances_per_pocket))
 
 	# Density "market" zone: the central fountain plaza (visual + exposure cover).
 	var cc := _center_col()
@@ -437,6 +463,32 @@ func _pick_spread_points(candidates: Array[Vector2], count: int) -> Array[Vector
 	return chosen
 
 
+# Pick the `count` open cells of `zone` that sit CLOSEST to that zone's outer corner — a tight
+# huddle, used for the sewer corner pockets (the opposite of _pick_spread_points). Sorting by
+# distance to the corner anchor pulls the entrances together in the corner.
+func _corner_pocket_points(zone: Zone, count: int) -> Array[Vector2]:
+	var centers := _open_centers_in_zone(zone)
+	var pocket: Array[Vector2] = []
+	if centers.is_empty() or count <= 0:
+		return pocket
+	var anchor := _zone_corner_anchor(zone)
+	centers.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		return a.distance_squared_to(anchor) < b.distance_squared_to(anchor))
+	for i in mini(count, centers.size()):
+		pocket.append(centers[i])
+	return pocket
+
+
+# The world position of a zone's OUTER corner (the corner of the map nearest that quarter).
+func _zone_corner_anchor(zone: Zone) -> Vector2:
+	match zone:
+		Zone.NW: return Vector2(-play_half_width, -play_half_height)
+		Zone.NE: return Vector2(play_half_width, -play_half_height)
+		Zone.SW: return Vector2(-play_half_width, play_half_height)
+		Zone.SE: return Vector2(play_half_width, play_half_height)
+		_: return Vector2.ZERO
+
+
 # === navigation (from the open cells) ======================================
 func _build_navigation() -> void:
 	var nav_polygon := NavigationPolygon.new()
@@ -469,6 +521,13 @@ func _build_walls() -> void:
 	else:
 		for rect in _building_rects():
 			_add_static_box(rect.get_center(), rect.size)
+	# Canal WATER cells are solid too (you can't walk on water — cross via the bridge cells, which
+	# are open). Full-cell boxes so the water edge lines up with the drawn water.
+	for row in _rows():
+		for col in _cols():
+			if _is_water(col, row):
+				var w := _cell_rect(col, row)
+				_add_static_box(w.get_center(), w.size)
 
 
 # The central fountain is a round solid you walk around. Its whole grid cell is
@@ -510,10 +569,8 @@ func _spawn_portals() -> void:
 	# Trapdoor — a medium diagonal hop with a small exposure tell (orange): NW alley
 	# to SE alley. No cooldown.
 	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, 46.0, 0.0)
-	# Underground passage — FREE, linking the two SEWER corners (NE ↔ SW). Pure map
-	# knowledge, and it foreshadows the §7.2 sewer network (grey). No cooldown.
-	if _sewer_entrances.size() >= 2:
-		_spawn_portal_pair(_sewer_entrances[0], _sewer_entrances[_sewer_entrances.size() - 1], Color(0.55, 0.55, 0.62, 0.9), 0.0, 52.0, 0.0)
+	# (REMOVED) the cross-map underground passage that linked the two sewer corners — it turned the
+	# sewer into a map-spanning tunnel. Sewers are corner pockets for cover now, not a highway.
 
 
 func _spawn_portal_pair(a: Vector2, b: Vector2, color: Color, cost: float, radius: float, cooldown: float) -> void:
@@ -582,11 +639,27 @@ func _verify_connectivity() -> void:
 @export var block_roof: Color = Color(0.62, 0.50, 0.34)
 @export var block_side: Color = Color(0.40, 0.32, 0.21)
 @export var water_color: Color = Color(0.17, 0.43, 0.47)
-## Fake height of buildings (px the roof is lifted) and the soft shadow offset.
+## Fake height of buildings (px the roof is lifted) and the soft shadow offset. Each building
+## jitters its own height around block_height (see _building_styles) so the skyline isn't flat.
 @export var block_height: float = 18.0
 @export var block_shadow_offset: Vector2 = Vector2(16, 18)
+## A palette of roof colours. Each building picks ONE (stable, hashed) so the rooftops read as a
+## varied tiled town — terracotta, tan, weathered grey, slate — instead of one flat colour. This
+## is the main "roof variety" knob the top-down view lives on.
+@export var roof_palette: Array[Color] = [
+	Color(0.62, 0.50, 0.34),  # tan
+	Color(0.71, 0.41, 0.30),  # terracotta
+	Color(0.56, 0.53, 0.46),  # weathered grey-brown
+	Color(0.49, 0.46, 0.55),  # slate blue-grey
+	Color(0.67, 0.55, 0.31),  # ochre
+]
+## Colour of the plank BRIDGES that cross the canal (the canal itself is grid 'W'/'B' cells now).
+@export var bridge_color: Color = Color(0.55, 0.42, 0.27)
 
 var _noise_tex: ImageTexture = null
+## Cached per-cell building style {Vector2i(col,row) -> {"roof","side","height"}}. Cells of one
+## connected building share a style, so a multi-cell L-shape reads as ONE block with one roof.
+var _building_style_cache: Dictionary = {}
 
 
 # A baked, smooth two-tone sand texture (broad patches). Stretched over the whole map with
@@ -626,9 +699,18 @@ func _draw_stylized() -> void:
 	var centre := _fountain_center() if _has_fountain() else Vector2.ZERO
 	draw_circle(centre, 360.0, Color(sand_light.r, sand_light.g, sand_light.b, 0.55))
 	draw_arc(centre, 360.0, 0.0, TAU, 64, Color(0.58, 0.52, 0.38, 0.6), 4.0)
-	# Buildings as solid extruded blocks. We use FULL cell rects (not the nav-inset ones), drawn
-	# in three passes so adjacent cells merge into solid blocks: shadows first (neighbours cover
-	# the interior ones, leaving a clean block-edge shadow), then side faces, then lifted roofs.
+	# A lighter paved band across the central horizontal avenue, so the main street reads as a
+	# paved road rather than more open sand (floor variety, like the reference's streets).
+	var pave := sand_light.lightened(0.12)
+	pave.a = 0.45
+	var avenue := _cell_rect(0, _center_row())
+	draw_rect(Rect2(Vector2(-play_half_width, avenue.position.y), Vector2(2 * play_half_width, avenue.size.y)), pave, true)
+	# The canal feeding the fountain (drawn on the ground, under the buildings/fountain).
+	_draw_canal_and_bridges()
+	# Buildings as solid extruded blocks with PER-BUILDING colour + height (see _building_styles).
+	# Drawn in passes so adjacent cells of one building merge cleanly: shadows, side faces, roofs,
+	# then per-building roof detail (lit top edge + an overhang shadow on the front edge).
+	var styles := _building_styles()
 	for row in _rows():
 		for col in _cols():
 			if _is_building(col, row):
@@ -637,20 +719,108 @@ func _draw_stylized() -> void:
 	for row in _rows():
 		for col in _cols():
 			if _is_building(col, row):
-				draw_rect(_cell_rect(col, row), block_side, true)
+				draw_rect(_cell_rect(col, row), styles[Vector2i(col, row)]["side"], true)
 	for row in _rows():
 		for col in _cols():
 			if _is_building(col, row):
+				var style: Dictionary = styles[Vector2i(col, row)]
 				var r := _cell_rect(col, row)
-				draw_rect(Rect2(r.position + Vector2(0, -block_height), r.size), block_roof, true)
-	# A thin lit edge along the top of each block (cells with open space above) for depth/pop.
-	var roof_lit := block_roof.lightened(0.22)
+				var h: float = style["height"]
+				draw_rect(Rect2(r.position + Vector2(0, -h), r.size), style["roof"], true)
+	# Roof detail per cell: a lit edge where the roof is exposed to the sky above, an OVERHANG
+	# shadow cast on the ground below a building's front (south) edge — the bit assassins hide
+	# under — and a faint ridge seam so the roof reads as tiled, not a flat colour fill.
 	for row in _rows():
 		for col in _cols():
-			if _is_building(col, row) and not _is_building(col, row - 1):
-				var r := _cell_rect(col, row)
-				draw_rect(Rect2(r.position + Vector2(0, -block_height), Vector2(r.size.x, 6.0)), roof_lit, true)
+			if not _is_building(col, row):
+				continue
+			var style2: Dictionary = styles[Vector2i(col, row)]
+			var r2 := _cell_rect(col, row)
+			var h2: float = style2["height"]
+			var roof2: Color = style2["roof"]
+			if not _building_at(col, row - 1):  # open sky above → bright top lip
+				draw_rect(Rect2(r2.position + Vector2(0, -h2), Vector2(r2.size.x, 6.0)), roof2.lightened(0.22), true)
+			if not _building_at(col, row + 1):  # open ground below → overhang shadow on the street
+				draw_rect(Rect2(Vector2(r2.position.x, r2.end.y), Vector2(r2.size.x, 14.0)), Color(0, 0, 0, 0.22), true)
+			# ridge seam across the roof (subtle tiling tell)
+			var ridge_y := r2.position.y - h2 + r2.size.y * 0.5
+			draw_line(Vector2(r2.position.x + 4, ridge_y), Vector2(r2.end.x - 4, ridge_y), Color(0, 0, 0, 0.10), 2.0)
 	_draw_fountain()
+
+
+# The CANAL: a narrow water channel running up the map's central avenue from the bottom water
+# margin to the fountain (so the water visibly "feeds" the fountain), with a couple of plank
+# bridges crossing it near the bottom. Purely visual — it sits on the open central road, so it
+# never changes navigation or collision (you walk the avenue and cross on the bridges).
+func _draw_canal_and_bridges() -> void:
+	# WATER cells (solid — collision matches this exactly, so what looks like water IS water).
+	for row in _rows():
+		for col in _cols():
+			if _is_water(col, row):
+				var r := _cell_rect(col, row)
+				draw_rect(r, water_color, true)
+				draw_rect(r, water_color.darkened(0.30), false)  # darker stone edge
+				var y: float = r.position.y + 18.0
+				while y < r.end.y - 8.0:  # ripple lines
+					draw_line(Vector2(r.position.x + r.size.x * 0.18, y), Vector2(r.end.x - r.size.x * 0.18, y), water_color.lightened(0.28), 2.0)
+					y += 22.0
+	# BRIDGE cells (walkable planks crossing the canal).
+	for row in _rows():
+		for col in _cols():
+			if _is_bridge(col, row):
+				_draw_bridge_cell(_cell_rect(col, row))
+
+
+# One plank-deck bridge filling a bridge cell, with plank seams.
+func _draw_bridge_cell(r: Rect2) -> void:
+	draw_rect(r, bridge_color, true)
+	draw_rect(r, bridge_color.darkened(0.4), false)
+	var y: float = r.position.y + 8.0
+	while y < r.end.y - 4.0:
+		draw_line(Vector2(r.position.x + 3.0, y), Vector2(r.end.x - 3.0, y), bridge_color.darkened(0.3), 2.0)
+		y += 14.0
+
+
+# Group connected building cells and give each group ONE stable (hashed) roof colour + height,
+# so a multi-cell building reads as a single block and the town gets roof-to-roof variety. Cached.
+func _building_styles() -> Dictionary:
+	if not _building_style_cache.is_empty():
+		return _building_style_cache
+	var visited := {}
+	for row in _rows():
+		for col in _cols():
+			if not _is_building(col, row) or visited.has(Vector2i(col, row)):
+				continue
+			# Flood-fill this one connected building (4-directional).
+			var group: Array[Vector2i] = []
+			var stack: Array[Vector2i] = [Vector2i(col, row)]
+			visited[Vector2i(col, row)] = true
+			while not stack.is_empty():
+				var cell: Vector2i = stack.pop_back()
+				group.append(cell)
+				for off: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					var nb := cell + off
+					if nb.x < 0 or nb.x >= _cols() or nb.y < 0 or nb.y >= _rows():
+						continue
+					if visited.has(nb) or not _is_building(nb.x, nb.y):
+						continue
+					visited[nb] = true
+					stack.append(nb)
+			# Stable per-building style from a hash of its anchor cell.
+			var anchor: Vector2i = group[0]
+			var roof: Color = _roof_palette_color(_hash01(anchor.x * 31 + anchor.y * 17 + 7))
+			var height: float = block_height * lerpf(0.7, 1.5, _hash01(anchor.x * 13 + anchor.y * 29 + 3))
+			var style := {"roof": roof, "side": roof.darkened(0.42), "height": height}
+			for cell in group:
+				_building_style_cache[cell] = style
+	return _building_style_cache
+
+
+# Pick a roof colour from the palette by a 0..1 hash (falls back to block_roof if the palette is empty).
+func _roof_palette_color(h: float) -> Color:
+	if roof_palette.is_empty():
+		return block_roof
+	return roof_palette[int(h * roof_palette.size()) % roof_palette.size()]
 
 
 # === drawing ===============================================================

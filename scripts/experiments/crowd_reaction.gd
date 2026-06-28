@@ -5,24 +5,23 @@ extends Node
 # directional tell delivered through crowd behaviour. Rewards watching the crowd; makes killing leave
 # a visible wake (Pillar #2).
 #
-# REMOVABILITY (§1): inert unless ExperimentFlags.crowd_reaction_enabled. It listens to each NPC's
-# own `died` signal (so it works OFFLINE single-player AND online — earlier it only hooked the online
-# match's kill signal, which is why it did nothing offline). Host/offline owns NPC motion; the flee
-# replicates to clients as ordinary movement. Core never references this.
+# REMOVABILITY (§1): inert unless ExperimentFlags.crowd_reaction_enabled. Host/offline owns NPC
+# motion and the flee replicates to clients as ordinary movement. Core never references this.
+#
+# TRIGGER (the multiplayer fix): ONLINE we listen to the match's `host_kill_resolved` signal, which
+# the host emits for EVERY validated kill by EVERY player — so a client's kills scatter the crowd just
+# like the host's. OFFLINE (no match) we fall back to each NPC's own `died` signal. The panic feedback
+# is broadcast to ALL peers' HUD logs (it used to show only on the host's screen).
 
-## How close an NPC must be to a kill to panic. Wide on purpose — a kill should ripple through a
-## whole square, not just the two people next to it.
 @export var reaction_radius_px: float = 560.0
-## true: NPCs flee OUTWARD (a clear directional tell). false: cluster toward (subtler).
 @export var reaction_style_scatter: bool = true
-## How long an NPC panics before returning to normal wander.
 @export var reaction_duration_seconds: float = 6.0
-## Closer NPCs react harder, so the SHAPE of the panic points back at the kill.
 @export var reaction_falloff_with_distance: bool = true
-## Flee speed as a multiple of normal walk speed — a real panic sprint.
 @export var reaction_speed_scale: float = 2.2
 
-var _connected: Dictionary = {}  # NPCs whose `died` we've already hooked
+var _match: Node = null
+var _hooked_match := false
+var _connected: Dictionary = {}  # offline: NPCs whose `died` we've hooked
 
 
 func _ready() -> void:
@@ -30,14 +29,21 @@ func _ready() -> void:
 
 
 func _is_authority() -> bool:
-	# Host (online) or the single machine (offline) owns NPC motion.
 	return (not multiplayer.has_multiplayer_peer()) or multiplayer.is_server()
 
 
 func _process(_delta: float) -> void:
 	if not ExperimentFlags.crowd_reaction_enabled or not _is_authority():
 		return
-	# Hook the `died` signal of any NPC we haven't yet (the crowd can arrive over several frames).
+	# ONLINE: hook the match's per-kill signal (covers EVERY player's kills reliably).
+	if _match == null:
+		_match = get_tree().get_first_node_in_group("online_match")
+	if _match != null:
+		if not _hooked_match and _match.has_signal("host_kill_resolved"):
+			_match.connect("host_kill_resolved", Callable(self, "_on_kill_resolved"))
+			_hooked_match = true
+		return  # online: don't also hook `died` (would double-fire)
+	# OFFLINE: hook each NPC's own death.
 	for node in get_tree().get_nodes_in_group("npc"):
 		if _connected.has(node) or not node.has_signal("died"):
 			continue
@@ -45,15 +51,26 @@ func _process(_delta: float) -> void:
 		_connected[node] = true
 
 
+# ONLINE: the host resolved a kill (any player, any victim). Scatter the crowd around it.
+func _on_kill_resolved(_killer: Node, victim: Node, _was_valid: bool) -> void:
+	if victim != null and is_instance_valid(victim):
+		_panic_around(victim.global_position)
+
+
+# OFFLINE: an NPC died.
 func _on_npc_died(victim: Node) -> void:
+	if victim != null and is_instance_valid(victim):
+		_panic_around(victim.global_position)
+
+
+# Make every nearby living NPC flee (host/offline owns the motion; it replicates to clients), then
+# tell EVERY player's HUD the crowd reacted.
+func _panic_around(kill_position: Vector2) -> void:
 	if not ExperimentFlags.crowd_reaction_enabled or not _is_authority():
 		return
-	if victim == null or not is_instance_valid(victim):
-		return
-	var kill_position: Vector2 = victim.global_position
 	var panicked := 0
 	for node in get_tree().get_nodes_in_group("npc"):
-		if not is_instance_valid(node) or node == victim:
+		if not is_instance_valid(node):
 			continue
 		if node.has_method("is_dead") and node.is_dead():
 			continue
@@ -66,11 +83,18 @@ func _on_npc_died(victim: Node) -> void:
 		var scale := reaction_speed_scale
 		if reaction_falloff_with_distance:
 			scale = lerpf(reaction_speed_scale * 0.6, reaction_speed_scale, closeness)  # closer = faster
-		# Everyone panics for the full duration; only the SPEED falls off (keeps the directional shape).
 		node.call("react_to_kill", kill_position, reaction_style_scatter, reaction_duration_seconds, scale)
 		panicked += 1
-	# GUI feedback (so the player understands the mechanic fired).
 	if panicked > 0:
-		var toast := get_tree().get_first_node_in_group("experiment_toast")
-		if toast != null and toast.has_method("show_message"):
-			toast.call("show_message", "The crowd panics and scatters! (%d)" % panicked)
+		if multiplayer.has_multiplayer_peer():
+			_announce_panic.rpc(panicked)   # every peer's HUD log
+		else:
+			_announce_panic(panicked)       # offline
+
+
+# Show the panic message on THIS peer's HUD (called on everyone via rpc).
+@rpc("authority", "call_local", "reliable")
+func _announce_panic(count: int) -> void:
+	var toast := get_tree().get_first_node_in_group("experiment_toast")
+	if toast != null and toast.has_method("show_message"):
+		toast.call("show_message", "The crowd panics and scatters! (%d)" % count)

@@ -53,6 +53,14 @@ class_name Npc
 @export var home_position: Vector2 = Vector2.ZERO
 @export var wander_radius: float = 350.0
 
+# === anti-stuck (so NPCs never grind into a wall) ===========================
+## If, while trying to travel, the NPC moves LESS than this many pixels in one physics frame, that
+## frame counts as "made no progress" (it's jammed against a wall/corner or stuck in a crowd pinch).
+@export var stuck_min_progress_px: float = 0.6
+## After this many seconds of no progress, give up on the current path and pick a NEW destination —
+## which turns the NPC away from the obstacle. Kept short so it never grinds a wall for long.
+@export var stuck_seconds_before_repath: float = 0.25
+
 # === network smoothing (Phase 6.2 perf pass) ===============================
 ## (Online) Seconds between the host shipping this NPC's position to clients. Bigger =
 ## far less host upload (the crowd's bandwidth was the bottleneck when hosting). Clients
@@ -75,6 +83,11 @@ signal died
 
 ## Counts DOWN while the NPC is standing still at a spot. 0 or below = walking.
 var _pause_timer: float = 0.0
+
+## Anti-stuck bookkeeping: our position last physics frame, and how long we've been making no
+## headway. When _stuck_time crosses stuck_seconds_before_repath we repath (see _physics_process).
+var _last_position: Vector2 = Vector2.ZERO
+var _stuck_time: float = 0.0
 
 ## Phase 9 (9E) — a temporary "react to a nearby kill" state. While _react_timer > 0 the NPC
 ## drives in _react_direction instead of wandering, then returns to normal. Driven entirely by the
@@ -242,6 +255,11 @@ func _physics_process(delta: float) -> void:
 		_net_position = global_position
 		_net_velocity = velocity
 
+	# ANTI-STUCK measurement: how far did we actually move since the previous physics frame? We
+	# compare this against stuck_min_progress_px in the travelling case below to detect grinding a wall.
+	var moved_since_last: float = global_position.distance_to(_last_position)
+	_last_position = global_position
+
 	# Phase 9 (9E) — reacting to a nearby kill: flee/cluster for a moment, then resume normal.
 	# Checked before the mark/wander logic so even a standing mark visibly flinches.
 	if _react_timer > 0.0:
@@ -258,6 +276,7 @@ func _physics_process(delta: float) -> void:
 	# timer runs out, choose somewhere new to go.
 	if _pause_timer > 0.0:
 		_pause_timer -= delta
+		_stuck_time = 0.0  # not travelling → a fresh trip starts with a clean stuck timer
 		_drive(Vector2.ZERO)
 		if _pause_timer <= 0.0:
 			_pick_new_destination()
@@ -266,10 +285,22 @@ func _physics_process(delta: float) -> void:
 	# CASE 2 — we've arrived at our destination: stop and begin a pause.
 	if navigation_agent.is_navigation_finished():
 		_pause_timer = randf_range(min_pause_seconds, max_pause_seconds)
+		_stuck_time = 0.0
 		_drive(Vector2.ZERO)
 		return
 
-	# CASE 3 — still travelling: walk toward the next point along the path.
+	# CASE 3 — still travelling: walk toward the next point along the path. ANTI-STUCK: if we wanted
+	# to travel but barely moved this frame, we're jammed against a wall/corner (or pinched in a
+	# crowd). Count that time; once it exceeds the threshold, abandon this path and pick a NEW
+	# destination — which steers us away instead of grinding the wall for more than a few frames.
+	if moved_since_last < stuck_min_progress_px:
+		_stuck_time += delta
+		if _stuck_time >= stuck_seconds_before_repath:
+			_stuck_time = 0.0
+			_pick_new_destination()
+			return
+	else:
+		_stuck_time = 0.0
 	var next_point: Vector2 = navigation_agent.get_next_path_position()
 	_drive(global_position.direction_to(next_point) * move_speed)
 

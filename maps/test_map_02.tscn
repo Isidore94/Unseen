@@ -2,17 +2,16 @@
 
 [ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
 
-; Compact arena — UNSEEN. Reuses the WHOLE test_map_01 script; only the grid
-; (layout_override) and the play size change. SAME play size as before (~62% less area
-; than the main map, lighter to host) but a DENSER 15x11 grid laid out "2-corner style":
-; NW + SE are tight parallel street-buildings (the rooftop/street zones), NE + SW stay
-; open with one block each (the sewer zones), around the central fountain + a 1-cell
-; perimeter ring road. Connectivity flood-fill verified (scratchpad/verify_compact.py).
+; Compact arena — UNSEEN's MAIN MAP. Reuses the WHOLE test_map_01 script; only the grid
+; (layout_override) and the play size change. A 17x13 grid with VARIED building footprints
+; (squares, thin towers, and L-shapes — not just boxes), a 1-cell perimeter ring road, a
+; central fountain plaza, and two open CORNER POCKETS (NE + SW) where the sewer entrances
+; cluster. Rooftops are removed. Connectivity flood-fill verified (scratchpad/compact_layout.py).
 
 [node name="TestMap02" type="Node2D"]
 script = ExtResource("1_map")
 play_half_width = 1440.0
 play_half_height = 1120.0
-layout_override = Array[String](["###############", "#.............#", "#.##.##..##...#", "#.##.##..##...#", "#.##.##.......#", "#......F......#", "#.......##.##.#", "#..##...##.##.#", "#..##...##.##.#", "#.............#", "###############"])
+layout_override = Array[String](["#################", "#...............#", "#..####...###...#", "#..####...##....#", "#..#..#...##....#", "#..#............#", "#.......F.......#", "#.......W.......#", "#...###.B.##....#", "#.....#.W.##.#..#", "#..##.#.W....#..#", "#.......B.......#", "#################"])
 
 [node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]

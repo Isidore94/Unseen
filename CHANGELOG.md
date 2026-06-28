@@ -2,6 +2,90 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — movement/arrow fixes + compact-map structure & art pass
+
+Three slices (compile-verified; map render screenshot-verified; online paths still need a 2-instance playtest).
+
+### Slice 1 — gameplay-feel fixes
+- **NPCs "glide backwards" fixed** (`character_visual.gd`). Facing was chosen from the reported
+  `velocity`, which disagrees with what's drawn (client puppets interpolate toward a throttled
+  position; the host rewrites NPC velocity on collision/avoidance). Facing now comes from the
+  figure's **actual displacement** (`_parent_motion()` = movement ÷ delta), so it can't moonwalk.
+- **NPC anti-wall-stuck pathing** (`npc.gd`). While travelling, if it makes < `stuck_min_progress_px`
+  for `stuck_seconds_before_repath` (0.25s) it abandons the path and repaths — turning away from the
+  wall instead of grinding it. Both are `@export` tunables.
+- **Objective arrow** (`exposure_arrow.gd` + both HUDs). The post-mark **hunt arrow** now snaps to
+  one of **4 cardinal directions** (`_snap_to_cardinal`), a rough "they're that way"; the exposure
+  arrow stays exact. Both arrows moved to a dedicated **top CanvasLayer (`layer = 5`)** so HUD panels
+  can't cover them (the sewer-dim overlay stays below the panels, so the arrow needed its own layer).
+
+### Slice 2 — map structure
+- **Compact arena is now the MAIN map.** `single_player_game` loads `test_map_02`; `NetworkManager`
+  defaults to `Map.COMPACT` + `small_arena = true`.
+- **Rooftops removed.** `enable_rooftops` (default false) gates rooftop-stair spawning; with no stairs
+  to climb the rooftop LayerComponent code is dormant. (It "didn't really do anything" in playtest.)
+- **Sewers reworked into corner POCKETS.** Entrances now CLUSTER in two opposite corners
+  (`_corner_pocket_points`, 3 per pocket in NE + SW) instead of spreading — a place to duck for cover
+  and pop up a short hop away. The cross-map **underground passage portal was removed** (it was the
+  "walk across the whole map underground" offender).
+
+### Slice 3 — compact-map art & variety (procedural, screenshot-verified)
+- **New 17×13 layout** (`test_map_02.tscn`) with VARIED building footprints — squares, a thin tower,
+  and clear L-shapes — open corner pockets for the sewers, and a central fountain plaza. Flood-fill
+  connectivity verified (`scratchpad/compact_layout.py`).
+- **Roof variety** (`test_map_01.gd` stylized renderer): connected building cells are grouped
+  (`_building_styles`) so each building reads as one block with a stable hashed **roof colour**
+  (terracotta/tan/grey/slate/ochre palette) + jittered **height**, a lit top lip, a **front-edge
+  overhang shadow** (the bit to hide under), and a faint ridge seam.
+- **Water + canal + bridges:** the teal water border now feeds a central **canal** running up the
+  avenue to the fountain, crossed by plank **bridges** near the bottom (`_draw_canal_and_bridges`).
+- **Paved main avenue** across the centre so streets read as streets (floor variety).
+- Went procedural (not PixelLab tiles) for reliability + so it could be screenshot-verified; a
+  PixelLab roof-tile pass can layer on later with your eyes on it.
+
+### Slice fixes (after first playtest)
+- **Walk animations were frozen** — regression from Slice 1. Driving `is_moving` off displacement
+  meant a render frame with no physics step read zero movement and reset the walk clock every such
+  frame (high-refresh displays). Fixed: walk cycle / `is_moving` use the reported velocity again;
+  only the FACING direction reads displacement (so the glide-backwards fix stays).
+- **Can't walk on water now.** The canal was cosmetic-only. Reworked it into real map data: `'W'`
+  = canal water (solid + non-navigable + collision), `'B'` = walkable bridge. Collision, nav, and
+  the renderer all read the same grid, so what looks like water IS water; you cross on the bridges.
+  Layout re-verified connected (130/130).
+
+## Session: prayer — premium themed HUD (MatchHud) + lobby disguise polish
+
+Rebuilt the match HUD to the AC-style mockup and integrated it into the live game.
+- **`scripts/match_hud.gd` (`MatchHud`)** — the 8-region themed HUD: portrait + name + segmented
+  exposure bar, objectives, map legend (PixelLab icons), round/timer banner, player roster, system
+  log, ability bar (smoke/cloak/emote with keys + live countdown), and a minimap slot. Dark + gold
+  `StyleBox` panels, **Cinzel** font (OFL, `assets/fonts/Cinzel.ttf`) for the engraved look.
+- **Art:** 7 PixelLab UI icons (`assets/ui/icons/` — flag, target gem, scroll, stairs, mask, hooded
+  figure, coin pouch) + an ornate lion-corner panel frame (`assets/ui/ornate_panel.png`, kept for a
+  future menu/hero use — too ornate to 9-slice on the small panels).
+- **Integrated** into BOTH the offline scene (`single_player_game`, verified via screenshot — portrait,
+  real objective, abilities, minimap all live) and `online_match` (additive: panels → MatchHud,
+  cues/arrow/sewer/reveals stay on `_player_hud_layer`; exposure/objective/items/minimap/portrait/log
+  rerouted). Online roster + timer left at defaults (cross-network score/clock wiring is a TODO).
+- **Removed the experiment middle-screen text** (the old `ExperimentToast`); experiments call the
+  "experiment_toast" group, which `MatchHud` now answers by routing events into the system LOG.
+  Also dropped the redundant top-left controls legend (the ability bar shows the keys).
+- **Caveat:** online HUD is compile-verified, NOT 2-instance playtested. `ControlsHint` /
+  `ExperimentToast` scripts are now unused (left in place).
+
+### Follow-ups: reveal portraits, round timer, scoreboard
+- **Reveal portraits fixed.** The target/exposed reveals used the old `FaceplateRow`, which wasn't
+  rendering in the new HUD. Now `MatchHud` draws themed portrait PLATES under the timer — a red
+  **TARGET** plate (your target's look, once your marks are down) and blue **EXPOSED** plates (any
+  opponent at 100% exposure). Wired in both scenes (offline `_wire_reveals`, online
+  `_receive_target_reveal` / `_receive_exposure_reveal`). Verified by screenshot.
+- **5-minute round timer.** Banner counts down from 5:00 (`round_time_limit` already 300). Offline
+  ticks a local clock; online the host advances `_elapsed` and clients tick locally (everyone starts
+  together via the lobby) so the timer shows on every screen without extra sync messages.
+- **Scoreboard (rough).** Top-right roster shows live scores: offline = PLAYER 1 + a +1-per-valid-kill
+  counter; online = the host broadcasts a roster snapshot (~1Hz) of every player's name/colour/total
+  via `_score_for_peer`, rendered by `MatchHud.set_roster`. Rough but integrated end-to-end.
+
 ## Session: prayer — attack anims, crowd movement variety, experiment GUI + crowd-reaction fix
 
 Four follow-ups (to test, then commit):

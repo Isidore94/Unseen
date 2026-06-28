@@ -32,8 +32,13 @@ the host owns every outcome, and a client never receives data that reveals which
   stylized look; crowd overhaul (50/50 commoner/assassin mix, movement variety, 6s panic on kills);
   lobby **character select** (pick your assassin, privately) + **NPC-disguise** option; per-viewer
   hidden-identity crowd. See CHANGELOG.md for the full list.
-- **Not yet verified:** the lobby/disguise/rematch-to-lobby **online** paths are compile-checked but
-  need a 2-instance playtest before merging `prayer` → `main`.
+- **Main map is now the COMPACT arena** (`maps/test_map_02.tscn`, the shared `test_map_01.gd` script):
+  varied building footprints incl. L-shapes, a central fountain + canal/bridges, a water border, and
+  two sewer CORNER POCKETS. **Rooftops removed** (`enable_rooftops=false`); sewers are cover, not a
+  cross-map tunnel. Map art is **procedural** in the stylized renderer (roof palette/heights, overhang
+  shadows, paved avenue) — a PixelLab tile pass can layer on later.
+- **Not yet verified:** the lobby/disguise/rematch-to-lobby + HUD/crowd-scatter/arrow **online** paths
+  are compile-checked but need a 2-instance playtest before merging `prayer` → `main`.
 - **Next:** a fresh plan doc for the next stage is coming. Tag milestones as we go.
 
 ## Who I'm working with (matters for how to respond)

@@ -131,6 +131,13 @@ var _highlight_pulse: float = 0.0 ## Animates the ring so it reads as "alive".
 var _layer_tint: Color = Color(1, 1, 1, 1)
 ## Alpha factor for the smoke grenade (1 = normal, low = nearly invisible).
 var _smoke_alpha: float = 1.0
+## Last frame's parent world position + whether we have one yet. Facing is derived from the
+## ACTUAL movement between frames (this position minus last), not the reported velocity — so a
+## figure can never face one way while sliding the other ("glide backwards"). This is robust for
+## host NPCs (whose velocity gets rewritten by collision/avoidance) AND client puppets (which
+## interpolate toward a throttled position, so their reported velocity lags the visible motion).
+var _last_parent_pos: Vector2 = Vector2.ZERO
+var _has_last_pos: bool = false
 ## The loadout currently worn (pure data). Drives apply_loadout; never reaches back here.
 var _loadout: Loadout = null
 ## Each overlay layer's base recolour (its cosmetic's palette). Folded with the live FX
@@ -326,12 +333,19 @@ func set_smoked(on: bool, alpha_when_on: float = 0.12) -> void:
 
 
 func _process(delta: float) -> void:
-	var velocity := _parent_velocity()
-	var is_moving := velocity.length() > moving_threshold
+	# Two separate signals, on purpose:
+	#  • is_moving / the WALK CYCLE use the REPORTED velocity — reliable on every render frame.
+	#  • FACING uses the ACTUAL displacement, which can't disagree with the drawn glide (no more
+	#    moonwalk) — but reads zero on a render frame with no physics step, so we only TURN when
+	#    there was real movement and otherwise hold the last facing. (Driving is_moving off
+	#    displacement was the bug that froze the walk animation on high-refresh displays.)
+	var reported := _parent_velocity()
+	var motion := _parent_motion(delta)
+	var is_moving := reported.length() > moving_threshold
 
-	# FACING — pick the sheet row from the movement direction; hold it when stopped.
-	if is_moving:
-		_facing_row = _facing_row_from(velocity)
+	# FACING — turn to match real movement; keep the last facing when we didn't actually move.
+	if motion.length() > moving_threshold:
+		_facing_row = _facing_row_from(motion)
 
 	# WALK CYCLE — step through the 4 columns while moving; rest on column 0 when not.
 	var column := 0
@@ -404,6 +418,24 @@ func _parent_velocity() -> Vector2:
 	if parent is CharacterBody2D:
 		return (parent as CharacterBody2D).velocity
 	return Vector2.ZERO
+
+
+# The parent's ACTUAL movement this frame expressed as pixels/second (displacement ÷ delta). This
+# is what the eye sees, so facing derived from it can never contradict the visible glide. Falls
+# back to the reported velocity on the very first frame (no previous position yet) or for a parent
+# that isn't a Node2D. A teleport shows one frame of large motion — harmless for facing.
+func _parent_motion(delta: float) -> Vector2:
+	var parent := get_parent()
+	if not (parent is Node2D) or delta <= 0.0:
+		return _parent_velocity()
+	var pos := (parent as Node2D).global_position
+	if not _has_last_pos:
+		_last_parent_pos = pos
+		_has_last_pos = true
+		return _parent_velocity()
+	var motion := (pos - _last_parent_pos) / delta
+	_last_parent_pos = pos
+	return motion
 
 
 # === registry access, guarded so the rig still works if the autoload is absent =====
