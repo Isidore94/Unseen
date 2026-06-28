@@ -1433,6 +1433,12 @@ func _assign_crowd_appearances() -> void:
 # BODY layer is painted (outfit/head/weapon are art-less placeholders), so the body sheet IS
 # the visible identity. THIS is the seam: when overlay art lands, fold the other slot ids in
 # here and the "never see myself" rule sharpens automatically — every caller routes through it.
+# The "what does this character look like" key used to camouflage the per-viewer crowd: two
+# loadouts with the same key are visually interchangeable, so we never put YOUR key in YOUR crowd.
+# PILLAR TODO (§0.3): today only BODY renders (outfit/head/weapon art are placeholders), so the
+# body id IS the whole silhouette and a body-only key is correct. The MOMENT overlay art ships,
+# fold OUTFIT/HEAD/WEAPON (and palette) into this key too — otherwise a paid outfit/hat on a human
+# is not duplicated into a crowd look-alike group and becomes a tell. See CODE_AUDIT_PHASES_7-11.md §2.
 func _look_key(loadout: Loadout) -> StringName:
 	return loadout.get_item(CosmeticItem.Slot.BODY) if loadout != null else &""
 

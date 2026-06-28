@@ -36,6 +36,10 @@ extends Node
 
 var _match: Node = null
 var _windows: Dictionary = {}  ## KillComponent -> seconds left in its recovery window
+## True while we've written non-default state (penalty multiplier / can_kill) onto KillComponents.
+## Lets us cleanly UNDO everything if the flag is toggled off mid-session, so no player is left
+## with a stuck 0.5 multiplier or a permanent disarm (keeps the "delete/flip test" honest).
+var _effects_applied: bool = false
 
 
 func _ready() -> void:
@@ -52,11 +56,16 @@ func _connect_to_match() -> void:
 
 func _process(delta: float) -> void:
 	if not ExperimentFlags.whiff_recovery_enabled:
+		# Flag is off. If we'd previously applied effects, undo them ONCE so nobody is left with
+		# a stuck penalty multiplier or disarm (so flipping the flag off truly restores vanilla).
+		if _effects_applied:
+			_restore_all()
 		return
 	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
 		return
 	if _match == null:
 		_connect_to_match()
+	_effects_applied = true  # from here on we may write multiplier/can_kill state worth undoing
 
 	# Keep each player's penalty multiplier in step with whether they'd be windowed RIGHT NOW, so
 	# the value is already correct at the instant a whiff resolves (the penalty is applied then).
@@ -77,6 +86,18 @@ func _process(delta: float) -> void:
 		if _windows[kill] <= 0.0:
 			_windows.erase(kill)
 			kill.set("can_kill", true)
+
+
+# Put every KillComponent back to its default state (full penalty, able to kill) and drop all
+# active windows. Called when the experiment is switched off mid-session so it leaves no trace.
+func _restore_all() -> void:
+	for player in get_tree().get_nodes_in_group("player"):
+		var kill := _kill_of(player)
+		if kill != null:
+			kill.set("exposure_penalty_multiplier", 1.0)
+			kill.set("can_kill", true)
+	_windows.clear()
+	_effects_applied = false
 
 
 func _on_kill_resolved(killer: Node, _victim: Node, was_valid: bool) -> void:

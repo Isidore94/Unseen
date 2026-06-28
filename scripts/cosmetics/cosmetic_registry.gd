@@ -137,8 +137,22 @@ func npc_pool_by_slot() -> Dictionary:
 			CosmeticItem.Slot.OUTFIT,
 			CosmeticItem.Slot.HEAD,
 			CosmeticItem.Slot.WEAPON]:
-		pool[slot] = ids_in_slot(slot)
+		pool[slot] = _crowd_safe_ids_in_slot(slot)
 	return pool
+
+
+# PILLAR INVARIANT (§0.3 hidden identity): the NPC crowd may ONLY wear CROWD_SAFE cosmetics. This
+# guarantees no equippable in-world look can ever exist on a HUMAN that the crowd can't also wear —
+# which would turn that human into a visible "tell" (a pay-to-be-spotted / identity leak). Every
+# visual item defaults to CROWD_SAFE (CosmeticItem.bucket_for_slot), so this is a no-op today; it
+# exists so the rule is ENFORCED, not assumed, the moment a reveal-moment or paid item is added.
+func _crowd_safe_ids_in_slot(slot: int) -> Array:
+	var safe: Array = []
+	for id in ids_in_slot(slot):
+		var item := get_item(id)
+		if item != null and item.is_crowd_safe():
+			safe.append(id)
+	return safe
 
 
 # === back-compat with the existing int-based appearance netcode =============
