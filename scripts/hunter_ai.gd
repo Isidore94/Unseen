@@ -40,6 +40,11 @@ class_name HunterAi
 ## Once chasing, the hunter gives up if suspicion falls back below this.
 @export var unlock_threshold: float = 25.0
 
+## How often (in seconds) we re-run the expensive line-of-sight wall check.
+## We check ~10 times a second instead of every physics frame and reuse the last
+## result in between — imperceptible at 10Hz but much cheaper with many hunters.
+@export var line_of_sight_check_interval_seconds: float = 0.1
+
 ## Chance (0–1) that the hunter RUNS to its next wander spot instead of walking.
 ## Running raises the hunter's OWN exposure, which makes the exposure arrow point
 ## to it — handy for testing the arrow.
@@ -49,6 +54,9 @@ class_name HunterAi
 ## hunt. A real hunter looks identical to everyone else — switch this off to test
 ## that you can still feel it without the colour cue.
 @export var debug_show_state: bool = true
+
+## How long (in seconds) the death fade-out + shrink animation takes when killed.
+@export var death_fade_seconds: float = 0.4
 
 @onready var navigation_agent: NavigationAgent2D = $NavigationAgent2D
 @onready var exposure_component: ExposureComponent = $ExposureComponent
@@ -65,6 +73,15 @@ var _pause_timer: float = 0.0
 var _player: Player = null
 ## Throttles how often we recompute the path to the player while chasing.
 var _retarget_timer: float = 0.0
+
+## The line-of-sight raycast query, built ONCE and reused every check. Creating a
+## fresh one every physics frame was needless garbage — we just move its endpoints.
+var _line_of_sight_query: PhysicsRayQueryParameters2D = null
+## Counts up until it reaches line_of_sight_check_interval_seconds, then we re-check.
+## Starts high so the very first physics frame does a real check (no blind window).
+var _line_of_sight_check_timer: float = 1.0
+## The last line-of-sight result we computed; reused in between throttled checks.
+var _last_line_of_sight: bool = false
 
 
 ## Emitted the moment we're killed (before the death animation).
@@ -93,8 +110,8 @@ func die() -> void:
 	_remove_killable_groups()
 	remove_from_group("hunter")
 	var tween := create_tween()
-	tween.tween_property(self, "modulate:a", 0.0, 0.4)
-	tween.parallel().tween_property(self, "scale", Vector2.ZERO, 0.4)
+	tween.tween_property(self, "modulate:a", 0.0, death_fade_seconds)
+	tween.parallel().tween_property(self, "scale", Vector2.ZERO, death_fade_seconds)
 	tween.tween_callback(queue_free)
 
 
@@ -147,7 +164,9 @@ func _update_suspicion(delta: float) -> void:
 		return
 
 	var distance: float = global_position.distance_to(_player.global_position)
-	var can_read_player: bool = distance <= vision_range and _has_line_of_sight()
+	# Refresh the throttled line-of-sight check (~10Hz), then use its cached result.
+	_update_line_of_sight(delta)
+	var can_read_player: bool = distance <= vision_range and _last_line_of_sight
 
 	if can_read_player:
 		# How exposed is the player right now? 0 = invisible civilian, 1 = beacon.
@@ -163,13 +182,30 @@ func _update_suspicion(delta: float) -> void:
 	suspicion = clampf(suspicion, 0.0, 100.0)
 
 
+# Re-runs the line-of-sight raycast only ~10 times a second (controlled by
+# line_of_sight_check_interval_seconds), caching the answer in _last_line_of_sight
+# so every physics frame in between reuses it. The ray itself is unchanged — this
+# only spreads the cost out over time so many hunters stay cheap.
+func _update_line_of_sight(delta: float) -> void:
+	_line_of_sight_check_timer += delta
+	if _line_of_sight_check_timer < line_of_sight_check_interval_seconds:
+		return
+	_line_of_sight_check_timer = 0.0
+	_last_line_of_sight = _has_line_of_sight()
+
+
 # Fires an invisible ray from the hunter to the player that only stops on WALLS
 # (the "world" physics layer). If it reaches the player without hitting a wall,
 # we have clear line of sight. Walls block sight; the crowd does NOT.
 func _has_line_of_sight() -> bool:
 	var space_state := get_world_2d().direct_space_state
-	var query := PhysicsRayQueryParameters2D.create(global_position, _player.global_position, 1)
-	var result := space_state.intersect_ray(query)
+	# Build the query object once, then just move its endpoints each call. The
+	# collision mask (1 = the "world"/walls layer) is set once when we make it.
+	if _line_of_sight_query == null:
+		_line_of_sight_query = PhysicsRayQueryParameters2D.create(global_position, _player.global_position, 1)
+	_line_of_sight_query.from = global_position
+	_line_of_sight_query.to = _player.global_position
+	var result := space_state.intersect_ray(_line_of_sight_query)
 	return result.is_empty()
 
 
@@ -188,8 +224,9 @@ func _chase(delta: float) -> void:
 	if _player == null:
 		return
 
-	# If we've closed to catching range, we catch the prey — they lose.
-	if global_position.distance_to(_player.global_position) <= catch_distance:
+	# If we've closed to catching range, we catch the prey — they lose. We compare
+	# SQUARED distances (cheaper: no square root) since this is a pure threshold.
+	if global_position.distance_squared_to(_player.global_position) <= catch_distance * catch_distance:
 		_player.die()
 		return
 

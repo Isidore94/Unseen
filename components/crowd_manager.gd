@@ -56,7 +56,13 @@ func _spawn_crowd() -> void:
 # exposure faster (you're camouflaged); being alone in the open is exposing.
 func count_npcs_near(world_position: Vector2, radius: float) -> int:
 	var count: int = 0
+	# Compare SQUARED distances: distance_squared_to skips the square root that
+	# distance_to does. We only need to know if each NPC is inside the radius, and
+	# (dist <= radius) is the same test as (dist*dist <= radius*radius), so the
+	# result is identical — just cheaper, which matters across 60+ NPCs. Square the
+	# radius once here instead of un-squaring every NPC's distance in the loop.
+	var radius_squared := radius * radius
 	for child in get_children():
-		if child is Npc and child.global_position.distance_to(world_position) <= radius:
+		if child is Npc and child.global_position.distance_squared_to(world_position) <= radius_squared:
 			count += 1
 	return count

@@ -154,7 +154,7 @@ func _submit_request() -> void:
 	if _is_host():
 		_resolve_pulse(_local_peer())
 	else:
-		_request_pulse.rpc_id(1)
+		_request_pulse.rpc_id(NetworkManager.HOST_PEER_ID)
 
 
 @rpc("any_peer", "reliable")
@@ -195,7 +195,7 @@ func _update_ready_label() -> void:
 	# A faint "PULSE READY [Q]" hint when charged (only on the machine whose player is charged).
 	if _match == null or not _match.has_method("local_hud_layer"):
 		return
-	var hud := _match.local_hud_layer()
+	var hud: CanvasLayer = _match.local_hud_layer()
 	if hud == null:
 		return
 	if _ready_label == null or not is_instance_valid(_ready_label):

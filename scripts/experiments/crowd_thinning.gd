@@ -140,8 +140,12 @@ func _is_mark(node: Node) -> bool:
 func _neighbor_count(npc: Node, pool: Array) -> int:
 	var count := 0
 	var here: Vector2 = npc.global_position
+	# Compare SQUARED distances to avoid a square root per pair in this O(n^2) scan:
+	# (dist <= radius) is identical to (dist*dist <= radius*radius), so we square the
+	# radius once and use distance_squared_to (no sqrt) for the same neighbour test.
+	var radius_squared := density_neighbor_radius_px * density_neighbor_radius_px
 	for other in pool:
-		if other != npc and here.distance_to(other.global_position) <= density_neighbor_radius_px:
+		if other != npc and here.distance_squared_to(other.global_position) <= radius_squared:
 			count += 1
 	return count
 

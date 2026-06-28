@@ -306,9 +306,9 @@ func _sample_and_send_input() -> Dictionary:
 	)
 	var run_held: bool = Input.is_action_pressed(run_action)
 	_input_seq += 1
-	# rpc_id(1, ...) = "run this on the host." call_local also runs it here when WE are
+	# rpc_id(HOST_PEER_ID, ...) = "run this on the host." call_local also runs it here when WE are
 	# the host, so the host's own input takes the same path.
-	_receive_input.rpc_id(1, _input_seq, direction, run_held)
+	_receive_input.rpc_id(NetworkManager.HOST_PEER_ID, _input_seq, direction, run_held)
 	return {"seq": _input_seq, "dir": direction, "run": run_held}
 
 
@@ -348,6 +348,18 @@ func _follow_server(delta: float) -> void:
 	velocity = _net_velocity
 
 
+# Anti-cheat gate (server-authoritative, MULTIPLAYER_PLAN.md §4): is the peer that sent the
+# RPC we're handling the one that actually CONTROLS this character? A sender id of 0 means the
+# call came from our own machine (the host's own input via call_local), which is always allowed
+# for its own character. Every host-only RPC handler below gates on this single helper so the
+# "did this peer puppet a character it doesn't own?" rule lives in ONE place, not copied four
+# times where one could silently drift.
+func _remote_sender_controls_this_character() -> bool:
+	var sender_id: int = multiplayer.get_remote_sender_id()
+	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
+	return effective_sender == controlling_peer_id
+
+
 # The host's record of a character's latest input. Only the host accepts it, and only from
 # the peer that actually controls this character (never trust the client). It also remembers
 # the highest input id seen, which it echoes back as the reconciliation receipt.
@@ -355,10 +367,7 @@ func _follow_server(delta: float) -> void:
 func _receive_input(seq: int, direction: Vector2, run_held: bool) -> void:
 	if not multiplayer.is_server():
 		return
-	var sender_id: int = multiplayer.get_remote_sender_id()
-	# A sender id of 0 means "called locally" — that's the host's own input.
-	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
-	if effective_sender != controlling_peer_id:
+	if not _remote_sender_controls_this_character():
 		return  # someone tried to puppet a character they don't control — ignore it
 	_net_input_direction = direction
 	_net_run_held = run_held
@@ -454,7 +463,7 @@ func _try_claim(point: AccessPoint) -> void:
 	if point == null:
 		return
 	if network_controlled:
-		_request_claim.rpc_id(1)  # the host finds the point WE'RE standing on and validates
+		_request_claim.rpc_id(NetworkManager.HOST_PEER_ID)  # the host finds the point WE'RE standing on and validates
 		return
 	if point.is_claimed():
 		return
@@ -471,9 +480,7 @@ func _try_claim(point: AccessPoint) -> void:
 func _request_claim() -> void:
 	if not multiplayer.is_server():
 		return
-	var sender_id: int = multiplayer.get_remote_sender_id()
-	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
-	if effective_sender != controlling_peer_id:
+	if not _remote_sender_controls_this_character():
 		return
 	var point := _nearest_access_point()
 	# Claiming is independent of the transit cooldown (your design): the 15s lockout only
@@ -507,7 +514,7 @@ func _nearest_access_point() -> AccessPoint:
 func _request_layer(layer: int) -> void:
 	_access_reuse_timer = access_reuse_cooldown
 	if network_controlled:
-		_request_set_layer.rpc_id(1, layer)
+		_request_set_layer.rpc_id(NetworkManager.HOST_PEER_ID, layer)
 	elif layer_component != null:
 		layer_component.set_layer(layer)
 
@@ -521,9 +528,7 @@ func _request_layer(layer: int) -> void:
 func _request_set_layer(layer: int) -> void:
 	if not multiplayer.is_server():
 		return
-	var sender_id: int = multiplayer.get_remote_sender_id()
-	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
-	if effective_sender != controlling_peer_id:
+	if not _remote_sender_controls_this_character():
 		return
 	if layer_component == null:
 		return
@@ -550,7 +555,7 @@ func _request_set_layer(layer: int) -> void:
 
 # A locally-controlled client's item press → ask the host to fire it (server-authoritative).
 func _on_item_requested(which: int) -> void:
-	_request_item.rpc_id(1, which)
+	_request_item.rpc_id(NetworkManager.HOST_PEER_ID, which)
 
 
 # HOST-ONLY: a controlling client asks to use an item slot. Verify the sender, then let the
@@ -559,9 +564,7 @@ func _on_item_requested(which: int) -> void:
 func _request_item(which: int) -> void:
 	if not multiplayer.is_server():
 		return
-	var sender_id: int = multiplayer.get_remote_sender_id()
-	var effective_sender: int = sender_id if sender_id != 0 else multiplayer.get_unique_id()
-	if effective_sender != controlling_peer_id:
+	if not _remote_sender_controls_this_character():
 		return
 	var item_component := get_node_or_null("ItemComponent") as ItemComponent
 	if item_component != null:

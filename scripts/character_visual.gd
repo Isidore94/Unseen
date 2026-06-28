@@ -43,7 +43,11 @@ const SHEET_TEXTURES := [
 	preload("res://assets/sprites/townswoman_sheet.png"),
 ]
 
-const FRAME_PX := 32          ## One frame is 32x32 px in the source sheet. PRODUCTION TARGET is 48
+const FRAME_PX := 32          ## FALLBACK frame size (px) used ONLY before a sheet is loaded.
+                              ## The real on-screen scale is DERIVED from each layer's actual
+                              ## texture (see _rescale_layer), so 32px and 48px art both render
+                              ## at display_height with no second constant to hand-sync. The art
+                              ## pipeline target is 48px (tools/ingest_sprite.py).
                              ## (ART_PIPELINE.md §2) — flip this to 48 (sheets become 192x192) when the
                              ## first real 48px sheets replace the 32px placeholders. Don't flip earlier.
 const SHEET_COLUMNS := 4      ## 4 walk-cycle frames per direction.
@@ -154,10 +158,26 @@ func _make_layer(layer_name: String, hframes: int, vframes: int, z: int) -> Spri
 	sprite.vframes = vframes
 	sprite.centered = true
 	sprite.position = sprite_offset
-	sprite.scale = Vector2.ONE * (display_height / float(FRAME_PX))
 	sprite.z_index = z
 	add_child(sprite)
+	# Initial scale uses the FRAME_PX fallback; once a texture is assigned, _rescale_layer
+	# recomputes it from the real sheet so the size is correct for 32px OR 48px art.
+	_rescale_layer(sprite)
 	return sprite
+
+
+# Scale a layer so one animation frame renders at `display_height` on screen, DERIVED from the
+# layer's actual sheet (frame height = texture height / rows). This is what lets us swap a 32px
+# sheet for a 48px one with zero code changes — there is no second frame-size constant to keep
+# in sync with the art pipeline. Falls back to FRAME_PX only when the layer has no texture yet.
+func _rescale_layer(sprite: Sprite2D) -> void:
+	if sprite == null:
+		return
+	var frame_height_px := float(FRAME_PX)
+	if sprite.texture != null and sprite.vframes > 0:
+		frame_height_px = float(sprite.texture.get_height()) / float(sprite.vframes)
+	if frame_height_px > 0.0:
+		sprite.scale = Vector2.ONE * (display_height / frame_height_px)
 
 
 # ===========================================================================
@@ -200,6 +220,7 @@ func _apply_overlay(layer: Sprite2D, slot: int) -> Color:
 		return Color(1, 1, 1, 1)
 	layer.texture = texture
 	layer.visible = true
+	_rescale_layer(layer)  # overlay art may be 32px or 48px — derive its scale from the sheet
 
 	# A player override beats the item's default palette; else use the item's default.
 	var override := _loadout.get_palette(slot)
@@ -237,6 +258,7 @@ func set_appearance(index: int) -> void:
 	_appearance_index = wrapi(index, 0, SHEET_TEXTURES.size())
 	if _sprite != null:
 		_sprite.texture = SHEET_TEXTURES[_appearance_index]
+		_rescale_layer(_sprite)  # match the on-screen size to this sheet's real frame size
 
 
 # Which body sheet this character is currently wearing.

@@ -546,9 +546,9 @@ func _announce_ready_to_host() -> void:
 	# Tell the host our chosen look FIRST (a reliable RPC, so it arrives before the spawn
 	# request that follows), then ask to be spawned. Sending it once here is the whole
 	# join-time loadout sync (§5) — it's static for the match, so nothing repeats per-frame.
-	_submit_loadout.rpc_id(1, _local_loadout_payload())
+	_submit_loadout.rpc_id(NetworkManager.HOST_PEER_ID, _local_loadout_payload())
 	# "Host, my scene is up — please spawn my character." Runs the host's _request_spawn.
-	_request_spawn.rpc_id(1)
+	_request_spawn.rpc_id(NetworkManager.HOST_PEER_ID)
 	_update_status()
 
 
@@ -603,6 +603,13 @@ func _submit_loadout(payload: Dictionary) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
+	# SECURITY TODO(monetization) — server-authoritative ownership. We currently TRUST this
+	# payload: the host renders whatever cosmetic ids the client sends, and ownership is only
+	# checked client-side in CosmeticInventory. That is FINE today (nothing is paid, the host
+	# is just a peer), but it is NOT a security boundary. Before any cosmetic costs money, the
+	# host (or a backend it trusts) MUST validate every id in `payload` against THIS account's
+	# server-held inventory and replace any unowned id with its slot default — otherwise day one
+	# of the shop ships a free-cosmetics exploit. See CODE_AUDIT_PHASES_7-11.md §1.
 	_loadout_by_peer[sender] = payload
 	# ON-CHANGE seam: if this peer already has a live character (a mid-match wardrobe
 	# change), we'd re-broadcast + re-apply here. Loadouts are static during a match today
@@ -1056,7 +1063,7 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	rematch_button.pressed.connect(func() -> void:
 		rematch_button.disabled = true
 		rematch_button.text = "Waiting for players…"
-		_request_rematch.rpc_id(1))
+		_request_rematch.rpc_id(NetworkManager.HOST_PEER_ID))
 
 	var menu_button := Button.new()
 	menu_button.text = "Back to menu"
@@ -1165,7 +1172,7 @@ func _retry_spawn_if_needed(delta: float) -> void:
 	if _spawn_retry_timer >= 1.0:
 		_spawn_retry_timer = 0.0
 		if _is_connected():
-			_request_spawn.rpc_id(1)
+			_request_spawn.rpc_id(NetworkManager.HOST_PEER_ID)
 
 
 # Lazily wires up our own HUD and resolves our mark. Doing it per-frame (instead of
@@ -1624,15 +1631,16 @@ func _update_status() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed:
-		# Quick escape back to the menu while prototyping.
-		if event.keycode == KEY_ESCAPE:
-			_return_to_menu()
-		# F3 toggles the network debug overlay (FPS / ping / pending inputs).
-		elif event.keycode == KEY_F3:
-			_debug_visible = not _debug_visible
-			if _debug_layer != null:
-				_debug_layer.visible = _debug_visible
+	# Abstract Input Map actions only — never raw keycodes (Principle #2), so these work on a
+	# controller too. `ui_cancel` is Godot's built-in Escape/B-button action; `toggle_net_debug`
+	# is our own action (F3 by default) defined in project.godot's Input Map.
+	if event.is_action_pressed("ui_cancel"):
+		_return_to_menu()  # leave the match back to the menu
+	elif event.is_action_pressed("toggle_net_debug"):
+		# Toggle the network debug overlay (FPS / ping / pending inputs).
+		_debug_visible = not _debug_visible
+		if _debug_layer != null:
+			_debug_layer.visible = _debug_visible
 
 
 # ===========================================================================

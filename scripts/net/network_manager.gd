@@ -22,6 +22,11 @@ const DEFAULT_PORT := 24565
 ## Hard cap on players this build allows (first milestone runs with 2).
 const MAX_PLAYERS := 4
 
+## The host's peer id. In Godot's high-level multiplayer the server is ALWAYS peer 1,
+## so `rpc_id(HOST_PEER_ID, ...)` means "run this on the host". Named so the intent is
+## obvious instead of a bare `1` scattered through the networking code.
+const HOST_PEER_ID := 1
+
 ## Fired (on the host) when a client joins, and (on clients) when another peer joins.
 signal player_joined(peer_id: int)
 ## Fired when a peer leaves / disconnects.
@@ -36,8 +41,6 @@ signal server_closed
 signal steam_lobby_ready(lobby_id: int)
 ## Fired if creating or joining a Steam lobby fails (with a human-readable reason).
 signal steam_lobby_failed(reason: String)
-
-var _active_peer: MultiplayerPeer = null
 
 ## Match setting chosen in the lobby (the host's choice, sent to everyone at start): use
 ## the compact arena — smaller map + fewer NPCs, lighter for the host to simulate/serve.
@@ -143,7 +146,7 @@ func _update_ping(delta: float) -> void:
 	_ping_accumulator += delta
 	if _ping_accumulator >= 0.5:
 		_ping_accumulator = 0.0
-		_ping_request.rpc_id(1, Time.get_ticks_msec())
+		_ping_request.rpc_id(HOST_PEER_ID, Time.get_ticks_msec())
 
 
 @rpc("any_peer", "call_remote", "unreliable")
@@ -258,7 +261,6 @@ func _on_steam_lobby_created(result: int, lobby_id: int) -> void:
 		return
 	peer.call("create_host", 0)
 	multiplayer.multiplayer_peer = peer as MultiplayerPeer
-	_active_peer = peer as MultiplayerPeer
 	_using_steam = true
 	print("[Steam] hosting lobby %d" % lobby_id)
 	steam_lobby_ready.emit(lobby_id)
@@ -286,7 +288,6 @@ func _on_steam_lobby_joined(lobby_id: int, _permissions: int, _locked: bool, res
 		return
 	peer.call("create_client", owner_id, 0)
 	multiplayer.multiplayer_peer = peer as MultiplayerPeer
-	_active_peer = peer as MultiplayerPeer
 	_using_steam = true
 	print("[Steam] joined lobby %d (host %d)" % [lobby_id, owner_id])
 	steam_lobby_ready.emit(lobby_id)
@@ -308,7 +309,6 @@ func host_game(port: int = DEFAULT_PORT) -> bool:
 	if result != OK:
 		push_error("NetworkManager: could not host on port %d (error %d)." % [port, result])
 		return false
-	_active_peer = enet
 	multiplayer.multiplayer_peer = enet
 	return true
 
@@ -320,7 +320,6 @@ func join_game(address: String = "127.0.0.1", port: int = DEFAULT_PORT) -> bool:
 	if result != OK:
 		push_error("NetworkManager: could not start client to %s:%d (error %d)." % [address, port, result])
 		return false
-	_active_peer = enet
 	multiplayer.multiplayer_peer = enet
 	return true
 
@@ -334,7 +333,6 @@ func leave() -> void:
 	_using_steam = false
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer = null
-	_active_peer = null
 
 
 # True on the host machine (the referee). False on clients.

@@ -72,11 +72,23 @@ func _physics_process(delta: float) -> void:
 		return
 	_clock += delta
 	var velocity: Vector2 = _body.velocity
-	var speed := velocity.length()
-	if speed >= run_speed_threshold_px:
+	# Compare SQUARED speed against SQUARED thresholds so we skip the square root that
+	# velocity.length() costs every physics frame on every NPC. (speed >= threshold) is
+	# the same test as (speed*speed >= threshold*threshold), so the run/move gates are
+	# unchanged — most frames now do zero sqrt.
+	var speed_squared := velocity.length_squared()
+	# The minimum speed (px/s) below which we treat the actor as "not really moving" and
+	# skip the turn check. Squared so it compares directly against length_squared above.
+	const MOVE_GATE_SPEED_PX := 5.0
+	const MOVE_GATE_SPEED_PX_SQUARED := MOVE_GATE_SPEED_PX * MOVE_GATE_SPEED_PX  # 25.0
+	if speed_squared >= run_speed_threshold_px * run_speed_threshold_px:
 		_last_run_time = _clock
-	if speed > 5.0:
-		var direction := velocity / speed
+	if speed_squared > MOVE_GATE_SPEED_PX_SQUARED:
+		# Only here — when the actor is genuinely moving — do we pay for the sqrt-based
+		# normalize, because the turn check needs a real heading (a unit direction) to
+		# measure a real angle. Below the move gate we never reach this, so most frames
+		# cost no square root at all.
+		var direction := velocity.normalized()
 		if _last_direction != Vector2.ZERO:
 			var turn_degrees := absf(rad_to_deg(direction.angle_to(_last_direction)))
 			if turn_degrees > sharp_turn_threshold_degrees:

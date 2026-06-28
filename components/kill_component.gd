@@ -112,7 +112,7 @@ func _network_kill_input() -> void:
 		return  # not close enough to commit (the host enforces this as well)
 
 	_play_strike()  # instant local feedback; the host decides the actual outcome
-	request_kill.rpc_id(1, suspect.get_path())
+	request_kill.rpc_id(NetworkManager.HOST_PEER_ID, suspect.get_path())
 
 
 # HOST-ONLY: validate and resolve a kill request. Never trust the client — re-check
@@ -150,24 +150,10 @@ func request_kill(target_path: NodePath) -> void:
 
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
-		_exposure.add_exposure(kill_exposure_spike, "kill")
-		kill_landed.emit()
-		kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
-		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
-		# Stamp who eliminated this PLAYER so OnlineMatch can attribute the kill (and award a
-		# completed-contract bonus if we were their assigned hunter). NPC marks ignore this.
-		if target.is_in_group("player"):
-			target.set("last_attacker_peer", controller)
-		if target.has_method("die"):
-			target.die()
+		# Pass `controller` so a killed PLAYER gets stamped for kill attribution.
+		_apply_clean_kill(target, controller)
 	else:
-		# An innocent civilian — they still die, but you take a HEAVY exposure hit.
-		# This is the cost of a sloppy or spammed kill: cutting down the wrong person
-		# lights you up for everyone. (exposure_penalty_multiplier is 1.0 unless 9A softens it.)
-		_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
-		kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
-		if target.has_method("die"):
-			target.die()
+		_apply_whiff(target)
 
 
 # Lock the best suspect in front of us (any character — you might be wrong).
@@ -211,21 +197,42 @@ func _resolve_on(target: Node2D) -> void:
 	_play_strike()
 	if target.is_in_group("player") or target.is_in_group(valid_target_group_name):
 		# A real player (always fair game) or your mark — clean kill (full permanent
-		# spike). Count it before they die (killing a player ends the round).
-		_exposure.add_exposure(kill_exposure_spike, "kill")
-		kill_landed.emit()
-		kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
-		_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
-		if target.has_method("die"):
-			target.die()
+		# spike). Offline has no peer to attribute to, so pass -1 (no stamp).
+		_apply_clean_kill(target, -1)
 	else:
-		# An innocent civilian — they still die, but you take a HEAVY exposure hit
-		# (the downside of a sloppy or spammed kill).
-		_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
-		kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
-		if target.has_method("die"):
-			target.die()
+		_apply_whiff(target)
 
+
+# === shared kill resolution (one rule, used by BOTH the offline resolve and the host's =====
+# === validated request, so the clean/whiff outcome can never drift between the two) ========
+
+# A clean kill: full permanent exposure spike + the clean-kill cosmetics, then the target dies.
+# `attacker_peer` >= 0 (online host path) stamps who eliminated a PLAYER for kill attribution;
+# -1 (offline) skips the stamp because there's no peer.
+func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
+	_exposure.add_exposure(kill_exposure_spike, "kill")
+	kill_landed.emit()
+	kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
+	_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
+	if attacker_peer >= 0 and target.is_in_group("player"):
+		target.set("last_attacker_peer", attacker_peer)
+	if target.has_method("die"):
+		target.die()
+
+
+# A whiff: you committed to the WRONG person. They still die, but you take a HEAVY exposure
+# hit (softened only if Phase 9's 9A experiment lowered exposure_penalty_multiplier; it's 1.0
+# by default). Cutting down an innocent in the crowd is a glaring tell.
+func _apply_whiff(target: Node2D) -> void:
+	_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
+	kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
+	if target.has_method("die"):
+		target.die()
+
+
+# Physics layers the kill-targeting query scans: PLAYER (layer 2, bit value 2) +
+# NPC (layer 4, bit value 4) = 6. Named so the query below isn't a mystery `6`.
+const KILL_TARGET_LAYERS := 2 | 4
 
 # Finds the best character to lock: roughly in front of us, within range, closest
 # to our facing line. Returns null if there's nobody suitable in front.
@@ -236,7 +243,7 @@ func _best_suspect_in_front() -> Node2D:
 	var query := PhysicsShapeQueryParameters2D.new()
 	query.shape = shape
 	query.transform = Transform2D(0.0, _body.global_position)
-	query.collision_mask = 6  # player (layer 2) + npc (layer 4)
+	query.collision_mask = KILL_TARGET_LAYERS
 	query.collide_with_bodies = true
 
 	var my_layer: int = _layer_of(_body)

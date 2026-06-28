@@ -56,7 +56,7 @@ func _on_kill_resolved(_killer: Node, victim: Node, _was_valid: bool) -> void:
 			continue
 		if not node.has_method("react_to_kill"):
 			continue
-		var distance := node.global_position.distance_to(kill_position)
+		var distance: float = node.global_position.distance_to(kill_position)
 		if distance > reaction_radius_px:
 			continue
 		# Closer = harder/longer flinch, so the cluster's shape points back at the kill.

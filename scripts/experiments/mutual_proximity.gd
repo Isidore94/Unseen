@@ -154,7 +154,7 @@ func _ensure_cue() -> void:
 		_match = get_tree().get_first_node_in_group("online_match")
 	if _match == null or not _match.has_method("local_hud_layer"):
 		return
-	var hud := _match.local_hud_layer()
+	var hud: CanvasLayer = _match.local_hud_layer()
 	if hud == null:
 		return
 	_cue_root = Control.new()
