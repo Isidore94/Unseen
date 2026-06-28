@@ -2,6 +2,38 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: the `prayer` branch — staged 7→11 integration + audit fixes
+
+Integrated all five unmerged phase branches (7, 8, 9, 10, 11) into ONE branch, `prayer`, one at a
+time per each branch's `PHASE_*_TO_MAIN.md`. The branches had **diverged** (each forked from an
+earlier point of the previous), so this genuinely recombined split work — e.g. Phase 9's crowd
+shrink (`npc_count` 60, `clone_crowd_fraction` 0.25) and Phase 8's style bible, which the later
+branches did not contain. Only ONE conflict, exactly as the plan predicted: `CHANGELOG.md` at
+Phase 9 (kept both). Every step verified with a real Godot 4.7 headless compile gate (full-project
+`--import`); all green. NOTE: online runtime gates (the 2-instance hidden-view tests) still need a
+hands-on Godot pass — they can't run headless.
+
+Then applied the `CODE_AUDIT_PHASES_7-11.md` fixes that are compile-verifiable and
+behavior-preserving:
+- **Performance:** `distance_to`→`distance_squared_to` / `length()`→`length_squared()` on crowd
+  hot paths (crowd_manager, hunter_ai, crowd_thinning, behavior_history); hunter LOS raycast now
+  caches its query object and runs at ~10Hz instead of every frame.
+- **Readability/dedup:** named `HOST_PEER_ID` (all `rpc_id(1, …)` routed through it); removed dead
+  `_active_peer`; one `_remote_sender_controls_this_character()` anti-cheat helper (was copied 4×);
+  shared `_apply_clean_kill`/`_apply_whiff`; named the kill targeting mask; Escape/F3 moved to
+  Input Map actions (`ui_cancel` / new `toggle_net_debug`).
+- **Art pipeline:** `character_visual` derives layer scale from the actual sheet, so 32px↔48px art
+  just works (no second hand-synced constant); `ingest_sprite.py` hardened (input validation,
+  no silent overwrite, frame-count errors, natural sort, `--enforce-palette`); `generation_manifest.csv`
+  set to the keep-importer so Godot stops generating `.translation` junk.
+- **Correctness/pillar/security:** whiff_recovery restores state when toggled off mid-session;
+  `npc_pool_by_slot` filters to CROWD_SAFE items (pillar invariant enforced, no-op today);
+  documented the `_look_key` multi-slot TODO and the `_submit_loadout` server-authoritative
+  ownership TODO (must validate ids server-side before any cosmetic is paid).
+
+Deferred (need runtime testing, not done blind): decomposing the 1,706-line `online_match.gd`
+god object, and folding all visual slots into `_look_key`. Both are documented in the audit.
+
 ## Phase 11 — Art pipeline (PixelLab as the asset backbone)  ·  branch `phase-11-art-pipeline`  ·  ART_PIPELINE.md
 
 Hardlines **PixelLab** as the canonical art source for **sprites AND maps**. Integrates after Phase 10
