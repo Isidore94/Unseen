@@ -43,7 +43,9 @@ const SHEET_TEXTURES := [
 	preload("res://assets/sprites/townswoman_sheet.png"),
 ]
 
-const FRAME_PX := 32          ## One frame is 32x32 px in the source sheet.
+const FRAME_PX := 32          ## One frame is 32x32 px in the source sheet. PRODUCTION TARGET is 48
+                             ## (ART_PIPELINE.md §2) — flip this to 48 (sheets become 192x192) when the
+                             ## first real 48px sheets replace the 32px placeholders. Don't flip earlier.
 const SHEET_COLUMNS := 4      ## 4 walk-cycle frames per direction.
 const SHEET_ROWS := 4         ## 4 directions (down / up / left / right).
 
