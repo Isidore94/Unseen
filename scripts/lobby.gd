@@ -21,6 +21,10 @@ var _code_label: Label = null
 var _roster_label: Label = null
 var _status_label: Label = null
 var _start_button: Button = null
+## Host-only: which connected client peers have ticked "Ready up" (peer int -> true). The host is
+## implicitly ready (they press Start), so this only tracks the OTHER players. Start stays disabled
+## until every entry is ready.
+var _ready_peers: Dictionary = {}
 var _map_picker: OptionButton = null
 var _tool1_picker: OptionButton = null
 var _tool2_picker: OptionButton = null
@@ -63,6 +67,8 @@ func _ready() -> void:
 
 func _on_roster_changed(_peer_id: int) -> void:
 	_refresh()
+	if multiplayer.is_server():
+		_broadcast_lobby_status()  # keep clients' "(x/y ready)" line current as people come and go
 
 
 func _build_ui() -> void:
@@ -215,9 +221,18 @@ func _build_ui() -> void:
 		_start_button.pressed.connect(_on_start_pressed)
 		panel.add_child(_start_button)
 	else:
+		# READY-UP: each non-host player tells the host when they're set. The host can't start until
+		# everyone here has ticked this (see _refresh / _all_clients_ready).
+		var ready_check := CheckButton.new()
+		ready_check.text = "Ready up"
+		ready_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		ready_check.toggled.connect(func(on: bool) -> void: _set_ready_local(on))
+		panel.add_child(ready_check)
 		_status_label = Label.new()
-		_status_label.text = "Waiting for the host to start..."
+		_status_label.text = "Tick 'Ready up' when you're set — the host starts once everyone is ready."
 		_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_status_label.custom_minimum_size = Vector2(420.0, 0.0)
 		panel.add_child(_status_label)
 
 	var leave_button := Button.new()
@@ -260,8 +275,14 @@ func _refresh() -> void:
 			_code_label.text = "LAN join code: %s\n(same-network play; use Host online for internet)" % _host_code()
 		if _start_button != null:
 			var enough := count >= MIN_PLAYERS_TO_START
-			_start_button.disabled = not enough
-			_start_button.text = "Start game" if enough else "Need %d players to start" % MIN_PLAYERS_TO_START
+			var all_ready := _all_clients_ready()
+			_start_button.disabled = not (enough and all_ready)
+			if not enough:
+				_start_button.text = "Need %d players to start" % MIN_PLAYERS_TO_START
+			elif not all_ready:
+				_start_button.text = "Waiting for all to ready up (%d/%d)" % [_ready_count(), _client_count()]
+			else:
+				_start_button.text = "Start game"
 	else:
 		_code_label.text = "Connected — waiting in the lobby."
 
@@ -290,7 +311,7 @@ func _on_copy_code_pressed(button: Button) -> void:
 
 
 func _on_start_pressed() -> void:
-	if _player_count() < MIN_PLAYERS_TO_START:
+	if _player_count() < MIN_PLAYERS_TO_START or not _all_clients_ready():
 		return
 	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice.
 	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.COMPACT
@@ -305,6 +326,66 @@ func _begin_match(map_id: int) -> void:
 	NetworkManager.selected_map = map_id
 	NetworkManager.small_arena = map_id != NetworkManager.Map.FOUR_ZONE
 	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
+
+
+# === ready-up =============================================================
+# Each non-host player ticks "Ready up"; the host can only start once EVERY connected client is ready
+# (the host themselves is implicitly ready — they press Start). Clients see a live "(x/y ready)" count.
+
+# A client toggled their ready box → tell the host. (The host has no box; it starts the game instead.)
+func _set_ready_local(on: bool) -> void:
+	if multiplayer.multiplayer_peer == null or multiplayer.is_server():
+		return
+	_set_ready.rpc_id(NetworkManager.HOST_PEER_ID, on)
+
+
+# Client → host: record this client's ready state, re-evaluate the Start button, and echo the count
+# back to everyone so each lobby shows the same "(x/y ready)".
+@rpc("any_peer", "reliable")
+func _set_ready(is_ready: bool) -> void:
+	if not multiplayer.is_server():
+		return
+	_ready_peers[multiplayer.get_remote_sender_id()] = is_ready
+	_refresh()
+	_broadcast_lobby_status()
+
+
+# Host: are ALL connected clients ready? (get_peers() on the host is everyone EXCEPT the host.)
+func _all_clients_ready() -> bool:
+	if not multiplayer.is_server():
+		return false
+	for p in multiplayer.get_peers():
+		if not bool(_ready_peers.get(p, false)):
+			return false
+	return true
+
+
+func _ready_count() -> int:
+	var n := 0
+	for p in multiplayer.get_peers():
+		if bool(_ready_peers.get(p, false)):
+			n += 1
+	return n
+
+
+func _client_count() -> int:
+	return multiplayer.get_peers().size() if multiplayer.multiplayer_peer != null else 0
+
+
+# Host → clients: the current "(x/y ready)" so each waiting player sees the same lobby status.
+func _broadcast_lobby_status() -> void:
+	if not multiplayer.is_server():
+		return
+	var ready := _ready_count()
+	var total := _client_count()
+	for p in multiplayer.get_peers():
+		_receive_lobby_status.rpc_id(p, ready, total)
+
+
+@rpc("authority", "reliable")
+func _receive_lobby_status(ready: int, total: int) -> void:
+	if _status_label != null:
+		_status_label.text = "Waiting for the host to start — %d/%d players ready." % [ready, total]
 
 
 func _return_to_menu() -> void:
@@ -409,6 +490,7 @@ func _sync_taken() -> void:
 func _on_lobby_peer_left(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
+	_ready_peers.erase(peer_id)  # a leaver can't hold up the ready gate
 	var freed := false
 	for id in _assassin_claims.keys():
 		if int(_assassin_claims[id]) == peer_id:
