@@ -1,184 +1,140 @@
-# Unseen — Cosmetic & Identity System Architecture
+# UNSEEN — Cosmetic & Identity System (as-built architecture)
 
-## Goal of this task
-
-Lay the **foundational architecture** for cosmetics, animations, and profile
-identity so these can be added later as **data + art only**, with no code
-changes. Do **not** build the shop, currency, or any store UI in this pass.
-
-The test of success: after this task, adding a new hat = adding one art file
-and one data entry. Adding the shop later = building UI on top of an inventory
-system that already exists. If adding cosmetics later requires touching the
-character rig, the netcode, or the gameplay loop, this task failed.
-
-Build the plumbing. Leave the content empty (or placeholder).
-
-## Constraints / respect existing patterns
-
-- Godot 4.7, GDScript.
-- Keep it **data-driven** (same pattern as the `DISTRICTS` array). Cosmetics
-  are data, never hardcoded.
-- Prefer **runtime construction** over hand-authored `.tscn` trees, consistent
-  with `MapBuilder.gd`.
-- Assets are **SVG**, recolored at runtime via `modulate`. The rig must support
-  per-layer palette swaps with no extra art.
-- Do not over-build. No shop, no currency, no unlock progression logic, no
-  rarity-based store sorting. Placeholder art is fine and expected.
+> **Status:** the foundational plumbing described here is **built**; cosmetic *content* is mostly placeholder.
+> This doc was originally a build brief; it has been rewritten (audit 2026-06-29) to describe **what the code
+> actually does today**, so it can be trusted as ground truth. Source: `scripts/character_visual.gd`,
+> `scripts/cosmetics/*`, `scripts/faceplate_row.gd`, `scenes/character_visual.tscn`, `assets/sprites/*`.
+>
+> **The success test (still the design north star):** adding a new hat should be *one art file + one data entry*,
+> with no change to the rig, the netcode, or the gameplay loop. The architecture below holds that line.
 
 ---
 
-## 1. Composable character rig (the foundation everything depends on)
+## 0. The one invariant: sameness is sacred (Pillar #1)
 
-Build a single `PlayerCharacter` scene/script used by **everything that draws a
-person**: local player, remote players, NPC crowd, menu preview, results
-screen, scoreboard portraits. One rig, every context. No separate NPC art path.
-
-Four stacked layers, composited against **one shared origin**:
-
-1. `body`   — legs / base
-2. `outfit` — top + bottom (one layer for now)
-3. `head`   — head / hat
-4. `weapon` — static, holstered on back or hip (`Sprite2D`, not animated
-   independently — it rides the body)
-
-Requirements:
-
-- All animated layers share **one animation clock** — they play the same
-  animation name in lockstep. A single `AnimationPlayer` driving the layers, or
-  synced `AnimatedSprite2D`s — your call, but they must never desync.
-- **Anchor/origin is standardized and locked now.** Pick one origin (feet or
-  hips), document it in a reference comment, and make every layer composite
-  against it. Swapping a hat must not shift the character by a pixel. This is
-  the single most painful thing to fix later — get it right first.
-- Z-order is fixed and explicit per layer.
-- Define a single function `apply_loadout(loadout)` that sets the texture and
-  `modulate` on each layer from a loadout. This is the **only** place cosmetics
-  touch the rig. Used identically by players, NPCs, and previews.
+**Every person in the game is drawn by the same rig** — local player, remote players, NPC crowd, menu preview,
+results portraits. There is **no separate NPC art path**. A cosmetic is pure data applied to that shared rig. This
+is what makes a human indistinguishable from a civilian. The crowd-safe veto (§7) and the per-viewer reskin (§6)
+exist to defend it.
 
 ---
 
-## 2. Cosmetic items as data
+## 1. The character rig (`CharacterVisual`, the foundation)
 
-Define a `CosmeticItem` resource (`class_name CosmeticItem extends Resource`)
-with at minimum:
+`scripts/character_visual.gd` (`class_name CharacterVisual`, scene `scenes/character_visual.tscn`). Built **in code**
+(via `_make_layer`) so every layer is pixel-aligned to one origin — not hand-authored in a `.tscn`.
 
-- `id` (stable string, never reused)
-- `slot` (enum: BODY, OUTFIT, HEAD, WEAPON, KILL_ANIM, WIN_ANIM, EMOTE,
-  BANNER, BADGE, TITLE)
-- `display_name`
-- `art_path` (SVG, or animation reference for the anim slots)
-- `default_palette` (for modulate-based recoloring; null = no recolor)
-- `acquisition` (enum stub: DEFAULT, EARNABLE, PURCHASE — just metadata for now,
-  no logic behind it)
+**Four stacked layers, one locked origin (the character's centre / hips):**
 
-Build a central **registry** that loads all `CosmeticItem`s into a lookup by id
-(dictionary or array of `.tres`, matching the `DISTRICTS` style). Seed it with
-2–3 placeholder items per slot so the system is testable. Nothing more.
+| z | layer | what it is | animates? |
+|---|---|---|---|
+| 0 | `body` | the animated base sprite sheet (walk + attack) | yes (walk cycle) |
+| 1 | `outfit` | recolourable overlay (top/bottom) | yes — in lockstep with body |
+| 2 | `head` | recolourable overlay (head/hat) | yes — in lockstep with body |
+| 3 | `weapon` | holstered weapon, a static 1×1 frame | no — rides the body |
 
----
+- **Locked anchor.** Every layer uses the same `sprite_offset` + `centered = true` and composites against the one
+  origin, so swapping a cosmetic can never shift the character by a pixel. (The single most painful thing to fix
+  later — it is fixed now. Don't unpick it.)
+- **One animation clock.** The body advances its walk frame; `outfit.frame` and `head.frame` are copied from the
+  body each frame, so overlays can never desync. Attack: if an `ATTACK_SHEETS` entry exists for the current body,
+  the body swaps to the attack texture, plays 4 swing frames over ~0.5s, and reverts.
+- **One entry point.** `apply_loadout(loadout)` is the **only** place cosmetics touch the rig (used identically by
+  players, NPCs, and previews). It reads body id → registry index → `set_appearance(index)`, then applies the
+  outfit/head/weapon overlays. Gameplay never reaches into visuals (coding rule #1).
 
-## 3. Loadout abstraction
+**Frame grid:** sheets are **4×4 of 48px frames = 192×192px**. `SHEET_COLUMNS = 4` (walk-cycle frames),
+`SHEET_ROWS = 4` (facings: row 0 down, 1 up, 2 left, 3 right). `FRAME_PX = 48` is only a fallback — the real frame
+height is derived from the texture at runtime (`texture.height / vframes`) and the layer is scaled to a fixed
+`display_height`, so 32px or 48px art both render correctly without a second constant.
 
-A `Loadout` is just the set of equipped cosmetic ids per slot, plus any palette
-choices. It is **pure data, fully separable from the rig**, and must be:
-
-- Constructible from a **compact payload** (ints/ids only — no textures, no
-  node references). This matters for netcode (see §5).
-- Serializable to/from that payload both directions.
-
-Player has a loadout. NPCs get **randomized** loadouts assembled from the
-available cosmetic pool (see §4). `apply_loadout` consumes a `Loadout` and
-nothing else.
-
----
-
-## 4. NPC crowd uses the same rig + pool
-
-NPCs are player-sprite instances. The crowd spawner should:
-
-- Use the `PlayerCharacter` rig (not a separate NPC sprite).
-- Build each NPC's loadout by **randomly combining** items from the cosmetic
-  pool, so no NPC is guaranteed to mirror any one player's exact outfit.
-- Leave a clean hook / config flag for where the pool comes from (global default
-  pool now; "lobby players' cosmetics" later). Don't implement the lobby-sourced
-  version yet — just don't wall it off.
+> **⚠ DRIFT CORRECTED:** an earlier version of this spec said assets are **SVG, recoloured via `modulate`**.
+> Ground truth: the **body sheets are full pixel-art PNGs** (the PixelLab pipeline, `ART_PIPELINE.md`), already
+> 48px/192×192. `modulate` recolour still applies to the **overlay** layers — but the outfit/head/weapon cosmetics
+> currently have **empty `art_path`**, so overlays are invisible placeholders until real art lands.
 
 ---
 
-## 5. Network replication (do this now, not later)
+## 2. Cosmetic items as data (`CosmeticItem`)
 
-Remote clients must render each other's cosmetics. Design so a player's
-appearance replicates as a **small loadout payload (ids/ints only)**, and the
-remote rig is reconstructed via `apply_loadout`. Never replicate textures or
-node state.
+`scripts/cosmetics/cosmetic_item.gd` — a pure `Resource`, never draws. Fields:
 
-- Sync the loadout payload **once on join / on change**, not per-frame. It's
-  static during a match.
-- Keep it consistent with the existing bandwidth-optimized crowd netcode — this
-  should add near-zero ongoing bandwidth.
-- Confirm NPC loadouts are derived deterministically (shared seed) or replicated
-  compactly, so all clients see the same crowd without per-NPC state spam.
+- `id` (StringName, stable, never reused) · `slot` · `display_name` · `art_path` · `default_palette` (Color)
+- `acquisition` (DEFAULT / EARNABLE / PURCHASE — metadata only, no logic yet)
+- `bucket` (CROWD_SAFE / REVEAL_MOMENT / OUT_OF_MATCH — the monetization safety class; only CROWD_SAFE may appear
+  in-match, enforced by `is_crowd_safe()`), `rarity`, `season`.
+- **Slots:** `BODY, OUTFIT, HEAD, WEAPON, KILL_ANIM, WIN_ANIM, EMOTE, BANNER, BADGE, TITLE`.
+- `CosmeticItem.make(...)` builds placeholder items in code, so the registry is seedable without `.tres` files.
 
 ---
 
-## 6. Animation trigger hooks (slots, not content)
+## 3. The registry (`CosmeticRegistry`, autoload)
 
-Wire the **event plumbing** for three animation cosmetic types, with
-placeholder/no-op animations behind them:
+`scripts/cosmetics/cosmetic_registry.gd` — the global lookup (`CosmeticRegistry.get_item(id)`) and the crowd pool.
 
-- `KILL_ANIM`  — fired on successful assassination
-- `WIN_ANIM`   — fired on match win / results screen
-- `EMOTE`      — fired on player input, mid-match, manually triggered
-
-Expose one entry point, e.g. `play_cosmetic_animation(type)`, wired to the
-actual game events now (`on_kill`, `on_match_won`, emote input). The animation
-itself can be a stub. The point is the **trigger path exists and is connected**
-so dropping in real animations later is content-only.
-
-Add a stubbed `kill_card` hook too (the brief visual the **victim** sees on
-death) — just the event fire + a no-op handler. Cheap to stub now, annoying to
-thread through later.
+- **Body roster (15 sheets), id ↔ index kept in sync** with `CharacterVisual.SHEET_TEXTURES`:
+  - indices **0–10** = commoner looks (`body_civilian`, `body_com_brown`, … `body_com_water`),
+  - indices **11–14** = premium assassin skins (`body_norse_hammer`, `body_crusader`, `body_revolution`,
+    `body_egyptian`) — these have attack sheets; the commoners (except `civilian_base`) do not.
+  - `COMMONER_BODY_IDS` (0–10) and `ASSASSIN_BODY_IDS` (11–14) split the roster.
+- **Crowd pool config:** `active_filler_bodies` (3–5 commoner looks chosen per match), `active_assassin_bodies`
+  (the 4 assassin skins), `assassin_crowd_fraction` 0.5 (the 50/50 commoner/assassin crowd mix). `npc_pool()`
+  returns commoner bodies + `outfit_none`/`hat_none`/`weapon_none` (no overlay art stacked on filler).
+- **Crowd-safe veto:** `_crowd_safe_ids_in_slot()` ensures NPCs can only wear registry-marked safe cosmetics — the
+  enforcement point for Pillar #1 against future paid cosmetics.
 
 ---
 
-## 7. Profile identity (account metadata, separate from rig)
+## 4. Loadout (`Loadout`, pure data + wire format)
 
-Define a `PlayerProfile` structure holding `banner`, `badge`, `title` (each a
-cosmetic id). This is **account-level**, fully separate from the character rig.
-Add display hooks where identity surfaces: scoreboard, results screen, player
-name tag. Placeholder art/text is fine.
-
----
-
-## 8. Ownership / inventory (minimal)
-
-Add an account-level **inventory**: a set of owned cosmetic ids. The equip path
-must check ownership before equipping (everyone owns the DEFAULT items at start).
-
-- No shop, no currency, no purchase flow, no unlock conditions.
-- Just: an owned-set, defaults granted to all, and equip gated on ownership.
-- This is the seam the shop and progression bolt onto later without touching
-  anything else.
+`scripts/cosmetics/loadout.gd` — `equipped` (slot → cosmetic id) and `palettes` (slot → Color override; a
+`NO_RECOLOR` sentinel clears it). `to_payload()` / `from_payload()` give the **compact wire format**
+(`{items:{…}, palettes:{…}}`) — **ids only, never textures or node refs**. `Loadout.randomized(pool, rng)` builds a
+deterministic NPC loadout from a seeded RNG. This is what crosses the network (see §6).
 
 ---
 
-## Out of scope (do not build)
+## 5. Inventory & profile (account level)
 
-- Shop / store UI
-- Currency or premium currency
-- Battle pass / progression / unlock conditions
-- Real cosmetic art or real animations (placeholders only)
-- Lobby-sourced NPC cosmetic pool (leave the hook, don't implement)
+- **`CosmeticInventory`** (autoload) — `_owned` set (all DEFAULT items granted at start), `_equipped` Loadout, and
+  `decoy_body_id` (the NPC-disguise seam, see §6). `equip(slot, id)` **refuses unless `owns(id)`** — the single
+  ownership gate the future shop bolts onto. Emits `loadout_changed`.
+- **`PlayerProfile`** (`banner` / `badge` / `title`, StringName ids) — account identity, **separate from the
+  in-world rig**; surfaces in menus/scoreboard. Display hooks exist; content is placeholder.
 
-## Suggested order
+---
 
-1. Character rig + locked anchor/origin + `apply_loadout`
-2. `CosmeticItem` resource + registry + placeholder items
-3. `Loadout` + compact serialization
-4. NPC crowd on the shared rig with randomized loadouts
-5. Loadout network replication
-6. Animation trigger hooks + kill_card stub
-7. `PlayerProfile` + display hooks
-8. Inventory + ownership-gated equip
+## 6. Identity hiding (per-viewer) — how a human disappears
 
-Commit after each step so the integration is reviewable in isolation.
+- **`set_appearance(index:int)`** stays an int (a shim for the existing int-based crowd netcode); `apply_loadout`
+  bridges StringName ids → that index via the registry.
+- **NPC-disguise seam:** a player can equip a commoner body publicly while their real assassin id is stashed in
+  `decoy_body_id`; `equipped_payload()` ships that decoy id, and the match clones it into the crowd.
+- **Per-viewer crowd reskin (online):** on **each machine**, the crowd is rebuilt from copies of the *other*
+  players' looks + filler, with **your own look explicitly excluded** — so on every screen the humans blend into
+  look-alikes and your own body is never duplicated near you. This runs **locally, after replication** (see
+  `MULTIPLAYER_PLAN.md` §8/§9); it does not change what's on the wire.
+- **`FaceplateRow`** renders the deliberate reveal plates (red = your target, blue = a 100-exposure opponent) by
+  cropping frame 0 of the revealed body sheet. Reveals can return "?" when the subject is disguised.
+
+> **Identity-leak caveat (out of scope for this doc, tracked in `MULTIPLAYER_PLAN.md`):** the per-viewer reskin
+> masks looks *visually and locally*, but `controlling_peer_id` is still replicated per player, which is the real
+> over-the-wire identity leak. The cosmetic layer can't fix that; the netcode layer must.
+
+---
+
+## 7. Animation hooks & monetization safety (built as plumbing)
+
+- Event hooks exist and are wired: `KILL_ANIM` (on assassination), `WIN_ANIM` (on results), `EMOTE` (on input), and
+  a `kill_card` stub (the brief visual the **victim** sees). The animations themselves are stubs — dropping in real
+  ones is content-only.
+- **In-match cosmetics must be `CROWD_SAFE`** (§2). This is the rule that stops a future paid cosmetic from making a
+  player spottable — pay-to-be-seen is a Pillar #1 violation and the registry vetoes it.
+
+**Out of scope (deliberately not built):** shop/store UI, currency, battle pass / unlock logic, real overlay art,
+the lobby-sourced NPC cosmetic pool (the hook exists; the implementation is the per-viewer reskin in the match).
+
+---
+
+*Cosmetic & identity spec — rewritten as-built 2026-06-29. Pairs with `ART_PIPELINE.md` (how the sheets are made)
+and `MULTIPLAYER_PLAN.md` (how looks replicate and how identity leaks).*

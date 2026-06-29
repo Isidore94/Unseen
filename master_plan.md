@@ -1,7 +1,14 @@
 # UNSEEN — GAME MECHANICS
 ### Master design reference for all gameplay systems
 
-> **Purpose:** This file is the single source of truth for *what the game is and how it plays* — every mechanic, rule, and design decision we've settled on. It pairs with `buildplan.md` (which covers *how and when to build*). When implementing any system, read the relevant section here for intent, then check the build plan for sequencing. Where a value is "tunable," it must be an `@export` variable, not a hardcoded number.
+> **Purpose:** This file is the single source of truth for *what the game is and how it plays* — every mechanic, rule, and design decision we've settled on. When implementing any system, read the relevant section here for intent. Where a value is "tunable," it must be an `@export` variable, not a hardcoded number.
+
+> **⚠ AS-BUILT RECONCILE (audit 2026-06-29).** This doc is *design intent* and has drifted from the code in
+> places. A code audit added inline **`AS-BUILT`** callouts below wherever the shipped behaviour differs from the
+> intent — the intent text is **kept on purpose** (it's still the target), the callout records what the code does
+> *today*. For online specifics (kill path, contracts, death, spawning, identity replication) the ground-truth
+> reference is **`MULTIPLAYER_PLAN.md`**; for the identity rig see **`COSMETIC_SYSTEM_SPEC.md`**. The old
+> `buildplan.md` referenced here no longer exists.
 
 ---
 
@@ -66,6 +73,17 @@ When a player's exposure crosses a high threshold (tunable), other players begin
 - Higher exposure could widen who sees the arrow / sharpen its direction (tunable escalation), so a reckless, high-exposure player becomes findable by more hunters at once.
 - This pairs with the detection system in §5: the arrow gets a hunter to the neighborhood; exposure-driven detection determines whether they can then lock you.
 
+> **⚠ AS-BUILT (audit 2026-06-29):** `exposure_arrow.gd` implements **two distinct arrows**, and this section
+> conflates them. (1) The **EXPOSURE arrow** fires when a target's exposure ≥ `arrow_threshold` (default **100** —
+> i.e. *full* exposure, the cliff) and points at a **precise, continuous bearing** (it is *not* a vague
+> direction); it vanishes the instant the target is on your screen and lingers `exposure_linger_seconds` (3s)
+> after they cool. (2) The **HUNT / flash arrow** (`flashing_mode`, enabled after you clear your marks) points at
+> your assigned target, is **cardinal-quantized to N/E/S/W** (the "general direction, not a dot" idea), and
+> blinks rather than fades. So the *coarse, un-triangulatable* arrow is the hunt arrow; the *precise* arrow is the
+> exposure-cliff one. **Not implemented:** the §3 "threshold tightens over the round" curve — the threshold is a
+> static 100. The §3.1 "higher exposure widens who sees the arrow" idea exists only as the **9F behavioral_flag**
+> experiment (flagged), not in the core arrow.
+
 **Color-coded arrows (multi-player readability):** in lobbies with several players, each assassin's arrow is **color-coded** so hunters can differentiate threats at a distance ("the green assassin is over-exposed to the north; the orange one is east").
 - **Guardrail — this must NOT break Pillar #1 (sameness is sacred).** The *arrow* carries the color; the *character it points to remains visually identical to every civilian and every other player.* The color tells you which assassin and roughly where — never which on-screen figure is them. When that player comes on-screen the arrow (and its color) vanishes, dropping you back into a pure read-the-crowd identification with no color assistance.
 - **Open question (decide in playtest):** does color map to player identity (each player owns a fixed color all match), to *relationship* (e.g. one color for your assigned target, another for your hunter), or both? Relationship-based coloring may read more intuitively in a free-for-all contract web; test it.
@@ -107,8 +125,22 @@ Every player is simultaneously a hunter (of their target) and prey (of whoever i
 - **Wrong-target penalty:** killing a civilian or a non-target player is punished (large exposure spike, score penalty, and/or temporary stun). You must be sure before you strike — this preserves the social-deduction tension and prevents spray-killing.
 - **Server-authoritative:** kill validity is always confirmed by the authority (designed this way from day one for the online port). Clients never self-confirm a kill.
 
+> **⚠ AS-BUILT (audit 2026-06-29):** the kill exposure spike is **permanent committed exposure**
+> (`kill_exposure_spike` 22), not a "~2–3s" temporary bump — this section's "for ~2–3s" wording contradicts §3's
+> own (correct) permanent-floor model; trust §3. Wrong-target = `wrong_commit_exposure` 40 (also permanent), and
+> the victim dies anyway. The host re-validates sender, range, layer, and target group on the **online** path
+> (`request_kill`). There are **three** kill code paths (online blade, online poison, offline harness) with real
+> differences — see `MULTIPLAYER_PLAN.md` §4. Poison ships as a **shared tool**, deliberately silent (no strike,
+> no crowd panic), exposure paid at tool use.
+
 ### 6.1 Death, elimination, and modes (no respawns)
 - **No respawns.** A killed player is out for the round. This keeps kills meaningful and preserves the AC-Rearmed-style PvP climax (see §7/§12).
+
+> **⚠ AS-BUILT (audit 2026-06-29):** this matches the code today — death is terminal for the round
+> (`_on_player_killed` sets `_dead_by_peer`, the loser enters free-fly **spectate**, the match ends at ≤1 alive,
+> and the **winner is the highest scorer, not the survivor**). NOTE: an **inverted, respawn-based** mode is under
+> active design — if/when it lands it will live behind a feature flag (so this elimination loop stays selectable)
+> and is documented in `MULTIPLAYER_PLAN.md` rather than overwriting this section.
 - **Casual mode:** elimination doesn't matter much — rounds are short, you re-queue. Death is low-stakes. (Decide in playtest what a dead player does meanwhile: spectate, quick post-death filler, or immediate re-queue — casual must not become dead time.)
 - **Ranked mode:** you are scored on **performance, not just survival** — how well you played, how low your average exposure was, kill cleanliness, speed/placement, objectives completed. A run you died early in still earns a meaningful score, so elimination never feels like "you lose, go watch." **The ranked ladder is built on this scoring spine** (see §10) — it's a core long-term system, not an afterthought.
 
@@ -121,6 +153,13 @@ This PvE-into-PvP structure is our key answer to the genre's fatal flaw (fun for
 1. **PvE phase — marks:** each player must reach **1–2 NPC "marks"** at specific, intentionally **exposed** locations on the map and eliminate them. Going for a mark forces you out of safe crowd cover — this is deliberate risk.
 2. **PvP phase — the target:** after completing your marks, you're assigned a **real player target** to hunt — while you are simultaneously someone else's target.
 3. **Win condition:** complete your full contract (marks + target) cleanest and fastest. Scoring rewards low average exposure and fast, clean kills (see §10).
+
+> **⚠ AS-BUILT (audit 2026-06-29):** the marks→target structure is built **online** (`online_match.gd`):
+> `marks_per_player` (2) secret marks, then a **one-hunter/one-prey target ring** (`_build_target_ring`) that
+> **already re-links a hunter to the next living player when their target dies** (`_relink_hunters_of`). The
+> simpler **offline** harness (`contract_manager.gd`) has marks→a single target and **no ring** — that
+> offline/online split is a known inconsistency. The §7.1 "earned target pings" speed reward is **not** wired as
+> described; first-to-finish-marks instead earns the **red-plate target reveal** (`_receive_target_reveal`).
 
 The objective locations being risky creates the core loop rhythm: **dart out to do something dangerous, then slip back into the crowd through a route only you know.**
 
@@ -186,6 +225,12 @@ Fixed teleport pads placed around the map let players reposition quickly — des
   - Destinations are **known/fixed pads**, so a hunter can learn them and stake out exits — a teleport escape can be predicted and countered.
   - Optionally: a brief tell at the **destination pad** on arrival (a shimmer/sound) so teleporting isn't a silent vanish.
 
+> **⚠ AS-BUILT (audit 2026-06-29):** `portal.gd` implements **instant** teleport pads (and trapdoors / free
+> underground passages) differentiated only by `exposure_cost` + `global_cooldown` + colour. The §8.5
+> **exposure-scaled cast time / channel root** and the **interruptible-on-damage** rules are **not implemented** —
+> the only friction is the shared cooldown and the exposure cost. The "earned free teleport for clean play" reward
+> is therefore implicit (low exposure stays under the arrow cliff) rather than an explicit cast-time payout.
+
 **Design rule for all map mechanics — every advantage has a counter.** A secured passage can be broken; a trapdoor used in sight betrays you; a hiding spot can be checked. If a feature grants guaranteed, counter-less safety, it's wrong and must be softened. This is the rule that keeps the game fun past 200 hours instead of solved in 10.
 
 ---
@@ -202,11 +247,23 @@ A **limited, consumable** resource that powers map control. The economy is built
 
 **Tradeoff that keeps players aggressive:** in a future scoring/economy tie-in, spending tools on defense should cost progress toward winning, so the cautious player who locks everything down falls *behind*. We reward productive risk, the inverse of what made *Murderous Pursuits* feel timid.
 
+> **⚠ AS-BUILT (audit 2026-06-29):** the shipped tool economy is **two equipped tools per player**
+> (`ItemComponent`), charge-based with cooldowns, from a pool of **SMOKE, DISGUISE, MORPH, DECOY, POISON** — each
+> costs committed exposure on use (10/14/16/8/12). The §9 "spend a tool to **secure a passage**, hunter spends a
+> tool to **break the lock**" duel is **not implemented**: passage/rooftop control is via `access_point.gd`
+> **claim** (pays `claim_exposure_cost` 20) + a shared `global_cooldown` (15s), with no tool-vs-tool break. The
+> single-occupancy "something lurks in the darkness" rule (§8.1a) is likewise not wired yet.
+
 ---
 
 ## 9A. CLASSES / KITS (ASYMMETRIC ASSASSIN ARCHETYPES)
 
 > **CRITICAL SEQUENCING — DO NOT BUILD UNTIL AFTER THE PHASE 4 FUN TEST.** Asymmetric classes are the single hardest thing to balance in competitive multiplayer and they multiply testing/tuning work per class. Prototype the *entire* game with ONE shared kit first (the base assassin: blend-walk + melee kill). Prove the core loop is fun with two humans + bots. Only then layer classes on as the depth/replayability system. Building four asymmetric kits before the base loop is proven is building on sand.
+
+> **⚠ AS-BUILT (audit 2026-06-29):** correctly **not built** — there is no class system. The game runs on one
+> shared kit (blend-walk + melee + two chosen tools). Of the planned archetypes, only the **Poisoner's** mechanic
+> exists, and as a **shared tool** (POISON), not a class: silent delayed kill, exposure paid on application —
+> exactly the §9A "exposed now, payoff later" shape.
 
 **The shared balancing currency:** every class is balanced on **commitment vs. vulnerability** — more kill power must be bought with a larger window of exposure, a delay, a tell, or a positional constraint. Every kit must obey **Pillar #2 (acting is exposing)** and **Pillar #4 (every advantage has a counter)**. If a kit can kill with no exploitable window, it's broken by definition.
 
@@ -255,6 +312,11 @@ Planned starting classes (all tunable, all subject to playtest revision):
 
 - Small player counts (target ~4–8 humans per match) plus the NPC crowd. Small counts keep lobbies fillable and suit the format.
 - Free-for-all contract web (everyone hunts someone, everyone is hunted) is the default mode, mirroring AC Brotherhood/Murderous Pursuits.
+
+> **⚠ AS-BUILT (audit 2026-06-29):** the online code implements this as a **single ring/cycle**
+> (`_build_target_ring`: peer *i* → peer *i+1*, wrapping), so everyone has exactly one target and is exactly one
+> other's prey — no mutual pairs, nobody targetless. It re-links to the next living player on a death. Player
+> count today is capped at **4** (`MAX_PLAYERS`), not the §11 "~4–8" target.
 - Round-based, relatively short matches that produce clip-able moments (a perfect crowd-blend kill, a last-second trapdoor escape) — important for organic/viral growth.
 
 ---
@@ -312,7 +374,8 @@ If a future feature conflicts with one of these, the feature is wrong:
 
 ---
 
-*Mechanics reference v0.4 — June 2026. Pairs with buildplan.md.*
+*Mechanics reference v0.4 — June 2026. Online ground truth: `MULTIPLAYER_PLAN.md`.*
+*Audit 2026-06-29: inline `AS-BUILT` callouts added to reconcile intent with shipped code (arrow tiers §3.1, permanent kill exposure §6, elimination/no-respawn confirmed §6.1, online contract ring §7/§11, instant teleports §8.5, shared-tool economy & no passage-lock §9, classes unbuilt/Poisoner-as-tool §9A). Intent text preserved; callouts record present behaviour.*
 *v0.2: exposure arrow (§3.1), single-occupancy passages (§8.1a), asymmetric classes (§9A).*
 *v0.3: color-coded arrows + sameness guardrail (§3.1), teleport pads + free-teleport reward (§8.5).*
 *v0.4: intended exposure arc / pacing model (§3), death + casual/ranked rules, no respawns (§6.1), speed-reward target pings (§7.1), how-you-kill micro-decision (§7.2), Poisoner & Crossbow rebalanced (§9A), exposure-scaled teleport cast time (§8.5), Known Balance Risks (§15).*

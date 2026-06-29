@@ -5,6 +5,17 @@ Decision: PixelLab becomes the canonical source for game art — characters, NPC
 cosmetics, weapons, items, map tiles, UI — with a mandatory hand-finish pass for
 ship quality.
 
+> **⚠ AS-BUILT (audit 2026-06-29).** Status updates vs. the original draft below:
+> **(1)** The 48px/192×192 grid is **live, not pending** — all 15 body sheets are real 48px PixelLab pixel art and
+> the rig's `FRAME_PX` is already 48 (the "still 32 today" notes below are stale; see §2).
+> **(2)** The map is **procedurally drawn**, not SVG and not (yet) a `TileMap`: `scripts/test_map_01.gd`
+> `_draw_stylized()` renders the stylized streets/roofs in code from the grid `LAYOUT`. A PixelLab cobblestone/roof
+> **tileset pass was prototyped and then reverted** on this branch — so "SVG → TileMap" below is best read as
+> "procedural `_draw()` → TileMap", a migration still ahead, optional.
+> **(3)** The ingest script **exists** (`tools/ingest_sprite.py`, plus `tools/validate.sh`).
+> **(4)** `assets/sprites/README.txt` is **stale** (claims 128×128/32px and old NPC names) and has been corrected.
+> The §2/§4/§9 checkboxes have been updated to match.
+
 This doc is the architecture underneath everything: the foundational decisions to
 lock, what to change in the existing code, what to build new, the workflow going
 forward, and the risks to manage. Per-cosmetic generation steps live in
@@ -67,10 +78,9 @@ Status below: **[x] = locked this session**, **[ ] = still to do.**
 - [x] **Canonical resolution / grid:** **48×48 base** (Aaron's call — chosen for the richer, cleaner
       urban look: more detail headroom per tile + character — skylights, roof trim, defined faces,
       smoother curves). Accepted trade-offs: more credits + hand-finish per asset (fewer anim frames per
-      PixelLab request than 32px), and the rig's `FRAME_PX` flips 32→48 **when the first 48px sheets
-      replace the placeholders** (it's still 32 today because it's tied to the 32px placeholder art —
-      don't flip the const before the new sheets exist or the placeholders mis-slice). Sheets are now
-      4×4 of 48px = **192×192**. Lock 48px before generating at scale; changing it later = regenerate.
+      PixelLab request than 32px). **DONE:** the real 48px sheets shipped, so the rig now runs at `FRAME_PX = 48`
+      with sheets **4×4 of 48px = 192×192** (frame height is also derived from the texture at runtime, so the
+      const is a fallback). Lock 48px before generating at scale; changing it later = regenerate.
 - [x] **Tile size + view angle:** **48px square tiles, top-down**, matching the character camera
       angle (the existing top-down view). Tiles + sprites share one perspective.
 - [~] **Master palette:** **clean / refined, MUTED urban** (not saturated/retro). Starting set seeded
@@ -89,8 +99,9 @@ Status below: **[x] = locked this session**, **[ ] = still to do.**
 
 ## 3. What to change in the existing codebase
 
-- **Map: SVG → Godot `TileMap` + imported `TileSet`.** This is the single biggest
-  change. Keep `MapBuilder` and the `DISTRICTS` array as the layout authority —
+- **Map: procedural `_draw()` → Godot `TileMap` + imported `TileSet`.** This is the single biggest
+  change (and still ahead — today the map renders procedurally in `test_map_01.gd::_draw_stylized()`; a PixelLab
+  tileset pass was prototyped then reverted on this branch). Keep the `test_map_01` grid `LAYOUT` as the authority —
   they still decide *where* everything goes. Swap only the *rendering* layer:
   instead of building SVG nodes at runtime, place tiles into a `TileMap` from a
   `TileSet` resource generated from PixelLab tilesets. Your data-driven layout
@@ -119,10 +130,9 @@ reproducible infrastructure, not one-off prompting.
       generation reproducible, tracks spend, and lets you re-create an asset
       consistently if a model changes under you. This is the backbone that turns a
       "crutch" into a real pipeline.
-- [ ] **Ingestion / post-process script (Python + Pillow)** run on every raw
-      export: trim/background-removal, palette enforcement to the master palette,
-      pivot-at-feet, and pack to the 32×32 sheet convention `MapBuilder` expects.
-      One script, every asset type.
+- [x] **Ingestion / post-process script (Python + Pillow)** — `tools/ingest_sprite.py` exists (with
+      `tools/validate.sh`): trim/background-removal, palette handling, pivot-at-feet, and pack to the **48×48**
+      sheet convention the rig expects. One script, every asset type.
 - [ ] **Godot `TileSet` resource + terrain/autotile config,** built from PixelLab
       Wang / dual-grid / 3×3 tileset exports so transitions auto-tile.
 - [ ] **Asset data layer** (`COSMETICS`, weapons, etc.) mirroring the `DISTRICTS`
@@ -198,9 +208,11 @@ Lowest-risk, highest-validation first. Validate each step in-engine before the n
 
 ## 9. Definition of done (foundation in place)
 
-- [ ] §2 foundations locked and written down.
-- [ ] Style bible + master palette committed to the repo.
-- [ ] Ingest script working: raw PixelLab PNG → engine-ready asset.
-- [ ] One district rendering from a PixelLab `TileSet` via `MapBuilder` / `DISTRICTS`.
-- [ ] Generation manifest started and being filled per asset.
-- [ ] Pixel import defaults set project-wide.
+- [x] §2 foundations locked and written down (48px grid, top-down, pivot-at-feet, 4-direction).
+- [~] Style bible + master palette: `assets/style_bible/README.md` committed; master palette **seeded but not
+      finalized/enforced** in the ingest script.
+- [x] Ingest script working: `tools/ingest_sprite.py` (raw PixelLab PNG → engine-ready 48px sheet).
+- [ ] One district rendering from a PixelLab `TileSet` — **not done** (map is still procedural `_draw()`; the
+      tileset prototype was reverted).
+- [ ] Generation manifest started and being filled per asset — **not found in repo.**
+- [x] Pixel import defaults set project-wide (`project.godot` → `default_texture_filter=0`).
