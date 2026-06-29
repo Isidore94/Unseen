@@ -110,6 +110,31 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 ## Subtracted from a player who is eliminated — being killed caps what you can still earn.
 @export var death_penalty: int = 300
 
+# === RESPAWN MODE (RESPAWN_MODE_PLAN.md) — only active when GameModeFlags.respawn_mode_enabled =====
+## Seconds a killed player stays down (corpse) before respawning at a fresh life.
+@export var respawn_delay_seconds: float = 2.5
+## Post-respawn grace: seconds the fresh life is immune to kills (anti spawn-farm); breaks if they kill.
+@export var respawn_grace_seconds: float = 2.0
+## Spawn picker: how many walkable points to sample as respawn candidates per death.
+@export var spawn_candidate_samples: int = 24
+## Spawn picker: candidates within this radius (px) of ANY live player are excluded (their contact/visual zone).
+@export var spawn_contact_exclusion_px: float = 360.0
+## Spawn picker: candidates within this radius (px) of your KILLER are excluded (anti-farm).
+@export var spawn_anti_farm_px: float = 900.0
+## Spawn picker: weight on local crowd density (favour respawning already blended into a crowd).
+@export var spawn_density_weight: float = 1.0
+## Spawn picker: radius (px) the crowd-density count is measured over at each candidate point.
+@export var spawn_density_radius_px: float = 360.0
+## Spawn picker: weight on closeness to your new target (start with a hunt, not a long commute).
+@export var spawn_target_proximity_weight: float = 0.0008
+## Spawn picker: pick at random among the top-N scoring candidates so spawns aren't campable.
+@export var spawn_topk: int = 4
+
+const NO_POS := Vector2(INF, INF)
+var _seat_order: Array = []        ## fixed peer order set at match start; target = next LIVING peer in it
+var _respawn_due: Dictionary = {}  ## peer -> seconds left until respawn
+var _grace_due: Dictionary = {}    ## peer -> seconds left of post-respawn grace
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -380,10 +405,17 @@ func _maybe_begin_match() -> void:
 	for peer in spawn_order:
 		_spawn_player_for_peer(peer)
 	_spawn_crowd()
-	_build_target_ring()
-	for peer_id in _players_by_peer:
-		_assign_mark_for_peer(peer_id)
-	_notify_targets()
+	if _respawn_mode():
+		# RESPAWN MODE: PvP from the first life. Marks are OPTIONAL ladder content (off in this
+		# increment), so we skip the mandatory mark gate and put everyone straight into the hunt.
+		_seat_order = spawn_order.duplicate()
+		_recompute_ring_from_seats()
+		_respawn_rewire_all()
+	else:
+		_build_target_ring()
+		for peer_id in _players_by_peer:
+			_assign_mark_for_peer(peer_id)
+		_notify_targets()
 	# Hold everyone for the start-of-round countdown (players spawned frozen above) — gives the
 	# per-viewer reskin + replication time to settle — then the host lifts the freeze for all.
 	if round_start_countdown > 0.0:
@@ -1036,13 +1068,24 @@ func _on_player_killed(loser_peer: int) -> void:
 		_player_kills_by_peer[killer_peer] = int(_player_kills_by_peer.get(killer_peer, 0)) + 1
 	if killer_peer > 0 and int(_ring_target.get(killer_peer, 0)) == loser_peer:
 		_completed_by_peer[killer_peer] = true
-		_phase_by_peer[killer_peer] = "done"
+		if not _respawn_mode():
+			_phase_by_peer[killer_peer] = "done"  # classic: contract finished. Respawn: keep hunting.
 
 	# Freeze the corpse on EVERY machine. The host already ran die() on its own copy via the
 	# kill; this mirrors it so the dead player's own client stops predicting movement (no
 	# spectator rubber-banding) and everyone's arrows treat them as dead.
 	if loser != null:
 		_freeze_player.rpc(String(loser.name))
+
+	if _respawn_mode():
+		# RESPAWN MODE: no spectate, no last-standing end. Re-form the chain over the living and
+		# schedule this player's return. The round ends only on the clock (_host_score_tick).
+		_recompute_ring_from_seats()
+		_respawn_rewire_all()
+		_respawn_due[loser_peer] = respawn_delay_seconds
+		_notify_owner.rpc_id(loser_peer, "You were killed — respawning…")
+		_update_status()
+		return
 
 	# Tell the eliminated player WHO got them + HOW, so their machine shows the death screen and
 	# drops them into free-spectate. Sent only to the loser (their identity stays private to others).
@@ -1213,6 +1256,10 @@ func _on_peer_kill_landed(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	_kills_by_peer[peer_id] = int(_kills_by_peer.get(peer_id, 0)) + 1
+	# RESPAWN grace breaks the moment you act offensively — no shielded spawn pushes.
+	if _grace_due.has(peer_id):
+		_grace_due.erase(peer_id)
+		_clear_grace(peer_id)
 
 
 # Splice a late joiner into the ring so it stays one connected loop: pick a living player L,
@@ -1233,6 +1280,163 @@ func _insert_into_ring(new_peer: int) -> void:
 	var their_target: int = int(_ring_target.get(link, 0))
 	_ring_target[link] = new_peer
 	_ring_target[new_peer] = their_target if their_target != 0 else link
+
+
+# ================================================================================================
+# RESPAWN MODE (RESPAWN_MODE_PLAN.md). All host-authoritative; gated by GameModeFlags. With the flag
+# OFF none of this runs and the classic elimination loop above is unchanged.
+# ================================================================================================
+
+# True only on the HOST whose flag governs the match. Safe to call from host-only code paths.
+func _respawn_mode() -> bool:
+	return GameModeFlags.respawn_mode_enabled
+
+
+# Host per-frame: count pending respawns + grace windows down; fire each when it reaches zero.
+func _tick_respawns(delta: float) -> void:
+	if _match_over or not _respawn_mode():
+		return
+	for peer in _respawn_due.keys():
+		_respawn_due[peer] = float(_respawn_due[peer]) - delta
+		if float(_respawn_due[peer]) <= 0.0:
+			_respawn_due.erase(peer)
+			_respawn_player(peer)
+	for peer in _grace_due.keys():
+		_grace_due[peer] = float(_grace_due[peer]) - delta
+		if float(_grace_due[peer]) <= 0.0:
+			_grace_due.erase(peer)
+			_clear_grace(peer)
+
+
+# Host: bring a downed player back at a fresh life — pick a spot, revive everywhere, re-wire the chain.
+func _respawn_player(peer: int) -> void:
+	var node := _players_by_peer.get(peer) as Player
+	if node == null or not is_instance_valid(node):
+		return
+	# Pick the spot while `peer` is still flagged dead, so the exclusion checks skip their own corpse.
+	var pos := _pick_spawn(peer)
+	_revive_player.rpc(String(node.name), pos)  # every machine un-dies + repositions the body
+	_dead_by_peer[peer] = false
+	node.set("grace_active", true)
+	_grace_due[peer] = respawn_grace_seconds
+	_recompute_ring_from_seats()
+	_respawn_rewire_all()
+	_notify_owner.rpc_id(peer, "Respawned — fresh life. Briefly safe.")
+	_update_status()
+
+
+# Every machine: reverse a player's death (un-fade, re-enable physics/actions, wipe per-life state)
+# and snap the body to the spawn point.
+@rpc("authority", "call_local", "reliable")
+func _revive_player(player_name: String, pos: Vector2) -> void:
+	if _players_parent == null:
+		return
+	var node := _players_parent.get_node_or_null(player_name) as Player
+	if node != null:
+		node.revive(pos)
+
+
+func _clear_grace(peer: int) -> void:
+	var node := _players_by_peer.get(peer) as Player
+	if node != null and is_instance_valid(node):
+		node.set("grace_active", false)
+
+
+# The stable contract chain: target = the next LIVING player in the fixed seat order. Always one valid
+# cycle over the living — no self-target (>=2 alive), no targetless player (>=2 alive), and no mutual
+# pair (>=3 alive). At exactly 2 alive the pair is mutual (the only valid 2-player chain; accepted).
+func _recompute_ring_from_seats() -> void:
+	_ring_target.clear()
+	var n := _seat_order.size()
+	for i in n:
+		var hunter: int = int(_seat_order[i])
+		if bool(_dead_by_peer.get(hunter, false)) or not _players_by_peer.has(hunter):
+			continue
+		for step in range(1, n):
+			var cand: int = int(_seat_order[(i + step) % n])
+			if cand != hunter and not bool(_dead_by_peer.get(cand, false)) and _players_by_peer.has(cand):
+				_ring_target[hunter] = cand
+				break
+
+
+# Push the current ring to clients: every living hunter is in 'target' phase, knows its prey, can kill
+# it, and the prey is told it's hunted. Idempotent — safe to call on every membership change.
+func _respawn_rewire_all() -> void:
+	for hunter in _ring_target:
+		var prey := int(_ring_target[hunter])
+		if prey == 0 or not _players_by_peer.has(prey) or bool(_dead_by_peer.get(prey, false)):
+			continue
+		(_players_by_peer[prey] as Node).add_to_group("killable_for_%d" % hunter)
+		if _phase_by_peer.get(hunter, "marks") != "target":
+			_phase_by_peer[hunter] = "target"
+			_enter_hunt_phase.rpc_id(hunter)
+		_send_target_to(hunter)
+		_receive_hunted.rpc_id(prey, true)
+
+
+# Host: choose a SAFE-BUT-RELEVANT respawn point. Density-weighted when enabled; authored fallback else.
+func _pick_spawn(peer: int) -> Vector2:
+	var map := _map as TestMap01
+	if not GameModeFlags.density_spawn_enabled or map == null or not map.has_method("random_walkable_point"):
+		return _spawn_position_for_index(maxi(0, int(_player_num.get(peer, 1)) - 1))
+	var killer_pos := _killer_position(peer)
+	var target_peer := int(_ring_target.get(peer, 0))
+	var target_node := _players_by_peer.get(target_peer) as Node2D
+	var scored: Array = []
+	for _i in spawn_candidate_samples:
+		var p: Vector2 = map.random_walkable_point()
+		# HARD EXCLUDE: too near any live player (their contact/visual zone) or near your killer (anti-farm).
+		if _too_close_to_live_player(p):
+			continue
+		if killer_pos != NO_POS and p.distance_to(killer_pos) < spawn_anti_farm_px:
+			continue
+		# SCORE: strongly favour crowd density (respawn already blended); favour closeness to your target.
+		var score := float(_crowd_density_at(p, spawn_density_radius_px)) * spawn_density_weight
+		if target_node != null and is_instance_valid(target_node):
+			score += spawn_target_proximity_weight * (4000.0 - minf(4000.0, p.distance_to(target_node.global_position)))
+		scored.append({"pos": p, "score": score})
+	if scored.is_empty():
+		# Everywhere excluded (tight map / full lobby): fall back to an authored spawn (never a kill zone).
+		return _spawn_position_for_index(maxi(0, int(_player_num.get(peer, 1)) - 1))
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["score"]) > float(b["score"]))
+	# MILD randomization among the top-K so spawns aren't deterministic/campable.
+	var top := mini(spawn_topk, scored.size())
+	return scored[randi() % top]["pos"]
+
+
+func _too_close_to_live_player(p: Vector2) -> bool:
+	for q in _players_by_peer:
+		if bool(_dead_by_peer.get(q, false)):
+			continue
+		var node := _players_by_peer[q] as Node2D
+		if node != null and is_instance_valid(node) and p.distance_to(node.global_position) < spawn_contact_exclusion_px:
+			return true
+	return false
+
+
+# Live crowd density at a point (host-side; the online crowd are Npc children of _crowd_parent).
+func _crowd_density_at(point: Vector2, radius: float) -> int:
+	if _crowd_parent == null:
+		return 0
+	var count := 0
+	var r2 := radius * radius
+	for child in _crowd_parent.get_children():
+		var npc := child as Npc
+		if npc != null and not npc.is_dead() and npc.global_position.distance_squared_to(point) <= r2:
+			count += 1
+	return count
+
+
+# Where the peer's last killer is now (NO_POS if unknown) — used to exclude spawns near them (anti-farm).
+func _killer_position(peer: int) -> Vector2:
+	var node := _players_by_peer.get(peer) as Player
+	if node == null:
+		return NO_POS
+	var killer_peer := int(node.get("last_attacker_peer"))
+	var killer := _players_by_peer.get(killer_peer) as Node2D
+	if killer != null and is_instance_valid(killer):
+		return killer.global_position
+	return NO_POS
 
 
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
@@ -1473,6 +1677,7 @@ func _process(delta: float) -> void:
 	if NetworkManager.is_host():
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
+		_tick_respawns(delta)  # RESPAWN MODE: count down pending respawns + grace windows
 	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()

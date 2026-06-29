@@ -144,6 +144,9 @@ signal died
 
 ## Set once caught, so we stop and can't die twice.
 var _dead: bool = false
+## RESPAWN MODE: true during the post-respawn grace window. The HOST sets/clears it; KillComponent
+## reads it on the host to reject kills on a freshly-respawned (briefly immune) player.
+var grace_active: bool = false
 
 ## Last meaningful heading, held while standing still so interaction_target() still knows which way
 ## you face (you can't read facing from a zero velocity).
@@ -299,6 +302,33 @@ func _disable_actions_on_death() -> void:
 
 func is_dead() -> bool:
 	return _dead
+
+
+# RESPAWN MODE (RESPAWN_MODE_PLAN.md §2): bring a killed player back to a FRESH life at
+# `spawn_position`. Reverses die() and wipes per-life state (exposure + tools) so the new life starts
+# at base. Runs on EVERY machine via OnlineMatch._revive_player (so the corpse un-fades and the
+# owner's own body regains control + snaps to the spawn point). The host's _net_position then keeps
+# remote puppets in sync.
+func revive(spawn_position: Vector2) -> void:
+	_dead = false
+	global_position = spawn_position
+	_net_position = spawn_position
+	_net_velocity = Vector2.ZERO
+	velocity = Vector2.ZERO
+	modulate.a = 1.0
+	set_physics_process(true)
+	# Re-enable acting (die() disabled these).
+	var kill_component := get_node_or_null("KillComponent")
+	if kill_component != null:
+		kill_component.set("attacks_disabled", false)
+	var item_kit := get_node_or_null("ItemComponent") as ItemComponent
+	if item_kit != null:
+		item_kit.owner_dead = false
+		item_kit.reset_to_base()
+	# Wipe exposure (movement heat + committed floor) — keep nothing across a death.
+	var exposure := get_node_or_null("ExposureComponent")
+	if exposure != null and exposure.has_method("reset"):
+		exposure.reset()
 
 
 # The character inside our interaction ring we'd act on (the ring visual's highlight + tools).

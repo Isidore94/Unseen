@@ -89,6 +89,14 @@ func add_exposure(amount: float, reason: String = "") -> void:
 	_recompute_total()
 
 
+# RESPAWN MODE (RESPAWN_MODE_PLAN.md §2): wipe ALL exposure — both the recoverable movement heat AND
+# the permanent committed floor — back to zero for a fresh life. "Keep nothing" on death.
+func reset() -> void:
+	_movement_exposure = 0.0
+	_committed_exposure = 0.0
+	_recompute_total()
+
+
 # === DOOR 3: ONGOING MODIFIERS (into the recoverable part) =================
 func set_continuous_modifier(source_name: String, rate_per_second: float) -> void:
 	_continuous_modifiers[source_name] = rate_per_second

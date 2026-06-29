@@ -112,6 +112,16 @@ func apply_equipped(tools: Array) -> void:
 	_refill_charges()
 
 
+# RESPAWN MODE (RESPAWN_MODE_PLAN.md §2): restock a fresh life — refill every charge and clear all
+# cooldown/active timers, back to the lobby-picked loadout. (The core loop never mutates `equipped`;
+# the PvE ladder will, and should re-apply the base loadout before calling this.)
+func reset_to_base() -> void:
+	_refill_charges()
+	for slot in 2:
+		_cooldown_left[slot] = 0.0
+		_active_left[slot] = 0.0
+
+
 # === per-tool config lookups (one place, so tunables never drift) ==========================
 func charges_for_tool(tool: int) -> int:
 	match tool:

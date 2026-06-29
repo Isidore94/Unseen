@@ -22,6 +22,7 @@ NetworkManager="*res://scripts/net/network_manager.gd"
 CosmeticRegistry="*res://scripts/cosmetics/cosmetic_registry.gd"
 CosmeticInventory="*res://scripts/cosmetics/cosmetic_inventory.gd"
 ExperimentFlags="*res://scripts/experiment_flags.gd"
+GameModeFlags="*res://scripts/game_mode_flags.gd"
 
 [display]
 

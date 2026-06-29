@@ -148,6 +148,10 @@ func request_kill(target_path: NodePath) -> void:
 	var target := get_node_or_null(target_path) as Node2D
 	if target == null or target == _body or not is_instance_valid(target):
 		return
+	# RESPAWN grace (RESPAWN_MODE_PLAN.md §4C): a freshly-respawned player is briefly immune. The host
+	# owns grace_active, so checking it here blocks BOTH a clean kill and a whiff on a graced target.
+	if bool(target.get("grace_active")):
+		return
 	var distance := _body.global_position.distance_to(target.global_position)
 	if distance > kill_range:
 		return
