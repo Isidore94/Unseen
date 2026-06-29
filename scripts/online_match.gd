@@ -180,6 +180,20 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 ## How long (seconds) players caught in the burst are stunned (can't move or kill).
 @export var firecracker_stun_seconds: float = 1.6
 
+# === STUN / counter-kill (AC Rearmed) — the prey turns the tables on a closing hunter =============
+## The prey can stun their hunter when the hunter is within this distance (px). Pair it with the
+## danger cue: the heartbeat tells you a hunter is near, the stun lets you punish them for closing in.
+@export var stun_range: float = 150.0
+## How long (seconds) a stunned hunter is frozen (can't move or kill) — reuses the smoke-stun system.
+@export var stun_duration: float = 3.0
+## Cooldown (seconds) before another stun attempt after a SUCCESS.
+@export var stun_cooldown: float = 8.0
+## Smaller cooldown after a MISS (no hunter in range), so a whiffed stun isn't free to spam.
+@export var stun_fail_cooldown: float = 1.5
+## Score bonus for a successful counter-stun.
+@export var stun_bonus: int = 150
+var _stun_ready_at: Dictionary = {}  ## peer -> the _elapsed time at which their next stun is allowed
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -1779,6 +1793,54 @@ func _spawn_firecracker_flash(pos: Vector2) -> void:
 	tw.tween_callback(poly.queue_free)
 
 
+# ================================================================================================
+# STUN / counter-kill (AC Rearmed). The prey presses STUN; the HOST checks whether their assigned
+# hunter is actually within stun_range and, if so, freezes that hunter — identity-safe (the prey
+# never picks a figure; the host resolves it). Assassination naturally wins: if the hunter's kill
+# resolves first the prey is already dead, so the stun no-ops.
+# ================================================================================================
+
+# Owner-side per-frame: send a stun request when the player presses the stun key.
+func _read_stun_input() -> void:
+	if _spectating or _local_player == null or not is_instance_valid(_local_player) or _local_player.is_dead():
+		return
+	if Input.is_action_just_pressed("stun"):
+		_request_stun.rpc_id(NetworkManager.HOST_PEER_ID)
+
+
+# call_local so the host's own press runs; the is_server guard no-ops on clients.
+@rpc("any_peer", "call_local", "reliable")
+func _request_stun() -> void:
+	if not multiplayer.is_server():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var prey := sender if sender != 0 else multiplayer.get_unique_id()
+	if bool(_dead_by_peer.get(prey, false)):
+		return
+	var prey_node := _players_by_peer.get(prey) as Player
+	if prey_node == null or not is_instance_valid(prey_node):
+		return
+	if bool(prey_node.get("_net_frozen")) or bool(prey_node.get("_net_stunned")):
+		return  # can't stun during the start freeze or while stunned yourself
+	if _elapsed < float(_stun_ready_at.get(prey, 0.0)):
+		return  # on cooldown
+	var hunter := _hunter_of_target(prey)
+	var hunter_node: Player = null
+	if hunter != 0:
+		hunter_node = _players_by_peer.get(hunter) as Player
+	if hunter_node != null and is_instance_valid(hunter_node) and not bool(_dead_by_peer.get(hunter, false)) and prey_node.global_position.distance_to(hunter_node.global_position) <= stun_range:
+		# SUCCESS — freeze the hunter (reuses the smoke-stun bookkeeping), reward + notify both.
+		_stun_left_by_peer[hunter] = maxf(float(_stun_left_by_peer.get(hunter, 0.0)), stun_duration)
+		_stun_ready_at[prey] = _elapsed + stun_cooldown
+		_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + stun_bonus
+		_receive_kill_bonus.rpc_id(prey, "COUNTER-STUN", stun_bonus)
+		_notify_owner.rpc_id(hunter, "Stunned! Your prey turned the tables — re-blend and try again.")
+		_danger_level_by_peer[prey] = -1  # force a danger refresh next tick (the hunter is frozen now)
+	else:
+		_stun_ready_at[prey] = _elapsed + stun_fail_cooldown
+		_notify_owner.rpc_id(prey, "No hunter close enough to stun.")
+
+
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
 # (for the round average), and end on the time limit. Stops once the match is decided.
 func _host_score_tick(delta: float) -> void:
@@ -2029,6 +2091,7 @@ func _process(delta: float) -> void:
 	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
 	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
+	_read_stun_input()  # STUN: defend against your closing hunter (host validates range)
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
 	# started together via the lobby, so it stays roughly in sync without extra messages).
 	if not NetworkManager.is_host():
