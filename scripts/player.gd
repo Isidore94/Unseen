@@ -197,6 +197,12 @@ func _setup_network_role() -> void:
 	# Is this character controlled by the human sitting at THIS machine?
 	_is_locally_controlled = (controlling_peer_id == multiplayer.get_unique_id())
 
+	# STAGE 8 (partial, flag-gated): on a CLIENT, forget the owner id of every body that isn't ours, so
+	# node state can't reveal which figures are human. The HOST keeps all ids (it validates kills with
+	# them); our own body keeps its id (we just used it above). Default OFF — see GameModeFlags.
+	if GameModeFlags.hide_peer_ids_enabled and not multiplayer.is_server() and not _is_locally_controlled:
+		controlling_peer_id = 0
+
 	# Only OUR own character shows the interaction ring (it's a private targeting aid).
 	if _is_locally_controlled:
 		_add_interaction_ring()

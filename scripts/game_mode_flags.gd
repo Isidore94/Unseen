@@ -28,3 +28,10 @@ extends Node
 ## The crowd-density-weighted respawn spawn picker (favours respawning already blended into a crowd,
 ## excludes spots near live players / your killer). OFF = respawn at an authored map spawn point instead.
 @export var density_spawn_enabled: bool = true
+
+## STAGE 8 identity hardening (partial). When ON, each CLIENT wipes controlling_peer_id to 0 on every
+## body that isn't its OWN, so a modified client can't read which on-screen figures are human from node
+## state. Default OFF — it's defence-in-depth (the structural players-vs-NPCs split + the spawn packet
+## still need the bigger tested netcode refactor) and doesn't matter for a trusted playtest. Flip ON to
+## test the hardening; if a flag-on Phase-9 experiment misbehaves, that's why.
+@export var hide_peer_ids_enabled: bool = false

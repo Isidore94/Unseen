@@ -32,7 +32,7 @@
 | 5 | Arrow tiering (per-life precision 4-dir → 8-way → precise) | ✅ done (`precision_tier` on ExposureArrow) |
 | 6 | PvE ladder (player chooses axis; capped) | ✅ done (iteration 1, gated `pve_ladder_enabled`, default OFF) |
 | 7 | Exposure-cliff reconciliation (cliff precision distinct from ladder precision) | ⬜ |
-| 8 | Identity-leak-at-spawn hardening + crowd-netcode reconcile | ⬜ (partly mitigated: spawn into density) |
+| 8 | Identity-leak-at-spawn hardening + crowd-netcode reconcile | 🟡 partial — see below |
 | 9 | Tuning / telemetry / A-B (avg life length, no-PvE viability, spawn-camp rate) | ⬜ |
 
 ## What the CORE increment does (Stages 0–4)
@@ -71,8 +71,17 @@ your 2nd lobby tool) because the kit has 2 slots — expanding to a 3rd tool is 
 
 ## Known limitations carried forward (flagged, not yet addressed)
 - **Grace breaks on kill only**, not on tool use (defensive tools during grace are allowed) — revisit in Stage 8.
-- **`controlling_peer_id` over-the-wire identity leak** is unchanged (out of scope here); spawning into crowd density
-  reduces but does not remove its exploitability. Own pass.
+- **Identity leak (Stage 8) — three parts, only one partially closed:**
+  - *(1) `controlling_peer_id` in node state* — now closeable via `GameModeFlags.hide_peer_ids_enabled` (default
+    OFF): each client wipes the owner id on non-own bodies. Prep done: morph re-keyed to node names so clients no
+    longer NEED the id. (When the flag is on, a flag-on Phase-9 experiment that reads non-own bodies' ids on a
+    client could misbehave — untested; that's the flag's risk.)
+  - *(2) structural* — players live under `_players_parent`, NPCs under `_crowd_parent`; a modified client reads the
+    parent to tell them apart regardless of (1). **Not addressed** — needs unifying the scene structure.
+  - *(3) packet-level* — `"peer"` still rides in the broadcast spawn data. **Not addressed** — needs routing owner
+    identity through a private channel (and making `_setup_network_role` re-runnable).
+  Parts (2)+(3) are a core-netcode refactor that should be done WITH Godot to test (it's the change most likely to
+  break movement/kills/camera). They don't matter for a trusted playtest.
 - **Per-viewer crowd reskin is "run once, frozen"** — a respawned life's look may not be re-cloned into each viewer's
   crowd; verify/fix in Stage 8.
 - **Contract churn:** re-forming the ring each death is correct but reassigns more than a minimal splice would; a

@@ -2634,14 +2634,18 @@ func _apply_morph_host(character: Player, _peer_id: int) -> void:
 	var item := character.get_node_or_null("ItemComponent") as ItemComponent
 	if item == null:
 		return
-	_apply_morph.rpc(int(character.get("controlling_peer_id")), item.morph_npc_count, item.morph_radius, item.morph_seconds)
+	# Identify the morphing body by NODE NAME (consistent across peers), not its controlling_peer_id —
+	# so clients never need the owner id to apply a morph (Stage 8: don't depend on the identity field).
+	_apply_morph.rpc(String(character.name), item.morph_npc_count, item.morph_radius, item.morph_seconds)
 
 
 # Everyone: copy player `peer`'s CURRENT look onto the `count` nearest crowd NPCs within `radius`,
 # remembering each NPC's previous look so _process can revert it after `duration`.
 @rpc("authority", "call_local", "reliable")
-func _apply_morph(peer: int, count: int, radius: float, duration: float) -> void:
-	var player := _player_by_peer_local(peer)
+func _apply_morph(player_name: String, count: int, radius: float, duration: float) -> void:
+	if _players_parent == null:
+		return
+	var player := _players_parent.get_node_or_null(player_name) as Node2D
 	if player == null:
 		return
 	var src := player.get_node_or_null("CharacterVisual")
