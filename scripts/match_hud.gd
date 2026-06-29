@@ -19,7 +19,8 @@ var _name_label: Label = null
 var _title_label: Label = null
 var _exposure_segs: Array[ColorRect] = []
 var _objective_label: Label = null
-var _optional_label: Label = null
+var _legend_target_swatch: ColorRect = null  # the "your kill targets" colour chip in the legend
+var _countdown_label: Label = null            # big centred start-of-round "3/2/1/GO!" overlay
 var _round_label: Label = null
 var _time_label: Label = null
 var _roster_rows: Array = []          # Array of {name:Label, score:Label, dot:ColorRect}
@@ -27,11 +28,13 @@ var _log_lines: Array[String] = []
 var _log_label: Label = null
 var _portrait: TextureRect = null
 var _portrait_unknown: Label = null   # the big "?" shown over the portrait while disguised/morphed
+var _portrait_box: StyleBoxFlat = null  # the portrait panel's frame, turned RED while you're hunted
+var _hunted_label: Label = null         # "YOU ARE BEING HUNTED" warning (hidden until hunted)
 var _ability_slots: Dictionary = {}   # key -> {label:Label, sub:Label, dim:bool}
 var minimap_slot: Control = null      # the match drops its MiniMap in here
 var _reveals: HBoxContainer = null     # holds the TARGET (red) + EXPOSED (blue) reveal portraits
 var _target_plate: Control = null
-var _exposed_shown: Array[int] = []
+var _exposed_plates: Dictionary = {}   # reveal_id (revealed peer) -> its EXPOSED plate, so it updates
 const MAX_LOG := 6
 
 
@@ -55,14 +58,24 @@ func _ready() -> void:
 	if vp == Vector2.ZERO:
 		vp = Vector2(1920, 1080)
 	_portrait_panel(Rect2(16, 16, 320, 96))
-	_objectives_panel(Rect2(16, 126, 270, 132))
-	_legend_panel(Rect2(16, 270, 270, 232))
+	_objectives_panel(Rect2(16, 126, 330, 84))
+	_legend_panel(Rect2(16, 222, 330, 126))
 	_timer_banner(Rect2(vp.x * 0.5 - 200, 12, 400, 60))
 	_roster_panel(Rect2(vp.x - 316, 16, 300, 156))
 	_log_panel(Rect2(16, vp.y - 220, 360, 204))
 	_ability_bar(Rect2(vp.x * 0.5 - 300, vp.y - 106, 600, 92))
 	_minimap_panel(Rect2(vp.x - 268, vp.y - 268, 252, 252))
 	_reveals_row(Vector2(vp.x * 0.5, 82))
+	# Big centred start-of-round countdown ("3/2/1/GO!"), hidden until the match feeds it.
+	_countdown_label = Label.new()
+	_countdown_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_countdown_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_countdown_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_countdown_label.add_theme_font_size_override("font_size", 120)
+	_countdown_label.add_theme_color_override("font_color", GOLD)
+	_countdown_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_countdown_label.visible = false
+	_root.add_child(_countdown_label)
 
 
 # === styling helpers =======================================================
@@ -104,6 +117,7 @@ func _icon(parent: Control, icon_name: String, pos: Vector2, sz: int) -> Texture
 # === regions ===============================================================
 func _portrait_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
+	_portrait_box = p.get_theme_stylebox("panel") as StyleBoxFlat  # we recolour this red when hunted
 	var frame := Panel.new(); frame.position = Vector2(8, 8); frame.size = Vector2(72, 72)
 	var fb := StyleBoxFlat.new(); fb.bg_color = Color(0.03, 0.03, 0.04); fb.set_border_width_all(2); fb.border_color = GOLD_DIM
 	frame.add_theme_stylebox_override("panel", fb); p.add_child(frame)
@@ -125,24 +139,36 @@ func _portrait_panel(rect: Rect2) -> void:
 	for i in 7:
 		var seg := ColorRect.new(); seg.position = Vector2(90 + i * 28, 60); seg.size = Vector2(24, 12); seg.color = Color(0.2, 0.18, 0.15)
 		p.add_child(seg); _exposure_segs.append(seg)
+	# "YOU ARE BEING HUNTED" warning, shown (with a red frame) once another player is hunting you.
+	_hunted_label = _mklabel(p, "YOU ARE BEING HUNTED", Vector2(8, 78), 12, Color(0.95, 0.27, 0.22))
+	_hunted_label.visible = false
 
 func _objectives_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
-	_mklabel(p, "OBJECTIVES", Vector2(8, 6), 15, GOLD)
+	_mklabel(p, "OBJECTIVE", Vector2(8, 6), 15, GOLD)
+	# Wider panel + word-wrap so the full contract line fits instead of clipping at the edge.
 	_objective_label = _mklabel(p, "Locating your marks…", Vector2(10, 34), 14, TEXT)
-	_mklabel(p, "OPTIONAL", Vector2(8, 80), 15, GOLD)
-	_optional_label = _mklabel(p, "—", Vector2(10, 104), 13, TEXT)
+	_objective_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_objective_label.custom_minimum_size = Vector2(rect.size.x - 24, 0)
+	_objective_label.size = Vector2(rect.size.x - 24, rect.size.y - 40)
 
 func _legend_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
-	var rows := [["ui_flag", "YOU"], ["ui_target", "NPC TARGET"], ["ui_intel", "INTEL"],
-		["ui_stairs", "STAIRS / PASSAGE"], ["", "HIDDEN PASSAGE"], ["", "BACK ALLEY"]]
+	_mklabel(p, "LEGEND", Vector2(8, 6), 13, GOLD)
+	# Colour chips matching what you actually see in the world: the teal teleporter pads, the ring
+	# around YOUR kill targets (recoloured to your colour via set_legend_target_color), and the
+	# green sewer entrances.
+	var rows := [
+		[Color(0.2, 0.8, 0.85), "TELEPORTER"],
+		[Color(1.0, 0.84, 0.25), "YOUR KILL TARGETS"],
+		[Color(0.30, 0.62, 0.36), "SEWER (cover)"],
+	]
 	for i in rows.size():
-		var y := 8 + i * 36
-		if rows[i][0] != "": _icon(p, rows[i][0], Vector2(8, y), 32)
-		else:
-			var box := ColorRect.new(); box.position = Vector2(8, y); box.size = Vector2(28, 28); box.color = Color(0.25, 0.22, 0.16); p.add_child(box)
-		_mklabel(p, rows[i][1], Vector2(48, y + 4), 14, TEXT)
+		var y := 32 + i * 30
+		var chip := ColorRect.new(); chip.position = Vector2(10, y); chip.size = Vector2(22, 22); chip.color = rows[i][0]; p.add_child(chip)
+		_mklabel(p, rows[i][1], Vector2(42, y + 2), 14, TEXT)
+		if i == 1:
+			_legend_target_swatch = chip
 
 func _timer_banner(rect: Rect2) -> void:
 	var p := _panel(rect)
@@ -251,6 +277,15 @@ func set_portrait(appearance_index: int) -> void:
 	var at := AtlasTexture.new(); at.atlas = tex; at.region = Rect2(0, 0, frame_px, frame_px)
 	_portrait.texture = at
 
+# Turn the top-left box RED + show "YOU ARE BEING HUNTED" once another player is hunting you.
+func set_hunted(on: bool) -> void:
+	if _hunted_label != null:
+		_hunted_label.visible = on
+	if _portrait_box != null:
+		_portrait_box.border_color = Color(0.9, 0.2, 0.18) if on else GOLD
+		_portrait_box.set_border_width_all(4 if on else 2)
+
+
 # Show a "?" instead of the portrait — used while your disguise/morph hides who you are.
 func set_portrait_unknown() -> void:
 	if _portrait_unknown != null:
@@ -263,9 +298,20 @@ func set_exposure(fraction: float) -> void:
 	for i in _exposure_segs.size():
 		_exposure_segs[i].color = (Color(0.85, 0.35, 0.25) if fraction > 0.66 else (Color(0.85, 0.7, 0.3) if fraction > 0.33 else Color(0.4, 0.7, 0.35))) if i < lit else Color(0.2, 0.18, 0.15)
 
-func set_objective(main_text: String, optional_text: String = "") -> void:
+func set_objective(main_text: String, _optional_text: String = "") -> void:
 	if _objective_label: _objective_label.text = main_text
-	if _optional_label and optional_text != "": _optional_label.text = optional_text
+
+# Show the big centred countdown text ("3"/"GO!"); pass "" to hide it.
+func set_countdown(text: String) -> void:
+	if _countdown_label == null:
+		return
+	_countdown_label.text = text
+	_countdown_label.visible = text != ""
+
+# Recolour the legend's "your kill targets" chip to match this player's ring/roster colour.
+func set_legend_target_color(c: Color) -> void:
+	if _legend_target_swatch != null:
+		_legend_target_swatch.color = c
 
 func set_timer(round_text: String, time_text: String) -> void:
 	if _round_label: _round_label.text = round_text
@@ -310,16 +356,21 @@ func set_target_reveal(appearance_index: int) -> void:
 	_reveals.add_child(_target_plate)
 	_reveals.move_child(_target_plate, 0)  # keep the target on the left
 
-# An opponent who hit 100% exposure (blue plate). Ignored if already shown.
-func add_exposed_reveal(appearance_index: int) -> void:
-	if _reveals == null or appearance_index in _exposed_shown:
+# An opponent who hit 100% exposure (blue plate), keyed by `reveal_id` (the revealed player) so the
+# SAME player's plate can be UPDATED — e.g. a disguised reveal shows "?" (index < 0) and then flips
+# to their real sprite once the disguise wears off.
+func add_exposed_reveal(reveal_id: int, appearance_index: int) -> void:
+	if _reveals == null:
 		return
-	_exposed_shown.append(appearance_index)
-	_reveals.add_child(_make_plate(appearance_index, Color(0.3, 0.6, 0.95), "EXPOSED"))
+	if _exposed_plates.has(reveal_id) and is_instance_valid(_exposed_plates[reveal_id]):
+		_exposed_plates[reveal_id].queue_free()  # replace this player's existing plate
+	var plate := _make_plate(appearance_index, Color(0.3, 0.6, 0.95), "EXPOSED")
+	_reveals.add_child(plate)
+	_exposed_plates[reveal_id] = plate
 
 func clear_reveals() -> void:
 	_target_plate = null
-	_exposed_shown.clear()
+	_exposed_plates.clear()
 	if _reveals != null:
 		for c in _reveals.get_children():
 			c.queue_free()

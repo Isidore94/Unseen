@@ -26,6 +26,14 @@ var _tool1_picker: OptionButton = null
 var _tool2_picker: OptionButton = null
 ## Tool names in ItemComponent.Tool order, so an OptionButton's selected index IS the tool id.
 const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison"]
+## One-line "what does it do" for each tool, shown in the lobby so players can choose informed.
+const TOOL_DESCRIPTIONS := [
+	"Smoke — drop a cloud at your feet; anyone caught inside (a chasing hunter included) is stunned and can't kill for a few seconds.",
+	"Disguise — aim at a civilian and look like them for 30s, breaking a pursuer's lock (you still see yourself normally).",
+	"Morph — turn nearby civilians into copies of YOU for a few seconds, so a hunter can't tell which one is real.",
+	"Decoy — spook the civilian you're aiming at into bolting, baiting a hunter into a wrong kill.",
+	"Poison — a delayed, silent kill: your target drops a few seconds later with no crowd panic, so you walk away clean.",
+]
 ## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
 var _chosen_assassin: StringName = &""
 var _npc_disguise: bool = false
@@ -132,6 +140,15 @@ func _build_ui() -> void:
 	_tool2_picker.item_selected.connect(func(_i: int) -> void: _update_tools())
 	_update_tools()
 
+	# A little legend so players know what every tool does before they pick.
+	var tool_help := Label.new()
+	tool_help.text = "\n".join(TOOL_DESCRIPTIONS)
+	tool_help.add_theme_font_size_override("font_size", 12)
+	tool_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	tool_help.custom_minimum_size = Vector2(420.0, 0.0)
+	tool_help.modulate = Color(1, 1, 1, 0.75)
+	panel.add_child(tool_help)
+
 	if NetworkManager.is_host():
 		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.
 		if NetworkManager.is_using_steam():
@@ -156,7 +173,7 @@ func _build_ui() -> void:
 		_map_picker.add_item("Four Zones (full — rooftops & sewers)", NetworkManager.Map.FOUR_ZONE)
 		_map_picker.add_item("Compact Arena (small)", NetworkManager.Map.COMPACT)
 		_map_picker.add_item("Rome (small — tight streets, no verticality)", NetworkManager.Map.ROME)
-		_map_picker.selected = NetworkManager.Map.FOUR_ZONE
+		_map_picker.selected = NetworkManager.Map.COMPACT  # the compact arena is our main map
 		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panel.add_child(_map_picker)
 
@@ -243,7 +260,7 @@ func _on_start_pressed() -> void:
 	if _player_count() < MIN_PLAYERS_TO_START:
 		return
 	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice.
-	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.FOUR_ZONE
+	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.COMPACT
 	_begin_match.rpc(map_id)
 
 

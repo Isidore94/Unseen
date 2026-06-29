@@ -128,6 +128,10 @@ var _net_smoked: bool = false
 ## everyone. While true the player can't move (frozen) and the host blocks their kills. Set + timed
 ## by OnlineMatch on the host; every machine reads it to freeze the body so there's no rubber-band.
 var _net_stunned: bool = false
+## (Online) Host-authoritative ROUND-START freeze, replicated to everyone. While true the player
+## can't move (frozen at spawn) — the host holds everyone for the start-of-round countdown so the
+## per-viewer reskin + replication settle before play begins, then clears it for all at once.
+var _net_frozen: bool = false
 ## (Online) Host-authoritative DISGUISE: the commoner body index this player shows to OTHERS while
 ## disguised (−1 = not disguised). Replicated; every OTHER machine swaps this player's body to it,
 ## while the owner's own machine keeps the real look (you always see yourself). Breaks a visual lock.
@@ -163,6 +167,13 @@ func _ready() -> void:
 	# stay decoupled).
 	add_to_group("player")
 	add_to_group("player_%d" % player_id)
+
+	# Size the interaction ring to our KILL REACH (the KillComponent's kill_range), so the ring is
+	# exactly "how far the attack button reaches" — if it's in your ring, you can kill it. One source
+	# of truth: tools (decoy/disguise/poison) then share that same reach automatically.
+	var kill_component := get_node_or_null("KillComponent")
+	if kill_component != null and kill_component.get("kill_range") != null:
+		interaction_radius = float(kill_component.get("kill_range"))
 
 	# Online mode wires up who-controls-whom, the camera, the look, and the
 	# position replicator. Offline mode skips all of this and behaves as before.
@@ -247,6 +258,7 @@ func _build_position_synchronizer() -> void:
 	replication.add_property(NodePath(".:_net_smoked"))
 	replication.add_property(NodePath(".:_net_stunned"))
 	replication.add_property(NodePath(".:_net_disguise_body"))
+	replication.add_property(NodePath(".:_net_frozen"))
 	var synchronizer := MultiplayerSynchronizer.new()
 	synchronizer.name = "NetSync"
 	synchronizer.replication_config = replication
@@ -466,9 +478,9 @@ func _apply_movement(direction: Vector2, run_held: bool, delta: float) -> void:
 # too would double-count it). By DEFAULT you move at the calm walk pace; holding run is
 # the deliberate, exposing choice.
 func _move_with(direction: Vector2, run_held: bool) -> void:
-	# STUNNED by a smoke cloud: frozen in place (the one chokepoint, so the host's sim AND a
-	# client's own prediction both freeze — no rubber-band toward a position you can't reach).
-	if _net_stunned:
+	# Frozen — by a smoke STUN or the round-start FREEZE. One chokepoint so the host's sim AND a
+	# client's own prediction both hold still (no rubber-band toward a position you can't reach).
+	if _net_stunned or _net_frozen:
 		velocity = Vector2.ZERO
 		move_and_slide()
 		return

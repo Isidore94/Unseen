@@ -2,6 +2,32 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — arrows, exposure tuning, crowd walk anims, HUD, round countdown
+
+- **Hunt arrow (post-marks)**: binary now — solid cardinal (N/E/S/W) while the target is off-screen,
+  instantly off when on-screen (the fade was a tell). **Exposure arrow** stays precise; it now turns
+  on instantly and LINGERS 3s after exposure drops (`exposure_linger_seconds`).
+- **Exposure tuning**: per-kill spike 30→22 so 2 marks + 2 abilities stays under 100; only extra acts
+  (running — recoverable, or a wrong-target kill — permanent) cross the cliff. **Player kills score
+  MASSIVE** (`player_kill_points` 1000 vs 100 for NPCs), counted at elimination (covers poison too).
+- **Crowd walk animations**: all 10 `com_*` commoner sheets were static; repacked from their existing
+  PixelLab walking animations (no generation spent) into real 4×4 walk sheets.
+- **Client "glide" fix**: the walk cycle was resetting every frame a puppet read "not moving" (common
+  on a joiner between physics ticks), so replicated players/crowd glided. Now a 0.18s **grace window**
+  (`move_grace_seconds`) keeps the cycle playing through those gaps — animates off real movement on
+  host AND clients.
+- **HUD**: OBJECTIVE panel widened + word-wraps (no clip), OPTIONAL removed; LEGEND trimmed to the 3
+  real things as colour chips (teal teleporter, your-ring-colour kill targets, green sewer); legend
+  chip recolours to your roster colour.
+- **Being hunted**: top-left box turns red + "YOU ARE BEING HUNTED" when a finisher starts hunting you.
+- **Hunt ring + numbers**: target ring follows player-number order (1→2→3→4→1); player numbers shuffle
+  each match (rematches rotate who-hunts-whom).
+- **`?` reveal plates**: a disguised player shows "?" on EXPOSED/TARGET plates and flips to their real
+  sprite when the disguise ends (plates keyed by player now).
+- **Lobby**: per-tool descriptions under the pickers; map picker defaults to the Compact (main) map.
+- **Start-of-round countdown**: 3s host-authoritative freeze (`round_start_countdown`) + synced
+  "3/2/1/GO!" overlay — gives the per-viewer reskin/replication time to settle before play.
+
 ## Session: prayer — AC-Rearmed tool kit (pick-2 loadout) + interaction ring
 
 Replaced the fixed smoke+cloak kit with a 5-tool pool; each player **picks 2 in the lobby**

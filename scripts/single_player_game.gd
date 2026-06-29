@@ -444,7 +444,7 @@ func _wire_reveals(contract: ContractManager) -> void:
 			if value >= 100.0 and not revealed["done"]:
 				revealed["done"] = true
 				if _mhud != null:
-					_mhud.add_exposed_reveal(_appearance_of(_hunter)))
+					_mhud.add_exposed_reveal(1, _appearance_of(_hunter)))  # reveal_id 1 = the hunter
 
 
 func _format_time(seconds: float) -> String:

@@ -106,6 +106,11 @@ const LAYER_SEWER := 2
 @export var walk_frames_per_second: float = 9.0
 ## Below this speed (px/s) the character is treated as standing still.
 @export var moving_threshold: float = 5.0
+## Once movement is detected, keep the walk cycle playing for this long even if the next frames read
+## "not moving". Bridges the gaps where neither velocity nor displacement registers — render frames
+## between physics ticks (high-refresh) and packet gaps on a CLIENT's replicated puppets — so they
+## don't glide without a walk cycle. Only after this much continuous stillness do we go idle.
+@export var move_grace_seconds: float = 0.18
 ## If true, a character with no appearance set picks a random sheet on spawn, so the
 ## crowd looks varied with zero wiring. Turn OFF once a loadout is assigned explicitly.
 @export var randomize_on_ready: bool = true
@@ -123,6 +128,7 @@ var _weapon: Sprite2D = null     ## WEAPON overlay (static, rides the body).
 var _appearance_index: int = -1   ## Which body sheet we're wearing (-1 = none yet).
 var _facing_row: int = ROW_DOWN   ## Held between steps so a stopped body keeps facing.
 var _walk_time: float = 0.0       ## Drives which walk-cycle column we show.
+var _move_grace: float = 0.0      ## Seconds left of the "treat as moving" grace window (see export).
 var _strike_timer: float = 0.0    ## Counts down a quick "I just struck" pop.
 var _attack_timer: float = 0.0    ## While >0, the body plays its ATTACK sheet (swing) instead of walk.
 var _highlighted: bool = false    ## Draw the mark ring this frame?
@@ -341,11 +347,21 @@ func _process(delta: float) -> void:
 	#    displacement was the bug that froze the walk animation on high-refresh displays.)
 	var reported := _parent_velocity()
 	var motion := _parent_motion(delta)
-	var is_moving := reported.length() > moving_threshold
-
-	# FACING — turn to match real movement; keep the last facing when we didn't actually move.
-	if motion.length() > moving_threshold:
-		_facing_row = _facing_row_from(motion)
+	# Did we move THIS frame, by EITHER signal (reported velocity OR real displacement)?
+	var moved_now := reported.length() > moving_threshold or motion.length() > moving_threshold
+	if moved_now:
+		_move_grace = move_grace_seconds
+		# FACING — prefer real displacement (can't moonwalk); fall back to velocity if no displacement.
+		if motion.length() > moving_threshold:
+			_facing_row = _facing_row_from(motion)
+		elif reported.length() > moving_threshold:
+			_facing_row = _facing_row_from(reported)
+	else:
+		_move_grace = maxf(0.0, _move_grace - delta)
+	# Keep animating through brief gaps (high-refresh frames with no physics tick, packet gaps on a
+	# client puppet) — the flicker that reset the walk cycle and made puppets glide. Idle only after
+	# the grace window fully elapses with no movement.
+	var is_moving := _move_grace > 0.0
 
 	# WALK CYCLE — step through the 4 columns while moving; rest on column 0 when not.
 	var column := 0

@@ -30,13 +30,16 @@ class_name ExposureArrow
 ## Fallback group used when target_path is empty.
 @export var target_group_name: String = "hunter"
 
-## Seconds the target must be off-screen before the arrow STARTS appearing. This
-## delay is the whole point: it breaks the correlation between "a figure just left
-## my screen" and "the arrow lit up", so you can't tell who it was.
+## (Legacy — NO LONGER applied to the exposure arrow.) Was the off-screen delay before the arrow
+## appeared. The exposure arrow now turns on RIGHT AWAY when the target is exposed (see _process_exposure).
 @export var appear_delay: float = 2.0
 ## How long the arrow takes to fade fully in / out once it starts.
 @export var fade_in_time: float = 0.8
 @export var fade_out_time: float = 2.0
+## EXPOSURE arrow only: after the target's exposure drops back under the threshold, keep the arrow
+## ON (pointing at their live position) for this long before it switches off — a grace window so a
+## just-exposed player can't vanish from the hunter the instant they cool down.
+@export var exposure_linger_seconds: float = 3.0
 
 # --- flashing style (the stronger tracking earned by finishing your mark) ---
 ## When true, IGNORE exposure and instead FLASH toward the off-screen target every
@@ -61,6 +64,9 @@ var _suppressed: bool = false
 
 var _alpha: float = 0.0
 var _offscreen_timer: float = 0.0
+## EXPOSURE arrow: seconds left of the post-drop linger (set to exposure_linger_seconds while the
+## target is exposed; counts down once they fall under the threshold, keeping the arrow up).
+var _exposure_linger: float = 0.0
 var _flash_timer: float = 0.0
 var _arrow_pos: Vector2 = Vector2.ZERO
 var _arrow_dir: Vector2 = Vector2.RIGHT
@@ -113,36 +119,33 @@ func set_flashing(on: bool) -> void:
 	_alpha = 0.0
 
 
-# EXPOSURE STYLE — a steady arrow that appears (after a short delay) when the target
-# is off-screen AND exposed past the threshold, and fades out when they're visible.
+# EXPOSURE STYLE — a precise arrow that turns on RIGHT AWAY when the target is exposed AND
+# off-screen (no appear delay), tracking their live position. When their exposure drops back under
+# the threshold it LINGERS for exposure_linger_seconds (still pointing at them) before switching
+# off — so cooling down doesn't make you instantly vanish from your hunter. Hides while on-screen.
 func _process_exposure(delta: float) -> void:
 	var exposed: bool = _target_exposure != null and _target_exposure.exposure >= arrow_threshold
-	if exposed and _compute_offscreen_arrow():
-		_offscreen_timer += delta
-		if _offscreen_timer >= appear_delay:
-			_alpha = minf(1.0, _alpha + delta / maxf(0.01, fade_in_time))
+	if exposed:
+		_exposure_linger = exposure_linger_seconds  # refresh the grace window while exposed
+	elif _exposure_linger > 0.0:
+		_exposure_linger = maxf(0.0, _exposure_linger - delta)
+	if (exposed or _exposure_linger > 0.0) and _compute_offscreen_arrow():
+		_alpha = 1.0  # on immediately, full strength
 	else:
-		_offscreen_timer = 0.0
 		_alpha = maxf(0.0, _alpha - delta / maxf(0.01, fade_out_time))
 
 
-# FLASHING STYLE — ignores exposure; pulses toward the target every flash_interval
-# while they're off-screen (no hint at all when they're on-screen). This is the post-mark
-# "hunt your human target" arrow, so it is deliberately IMPRECISE: it points in only one of
-# four directions (up/down/left/right) — the cardinal that best matches the target's relative
-# bearing — instead of an exact angle. A rough "they're that way", never "that exact figure".
-func _process_flashing(delta: float) -> void:
-	if not _compute_offscreen_arrow():
-		_alpha = 0.0
-		_flash_timer = 0.0
-		return
-	_snap_to_cardinal()
-	_flash_timer += delta
-	var t: float = fmod(_flash_timer, flash_interval)
-	if t < flash_duration:
-		_alpha = sin((t / flash_duration) * PI)  # smooth 0 -> 1 -> 0 pulse
+# HUNT STYLE (the post-mark "hunt your human target" arrow). Deliberately IMPRECISE: it points in
+# only one of four CARDINAL directions (N/E/S/W) — never an exact bearing — so it says "they're that
+# way", not "that exact figure". BINARY, no fading: solid while the target is off-screen, OFF the
+# instant they're on your screen (a fade was a tell — you could watch it dim as a figure walked in,
+# giving the target away). Re-points live whenever they're off-screen again.
+func _process_flashing(_delta: float) -> void:
+	if _compute_offscreen_arrow():
+		_snap_to_cardinal()
+		_alpha = 1.0
 	else:
-		_alpha = 0.0
+		_alpha = 0.0  # on-screen / dead / gone → off, no fade
 
 
 # Works out whether the target is valid, alive, and OFF-screen — and if so, where on

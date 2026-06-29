@@ -91,6 +91,9 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 # offline LocalMatchManager so online and offline score the same way.
 ## Seconds before the match times out and is scored as-is (0 = no limit).
 @export var round_time_limit: float = 300.0
+## Start-of-round countdown (seconds). Players are frozen and kills blocked until it ends — this is
+## the window for the per-viewer crowd reskin + replication to settle before play begins.
+@export var round_start_countdown: float = 3.0
 ## Points per % of "ghostliness" (100 − your average exposure). Low exposure is the fantasy.
 @export var exposure_weight: float = 5.0
 ## Starting speed bonus; it bleeds away over the match, rewarding a fast clean game.
@@ -98,6 +101,9 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 @export var speed_bleed_per_second: float = 2.0
 ## Points for each clean kill (your marks + the player you eliminate).
 @export var kill_points: int = 100
+## Points for killing a PLAYER (the PvP payoff) — MASSIVE vs an NPC mark, so taking out a human
+## dominates the scoreboard. Counted separately from NPC-mark kills.
+@export var player_kill_points: int = 1000
 ## Awarded for COMPLETING your contract (killing your assigned target) — an achievement that
 ## scores points, not a circular "you won" flag (the winner is decided from the totals).
 @export var contract_bonus: int = 500
@@ -144,7 +150,8 @@ var _match_over: bool = false
 var _player_num: Dictionary = {}        # peer -> 1-based display number (spawn order)
 var _exposure_sum: Dictionary = {}      # peer -> summed exposure samples
 var _exposure_samples: Dictionary = {}  # peer -> sample count
-var _kills_by_peer: Dictionary = {}     # peer -> clean kills landed
+var _kills_by_peer: Dictionary = {}     # peer -> clean kills landed (NPC marks + players)
+var _player_kills_by_peer: Dictionary = {}  # peer -> PLAYER kills (subset of above; scored huge)
 var _completed_by_peer: Dictionary = {} # peer -> killed their assigned target?
 var _dead_by_peer: Dictionary = {}      # peer -> eliminated?
 var _elapsed: float = 0.0               # match time (host clock; clients tick locally for the timer)
@@ -161,6 +168,13 @@ var _rematch_votes: Dictionary = {}
 var _expected_clients: Array = []
 var _ready_clients: Dictionary = {}
 var _match_begun: bool = false
+## Round-start countdown state. `_round_active` flips true (host) when the countdown ends and the
+## freeze lifts. `_round_countdown` is the host's authoritative timer; `_countdown_display`/`_go_left`
+## drive the local "3/2/1/GO!" overlay on every peer.
+var _round_active: bool = false
+var _round_countdown: float = 0.0
+var _countdown_display: float = 0.0
+var _go_left: float = 0.0
 
 ## This machine's own private view. Host AND client each control one local player and
 ## each builds its own HUD + mini-map + mark highlight for that player only.
@@ -187,6 +201,9 @@ var _my_ring_color: Color = Color(1.0, 0.84, 0.25)
 ## Online PvP: our opponent (the other player). Known from the start so the exposure
 ## arrow can react when they run; only KILLABLE once we've finished our own mark.
 var _my_target_name: String = ""
+## True once another player has started hunting US (their marks are done). Drives the red "YOU ARE
+## BEING HUNTED" HUD state. Stored so it applies even if it arrives before our HUD is built.
+var _is_hunted: bool = false
 var _my_target: Node2D = null
 var _target_arrow: ExposureArrow = null
 ## True once our mark is dead — flips the arrow from exposure-gated to flashing.
@@ -232,6 +249,10 @@ var _pending_target_face: int = -1
 var _pending_exposed_faces: Array = []
 ## Host-only: who has already earned a reveal, so each fires once.
 var _target_reveal_awarded: bool = false
+## Who received the one-time TARGET reveal, and about whom — so that red plate can be refreshed if
+## its subject later disguises / un-disguises (0 = none yet).
+var _target_reveal_to: int = 0
+var _target_reveal_subject: int = 0
 var _exposure_revealed: Dictionary = {}
 
 ## Network debug overlay (toggle with F3): FPS, ping, and how many predicted inputs are
@@ -329,14 +350,57 @@ func _maybe_begin_match() -> void:
 		if not _ready_clients.has(client_peer):
 			return  # still waiting on someone
 	_match_begun = true
-	_spawn_player_for_peer(1)
-	for client_peer in _expected_clients:
-		_spawn_player_for_peer(client_peer)
+	# Spawn in a SHUFFLED order so player numbers (= spawn order) are reassigned each match — a
+	# rematch gives everyone a fresh number, which also rotates who-hunts-whom (the ring follows
+	# number order below). Host is just another peer in the shuffle.
+	var spawn_order: Array = [NetworkManager.HOST_PEER_ID]
+	spawn_order.append_array(_expected_clients)
+	spawn_order.shuffle()
+	for peer in spawn_order:
+		_spawn_player_for_peer(peer)
 	_spawn_crowd()
 	_build_target_ring()
 	for peer_id in _players_by_peer:
 		_assign_mark_for_peer(peer_id)
 	_notify_targets()
+	# Hold everyone for the start-of-round countdown (players spawned frozen above) — gives the
+	# per-viewer reskin + replication time to settle — then the host lifts the freeze for all.
+	if round_start_countdown > 0.0:
+		_round_countdown = round_start_countdown
+		_start_round_countdown.rpc(round_start_countdown)
+	else:
+		_round_active = true
+
+
+# Everyone: kick off the local "3/2/1/GO!" display. The actual unfreeze is host-authoritative
+# (the host clears each player's _net_frozen when _round_countdown ends); this is just the overlay.
+@rpc("authority", "call_local", "reliable")
+func _start_round_countdown(duration: float) -> void:
+	_countdown_display = duration
+
+
+# Per frame: the HOST counts the freeze down and lifts it for everyone at zero; every peer drives
+# its own "3/2/1/GO!" overlay from the (synced-start) display timer.
+func _tick_round_countdown(delta: float) -> void:
+	# HOST: authoritative freeze timer → unfreeze all players when it ends.
+	if NetworkManager.is_host() and not _round_active and _round_countdown > 0.0:
+		_round_countdown = maxf(0.0, _round_countdown - delta)
+		if _round_countdown == 0.0:
+			_round_active = true
+			for character in _players_by_peer.values():
+				if character != null and is_instance_valid(character):
+					character.set("_net_frozen", false)
+	# EVERY peer: the on-screen overlay (local timer; all peers started it ~together via the RPC).
+	if _countdown_display > 0.0:
+		_countdown_display = maxf(0.0, _countdown_display - delta)
+		if _mhud != null:
+			_mhud.set_countdown(str(int(ceil(_countdown_display))) if _countdown_display > 0.0 else "GO!")
+		if _countdown_display == 0.0:
+			_go_left = 0.8  # hold "GO!" briefly, then clear
+	elif _go_left > 0.0:
+		_go_left = maxf(0.0, _go_left - delta)
+		if _go_left == 0.0 and _mhud != null:
+			_mhud.set_countdown("")
 
 
 func _spawn_crowd() -> void:
@@ -387,16 +451,16 @@ func _request_spawn() -> void:
 		_maybe_begin_match()
 
 
-# Host-only: build the TARGET RING — a random single cycle over all players, so each peer
-# hunts exactly one other and is hunted by exactly one other (master_plan §7.2). One player =
-# empty; two = the mutual pair; more = one big loop.
+# Host-only: build the TARGET RING in PLAYER-NUMBER order — Player 1 hunts 2, 2 hunts 3, … and the
+# last wraps back to 1. So each peer hunts exactly one other and is hunted by exactly one other
+# (master_plan §7.2). The numbers themselves were shuffled at spawn, so the ring is randomised each
+# match without needing a second shuffle here. `_players_by_peer` keys are in spawn (= number) order.
 func _build_target_ring() -> void:
 	if not multiplayer.is_server():
 		return
 	var peers: Array = _players_by_peer.keys()
 	if peers.size() < 2:
 		return
-	peers.shuffle()
 	for i in peers.size():
 		var hunter: int = peers[i]
 		var prey: int = peers[(i + 1) % peers.size()]
@@ -458,6 +522,9 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	}
 	var character := _player_spawner.spawn(spawn_data)
 	_players_by_peer[peer_id] = character
+	# Spawn frozen until the start-of-round countdown ends (a late joiner after the round is active
+	# spawns unfrozen). Replicated, so the freeze holds on every screen.
+	character.set("_net_frozen", not _round_active)
 	_next_spawn_index += 1
 
 	# Start this peer's score row (host-only). _player_num is 1-based spawn order, for the
@@ -466,6 +533,7 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	_exposure_sum[peer_id] = 0.0
 	_exposure_samples[peer_id] = 0
 	_kills_by_peer[peer_id] = 0
+	_player_kills_by_peer[peer_id] = 0
 	_completed_by_peer[peer_id] = false
 	_dead_by_peer[peer_id] = false
 
@@ -514,7 +582,7 @@ func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 		if character != null:
 			for other_peer in _players_by_peer:
 				if other_peer != peer_id and not bool(_dead_by_peer.get(other_peer, false)):
-					_receive_exposure_reveal.rpc_id(other_peer, _revealed_look(character))
+					_receive_exposure_reveal.rpc_id(other_peer, peer_id, _revealed_look(character))
 
 
 # Owner-only: our opponent's exposure, fed to our local copy of them so the exposure
@@ -835,9 +903,12 @@ func _begin_target_phase(peer_id: int) -> void:
 	var target := _players_by_peer[target_peer] as Player
 	target.add_to_group("killable_for_%d" % peer_id)  # the kill check now lets us kill them
 	_enter_hunt_phase.rpc_id(peer_id)
+	_receive_hunted.rpc_id(target_peer, true)  # warn the prey: a hunter is now after you
 	# RED reveal (§7.4): the FIRST player to finish their marks learns their target's look.
 	if not _target_reveal_awarded:
 		_target_reveal_awarded = true
+		_target_reveal_to = peer_id
+		_target_reveal_subject = target_peer
 		_receive_target_reveal.rpc_id(peer_id, _revealed_look(target))
 
 
@@ -863,6 +934,16 @@ func _enter_hunt_phase() -> void:
 		_target_arrow.set_flashing(true)
 
 
+# Owner-only: another player is now hunting US. Flag it + turn the HUD's top-left box red.
+@rpc("authority", "call_local", "reliable")
+func _receive_hunted(on: bool) -> void:
+	_is_hunted = on
+	if _mhud != null:
+		_mhud.set_hunted(on)
+		if on:
+			_mhud.add_log("A hunter is on your trail — you are being hunted.")
+
+
 # === elimination, scoring & match end (buildplan §7.5) ======================
 
 # Host-side: this player was killed. A death no longer ends the match — it ELIMINATES that
@@ -879,6 +960,9 @@ func _on_player_killed(loser_peer: int) -> void:
 	# was this player's assigned hunter, it COMPLETES their contract (the +contract_bonus).
 	var loser := _players_by_peer.get(loser_peer) as Player
 	var killer_peer: int = int(loser.get("last_attacker_peer")) if loser != null else -1
+	if killer_peer > 0:
+		# A PLAYER kill — worth massive points (covers melee AND poison, both stamp last_attacker_peer).
+		_player_kills_by_peer[killer_peer] = int(_player_kills_by_peer.get(killer_peer, 0)) + 1
 	if killer_peer > 0 and int(_ring_target.get(killer_peer, 0)) == loser_peer:
 		_completed_by_peer[killer_peer] = true
 		_phase_by_peer[killer_peer] = "done"
@@ -1013,7 +1097,10 @@ func _score_for_peer(peer_id: int) -> Dictionary:
 	var avg_exposure: float = float(_exposure_sum.get(peer_id, 0.0)) / float(samples)
 	var exposure_score: int = int(round((100.0 - avg_exposure) * exposure_weight))
 	var speed_score: int = int(maxf(0.0, speed_bonus_cap - _elapsed * speed_bleed_per_second))
-	var kill_score: int = int(_kills_by_peer.get(peer_id, 0)) * kill_points
+	# Split kills: PLAYER kills score massively; the rest (NPC marks) score the normal amount.
+	var player_kills: int = int(_player_kills_by_peer.get(peer_id, 0))
+	var npc_kills: int = maxi(0, int(_kills_by_peer.get(peer_id, 0)) - player_kills)
+	var kill_score: int = npc_kills * kill_points + player_kills * player_kill_points
 	var outcome_bonus: int = 0
 	if bool(_completed_by_peer.get(peer_id, false)):
 		outcome_bonus += contract_bonus
@@ -1023,6 +1110,7 @@ func _score_for_peer(peer_id: int) -> Dictionary:
 	return {
 		"avg_exposure": avg_exposure,
 		"kills": int(_kills_by_peer.get(peer_id, 0)),
+		"player_kills": player_kills,
 		"completed": bool(_completed_by_peer.get(peer_id, false)),
 		"dead": bool(_dead_by_peer.get(peer_id, false)),
 		"total": total,
@@ -1194,6 +1282,7 @@ func _process(delta: float) -> void:
 	if NetworkManager.is_host():
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
+	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
 	_maybe_assign_crowd_appearances()
@@ -1254,6 +1343,7 @@ func _receive_roster(rows: Array) -> void:
 			if col != _my_ring_color:
 				_my_ring_color = col
 				_recolor_my_rings()
+				_mhud.set_legend_target_color(col)  # legend chip matches your ring colour
 			break
 
 
@@ -1397,6 +1487,8 @@ func _build_player_hud() -> void:
 	_build_layer_feedback()   # sewer overlay + arrow uptime (Slice B)
 	_build_item_hud()         # smoke/cloak readout → MatchHud ability slots (Slice D)
 	_build_faceplate_row()    # red/blue identity reveals (Slice E)
+	if _is_hunted:
+		_mhud.set_hunted(true)  # already being hunted before our HUD existed
 
 
 func _highlight_mark(mark: Node) -> void:
@@ -1907,6 +1999,7 @@ func _apply_disguise(character: Player, peer_id: int) -> bool:
 	var item := character.get_node_or_null("ItemComponent") as ItemComponent
 	var secs: int = int(item.disguise_seconds) if item != null else 30
 	_notify_owner.rpc_id(peer_id, "Disguised as a civilian (%ds)." % secs)
+	_refresh_reveals_for(peer_id)  # if we were already revealed, our plate flips to "?" now
 	return true
 
 
@@ -1933,6 +2026,25 @@ func _clear_disguise(peer_id: int) -> void:
 	var hunter := _hunter_of_target(peer_id)
 	if hunter != 0:
 		_set_opponent_arrow_suppressed.rpc_id(hunter, false)
+	_refresh_reveals_for(peer_id)  # disguise over → any reveal plate of us flips back to our real sprite
+
+
+# Re-send the current reveal look for `peer_id` so its plate matches its disguise state right now:
+# "?" while disguised, real sprite once the disguise ends. Covers the EXPOSED plate (everyone who
+# can see it) and the TARGET plate (the one hunter who earned it).
+func _refresh_reveals_for(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var character := _players_by_peer.get(peer_id) as Player
+	if character == null or not is_instance_valid(character):
+		return
+	var look := _revealed_look(character)
+	if bool(_exposure_revealed.get(peer_id, false)):
+		for other_peer in _players_by_peer:
+			if other_peer != peer_id and not bool(_dead_by_peer.get(other_peer, false)):
+				_receive_exposure_reveal.rpc_id(other_peer, peer_id, look)
+	if _target_reveal_subject == peer_id and _target_reveal_to != 0:
+		_receive_target_reveal.rpc_id(_target_reveal_to, look)
 
 
 func _random_commoner_index() -> int:
@@ -2085,8 +2197,8 @@ func _build_faceplate_row() -> void:
 		return
 	if _pending_target_face >= 0:
 		_mhud.set_target_reveal(_pending_target_face)
-	for index in _pending_exposed_faces:
-		_mhud.add_exposed_reveal(index)
+	for pair in _pending_exposed_faces:
+		_mhud.add_exposed_reveal(int(pair[0]), int(pair[1]))
 
 
 # Owner-only: we finished our marks first — here's our target's look (red plate).
@@ -2099,13 +2211,14 @@ func _receive_target_reveal(appearance_index: int) -> void:
 		_pending_target_face = appearance_index
 
 
-# Owner-only: an opponent hit 100% exposure — here's their look (blue plate).
+# Owner-only: an opponent hit 100% exposure — here's their look (blue plate), keyed by reveal_id
+# (their peer) so the SAME player's plate updates if they later disguise / un-disguise.
 @rpc("authority", "call_local", "reliable")
-func _receive_exposure_reveal(appearance_index: int) -> void:
+func _receive_exposure_reveal(reveal_id: int, appearance_index: int) -> void:
 	if _mhud != null:
-		_mhud.add_exposed_reveal(appearance_index)
-	elif not _pending_exposed_faces.has(appearance_index):
-		_pending_exposed_faces.append(appearance_index)
+		_mhud.add_exposed_reveal(reveal_id, appearance_index)
+	else:
+		_pending_exposed_faces.append([reveal_id, appearance_index])
 
 
 # === minimal on-screen status (6.0 debugging aid) ===========================

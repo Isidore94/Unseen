@@ -25,11 +25,13 @@ class_name KillComponent
 ## (a stand-in for "left your screen" that works the same for both split players).
 @export var lose_range: float = 800.0
 
-## Permanent exposure when a real kill lands (your mark, or a real player).
-@export var kill_exposure_spike: float = 30.0
-## Permanent exposure when you kill the WRONG person (an innocent civilian NPC). Big on
-## purpose: cutting down innocents is a glaring tell, and this is the downside that
-## punishes spamming the kill button in a crowd.
+## Permanent exposure when a real kill lands (your mark, or a real player). Tuned so your two NPC
+## marks (2 × this) PLUS using both equipped abilities stays comfortably under 100 — leaving headroom
+## that only EXTRA actions cross: running (recoverable) or a wrong-target kill (below). 2×22 = 44.
+@export var kill_exposure_spike: float = 22.0
+## Permanent exposure when you kill the WRONG person — an innocent civilian (e.g. one you mistook
+## for your player target). Big on purpose: from a player's normal contract floor (~2 marks + 2
+## abilities), one wrong-target kill pushes them over the 100 exposure cliff and lights them up.
 @export var wrong_commit_exposure: float = 40.0
 
 ## Input action that locks/commits. Local co-op assigns each player their own.
@@ -133,6 +135,10 @@ func request_kill(target_path: NodePath) -> void:
 	# never learns it (it isn't replicated), so the client-side check alone is bypassable. Without
 	# this, a stunned CLIENT could still land a kill.
 	if attacks_disabled:
+		return
+
+	# Round-start freeze: no kills until the countdown ends (the host clears _net_frozen for all).
+	if bool(_body.get("_net_frozen")):
 		return
 
 	# Phase 9 (9A) gate — disarmed during a whiff recovery window. Default true = no effect.
