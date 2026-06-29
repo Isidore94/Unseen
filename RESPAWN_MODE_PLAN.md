@@ -29,8 +29,8 @@
 | 2 | Per-life state reset (wipe exposure + tools to base on death/respawn) | ✅ done (core) |
 | 3 | Spawn candidates + live query surface (density/exclusion) | ✅ done (samples walkable points + crowd density) |
 | 4 | Respawn system: weighted picker + grace + death→respawn wiring | ✅ done (core) |
-| 5 | Arrow tiering (per-life precision 4-dir → 8-way → precise) | ⬜ next |
-| 6 | PvE ladder (player chooses axis; capped) | ⬜ next |
+| 5 | Arrow tiering (per-life precision 4-dir → 8-way → precise) | ✅ done (`precision_tier` on ExposureArrow) |
+| 6 | PvE ladder (player chooses axis; capped) | ✅ done (iteration 1, gated `pve_ladder_enabled`, default OFF) |
 | 7 | Exposure-cliff reconciliation (cliff precision distinct from ladder precision) | ⬜ |
 | 8 | Identity-leak-at-spawn hardening + crowd-netcode reconcile | ⬜ (partly mitigated: spawn into density) |
 | 9 | Tuning / telemetry / A-B (avg life length, no-PvE viability, spawn-camp rate) | ⬜ |
@@ -52,6 +52,22 @@ When `respawn_mode_enabled` is on (host):
   excluded (small map / full lobby) — never inside a kill zone.
 - **Grace** = host-side kill immunity (`Player.grace_active`, checked in `KillComponent.request_kill`); it **breaks
   when the graced player lands a kill** (no shielded pushes).
+
+## PvE ladder — how iteration 1 works (Stages 5–6)
+Gated behind `GameModeFlags.pve_ladder_enabled` (**default OFF** so it can't affect the core respawn test;
+flip ON to try it). When on, each life:
+- **Base life** = arrow tier 0 (4-dir) + only your **first** lobby tool (slot 1 locked).
+- You're handed `pve_marks_per_life` (3) **optional** highlighted NPC marks. Killing one earns **one
+  upgrade point** (a clean kill, so it also costs the usual +exposure — PvE has a real cost).
+- Spend a point, your choice of axis: **[F] sharpen arrow** (tier 0→1→2, cap 2) or **[G] unlock 2nd tool**
+  (cap 1). Capped axes refuse the spend. (Gamepad: LB = precision, RB = tool.)
+- Everything (tier, unlocked tool, marks, pending points) **wipes on death** and re-rolls on respawn.
+- The arrow still **vanishes on-screen at every tier**, so precision never gifts the final ID — PvE stays
+  optional tempo, not mandatory power.
+
+Iteration-1 limitations to revisit: the [F]/[G] feedback is HUD log lines (no dedicated ladder widget);
+if another player whiff-kills your mark NPC, you still get the point; the tool axis caps at +1 (unlock
+your 2nd lobby tool) because the kit has 2 slots — expanding to a 3rd tool is a later option.
 
 ## Known limitations carried forward (flagged, not yet addressed)
 - **Grace breaks on kill only**, not on tool use (defensive tools during grace are allowed) — revisit in Stage 8.

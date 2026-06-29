@@ -85,6 +85,10 @@ signal item_requested(slot: int)
 
 # Per-SLOT live state (index 0 / 1).
 var _charges: Array[int] = [0, 0]
+## PvE LADDER (RESPAWN_MODE_PLAN.md §6): which tool slots are usable THIS life. Base respawn life
+## unlocks only slot 0 (your first lobby tool); the ladder's TOOL upgrade unlocks slot 1. [true, true]
+## (the default) = both usable, so classic/elimination play is unchanged.
+var slot_unlocked: Array[bool] = [true, true]
 var _cooldown_left: Array[float] = [0.0, 0.0]
 var _active_left: Array[float] = [0.0, 0.0]   # seconds the slot's durational effect has left (HUD)
 
@@ -120,6 +124,15 @@ func reset_to_base() -> void:
 	for slot in 2:
 		_cooldown_left[slot] = 0.0
 		_active_left[slot] = 0.0
+
+
+# PvE LADDER: base respawn life uses only slot 0 (your first lobby tool); the ladder unlocks slot 1.
+func set_base_life_lock() -> void:
+	slot_unlocked = [true, false]
+
+func unlock_slot(slot: int) -> void:
+	if slot >= 0 and slot < slot_unlocked.size():
+		slot_unlocked[slot] = true
 
 
 # === per-tool config lookups (one place, so tunables never drift) ==========================
@@ -220,6 +233,8 @@ func _physics_process(delta: float) -> void:
 
 # A press on the controlling machine: act if we're the authority, else relay a request to the host.
 func _on_press(slot: int) -> void:
+	if slot >= 0 and slot < slot_unlocked.size() and not slot_unlocked[slot]:
+		return  # PvE ladder: this slot isn't unlocked this life
 	if server_authoritative:
 		_activate(slot)
 	else:
@@ -248,6 +263,8 @@ func _activate(slot: int) -> void:
 		return
 	if owner_dead:
 		return  # server-authoritative guard: a dead player can't fire a tool (covers the relayed request too)
+	if not slot_unlocked[slot]:
+		return  # PvE ladder: slot not unlocked this life (host-authoritative — rejects the relayed request too)
 	if _charges[slot] <= 0 or _cooldown_left[slot] > 0.0 or _active_left[slot] > 0.0:
 		return
 	var tool := _tool(slot)

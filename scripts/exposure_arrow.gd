@@ -49,6 +49,12 @@ class_name ExposureArrow
 @export var flash_interval: float = 2.5
 @export var flash_duration: float = 0.8
 
+## PvE LADDER precision of the HUNT arrow (RESPAWN_MODE_PLAN.md §6): 0 = 4 cardinals (base,
+## un-triangulatable), 1 = 8-way, 2 = precise continuous bearing. Raised per life by killing NPC
+## marks; resets to 0 on death. It only sharpens the DIRECTION — the arrow still vanishes the instant
+## the target is on your screen at every tier, so the final identification stays a crowd read.
+@export var precision_tier: int = 0
+
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
 
@@ -142,7 +148,11 @@ func _process_exposure(delta: float) -> void:
 # giving the target away). Re-points live whenever they're off-screen again.
 func _process_flashing(_delta: float) -> void:
 	if _compute_offscreen_arrow():
-		_snap_to_cardinal()
+		# PvE-ladder precision: tier 0 = 4 cardinals (base), 1 = 8-way, 2 = precise bearing (no snap).
+		if precision_tier <= 0:
+			_snap_to_cardinal()
+		elif precision_tier == 1:
+			_snap_to_8way()
 		_alpha = 1.0
 	else:
 		_alpha = 0.0  # on-screen / dead / gone → off, no fade
@@ -189,6 +199,25 @@ func _snap_to_cardinal() -> void:
 		_arrow_dir = Vector2(0.0, signf(_arrow_dir.y))
 	if _arrow_dir == Vector2.ZERO:
 		_arrow_dir = Vector2.RIGHT
+	var viewport_size: Vector2 = get_viewport_rect().size
+	var screen_center: Vector2 = viewport_size * 0.5
+	var radius: float = minf(viewport_size.x, viewport_size.y) * 0.5 - edge_margin
+	_arrow_pos = screen_center + _arrow_dir * radius
+
+
+# PvE LADDER: set the hunt arrow's precision tier (0 = 4-dir, 1 = 8-way, 2 = precise). The owner's
+# OnlineMatch applies their earned tier here whenever the arrow is (re)built or upgraded.
+func set_precision_tier(tier: int) -> void:
+	precision_tier = clampi(tier, 0, 2)
+
+
+# Round the bearing to the nearest of EIGHT directions (the mid PvE-ladder precision tier), then
+# re-place the arrow on the screen edge. The dominant-of-eight read is sharper than 4-dir but still
+# not an exact bearing.
+func _snap_to_8way() -> void:
+	var step := TAU / 8.0
+	var ang := roundf(_arrow_dir.angle() / step) * step
+	_arrow_dir = Vector2.RIGHT.rotated(ang)
 	var viewport_size: Vector2 = get_viewport_rect().size
 	var screen_center: Vector2 = viewport_size * 0.5
 	var radius: float = minf(viewport_size.x, viewport_size.y) * 0.5 - edge_margin

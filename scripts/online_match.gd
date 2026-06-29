@@ -135,6 +135,20 @@ var _seat_order: Array = []        ## fixed peer order set at match start; targe
 var _respawn_due: Dictionary = {}  ## peer -> seconds left until respawn
 var _grace_due: Dictionary = {}    ## peer -> seconds left of post-respawn grace
 
+# === PvE LADDER (RESPAWN_MODE_PLAN.md §6) — only when GameModeFlags.pve_ladder_enabled ============
+## Optional NPC marks offered per life. Killing one grants an upgrade point you spend (your choice)
+## on arrow PRECISION or unlocking your 2nd TOOL — capped per axis; all of it resets on death.
+@export var pve_marks_per_life: int = 3
+const LADDER_PRECISION_CAP := 2   ## arrow tiers above base (0 -> 1 -> 2)
+const LADDER_TOOL_CAP := 1        ## tool unlocks above base (unlock slot 1)
+var _ladder_tier_by_peer: Dictionary = {}    ## peer -> arrow precision tier (0..LADDER_PRECISION_CAP)
+var _ladder_tools_by_peer: Dictionary = {}   ## peer -> tool steps spent (0..LADDER_TOOL_CAP)
+var _ladder_pending_by_peer: Dictionary = {} ## peer -> unspent upgrade points
+var _ladder_marks_by_peer: Dictionary = {}   ## peer -> Array[Npc] marks assigned this life
+# Owner-side (this machine's local player):
+var _my_arrow_tier: int = 0
+var _my_ladder_pending: int = 0
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -411,6 +425,9 @@ func _maybe_begin_match() -> void:
 		_seat_order = spawn_order.duplicate()
 		_recompute_ring_from_seats()
 		_respawn_rewire_all()
+		if _ladder_on():
+			for peer_id in _players_by_peer:
+				_ladder_reset_life(peer_id)  # hand out the first life's optional marks + lock the 2nd tool
 	else:
 		_build_target_ring()
 		for peer_id in _players_by_peer:
@@ -1321,6 +1338,7 @@ func _respawn_player(peer: int) -> void:
 	_grace_due[peer] = respawn_grace_seconds
 	_recompute_ring_from_seats()
 	_respawn_rewire_all()
+	_ladder_reset_life(peer)  # fresh life: wipe earned upgrades, re-lock the 2nd tool, new marks (no-op if ladder off)
 	_notify_owner.rpc_id(peer, "Respawned — fresh life. Briefly safe.")
 	_update_status()
 
@@ -1437,6 +1455,150 @@ func _killer_position(peer: int) -> Vector2:
 	if killer != null and is_instance_valid(killer):
 		return killer.global_position
 	return NO_POS
+
+
+# ================================================================================================
+# PvE LADDER (RESPAWN_MODE_PLAN.md §6). Optional per-life NPC marks: kill one to earn an upgrade
+# point, then CHOOSE to sharpen your arrow (precision) or unlock your 2nd tool — capped per axis,
+# wiped on death. All host-authoritative; gated by GameModeFlags.pve_ladder_enabled.
+# ================================================================================================
+
+func _ladder_on() -> bool:
+	return GameModeFlags.respawn_mode_enabled and GameModeFlags.pve_ladder_enabled
+
+
+# Host: start a fresh life's ladder for `peer` — clear earned upgrades, re-lock the 2nd tool, hand out
+# a new set of optional marks, and push the reset state to the owner.
+func _ladder_reset_life(peer: int) -> void:
+	if not _ladder_on():
+		return
+	_release_ladder_marks(peer)
+	_ladder_tier_by_peer[peer] = 0
+	_ladder_tools_by_peer[peer] = 0
+	_ladder_pending_by_peer[peer] = 0
+	var node := _players_by_peer.get(peer) as Player
+	if node != null and is_instance_valid(node):
+		var item := node.get_node_or_null("ItemComponent") as ItemComponent
+		if item != null:
+			item.set_base_life_lock()  # base life: only slot 0 usable
+	_assign_ladder_marks(peer)
+	_push_ladder_state(peer)
+
+
+# Host: free this peer's still-living marks so those NPCs blend back in / can be reused next life.
+func _release_ladder_marks(peer: int) -> void:
+	var marks: Array = _ladder_marks_by_peer.get(peer, [])
+	for m in marks:
+		if m != null and is_instance_valid(m):
+			m.remove_from_group("mark")
+			m.remove_from_group("killable_for_%d" % peer)
+	_ladder_marks_by_peer[peer] = []
+
+
+# Host: give `peer` up to pve_marks_per_life OPTIONAL crowd marks for this life, highlighted to the
+# owner. We connect each NPC's death ONCE (guarded by the "ladder_wired" group) and route the grant
+# to whoever currently owns it — so re-using an NPC across lives can't double-connect or mis-credit.
+func _assign_ladder_marks(peer: int) -> void:
+	if _crowd_parent == null:
+		return
+	var candidates: Array = []
+	for child in _crowd_parent.get_children():
+		var npc := child as Npc
+		if npc != null and not npc.is_dead() and not npc.is_in_group("mark"):
+			candidates.append(npc)
+	candidates.shuffle()
+	var chosen: Array = []
+	var names: Array = []
+	for npc in candidates:
+		if chosen.size() >= pve_marks_per_life:
+			break
+		npc.add_to_group("mark")
+		npc.add_to_group("killable_for_%d" % peer)
+		if not npc.is_in_group("ladder_wired"):
+			npc.add_to_group("ladder_wired")
+			npc.died.connect(_on_ladder_mark_died.bind(npc))
+		chosen.append(npc)
+		names.append(String(npc.name))
+	_ladder_marks_by_peer[peer] = chosen
+	if not names.is_empty():
+		_receive_marks.rpc_id(peer, names)  # reuse the existing owner-only mark highlight
+
+
+# Host: an NPC that was someone's optional mark died — credit its CURRENT owner with an upgrade point.
+func _on_ladder_mark_died(npc: Node) -> void:
+	if not _ladder_on():
+		return
+	for peer in _ladder_marks_by_peer:
+		var marks: Array = _ladder_marks_by_peer[peer]
+		if marks.has(npc):
+			marks.erase(npc)  # consumed — can't double-count
+			_ladder_marks_by_peer[peer] = marks
+			_ladder_pending_by_peer[peer] = int(_ladder_pending_by_peer.get(peer, 0)) + 1
+			_notify_mark_down.rpc_id(int(peer), String(npc.name))  # drop its highlight on the owner
+			_push_ladder_state(int(peer))
+			return
+
+
+# Host → owner: current ladder state — the arrow tier to apply + how many points are unspent.
+func _push_ladder_state(peer: int) -> void:
+	_receive_ladder_state.rpc_id(peer, int(_ladder_tier_by_peer.get(peer, 0)), int(_ladder_pending_by_peer.get(peer, 0)))
+
+
+@rpc("authority", "call_local", "reliable")
+func _receive_ladder_state(tier: int, pending: int) -> void:
+	_my_arrow_tier = tier
+	_my_ladder_pending = pending
+	if _target_arrow != null and is_instance_valid(_target_arrow):
+		_target_arrow.set_precision_tier(tier)
+	if _mhud != null and pending > 0:
+		_mhud.add_log("Upgrade ready (%d) — [F] sharpen arrow · [G] unlock 2nd tool." % pending)
+
+
+# Owner-side per-frame: spend a pending upgrade point with the two axis keys (no-op without one).
+func _read_ladder_input() -> void:
+	if not _ladder_on() or _spectating or _my_ladder_pending <= 0:
+		return
+	if _local_player == null or not is_instance_valid(_local_player) or _local_player.is_dead():
+		return
+	if Input.is_action_just_pressed("upgrade_precision"):
+		_request_ladder_spend.rpc_id(NetworkManager.HOST_PEER_ID, 0)
+	elif Input.is_action_just_pressed("upgrade_tool"):
+		_request_ladder_spend.rpc_id(NetworkManager.HOST_PEER_ID, 1)
+
+
+# Owner → host: spend a pending point on an axis (0 = precision, 1 = tool). Host validates + caps.
+# call_local so the host's OWN key-press runs (rpc_id to self); the is_server guard no-ops on clients.
+@rpc("any_peer", "call_local", "reliable")
+func _request_ladder_spend(axis: int) -> void:
+	if not multiplayer.is_server() or not _ladder_on():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	var peer := sender if sender != 0 else multiplayer.get_unique_id()
+	_apply_ladder_spend(peer, axis)
+
+
+func _apply_ladder_spend(peer: int, axis: int) -> void:
+	if int(_ladder_pending_by_peer.get(peer, 0)) <= 0:
+		return
+	var spent := false
+	if axis == 0:
+		var tier := int(_ladder_tier_by_peer.get(peer, 0))
+		if tier < LADDER_PRECISION_CAP:
+			_ladder_tier_by_peer[peer] = tier + 1
+			spent = true
+	elif axis == 1:
+		if int(_ladder_tools_by_peer.get(peer, 0)) < LADDER_TOOL_CAP:
+			_ladder_tools_by_peer[peer] = 1
+			var node := _players_by_peer.get(peer) as Player
+			if node != null and is_instance_valid(node):
+				var item := node.get_node_or_null("ItemComponent") as ItemComponent
+				if item != null:
+					item.unlock_slot(1)
+			spent = true
+			_notify_owner.rpc_id(peer, "Second tool unlocked.")
+	if spent:
+		_ladder_pending_by_peer[peer] = int(_ladder_pending_by_peer[peer]) - 1
+		_push_ladder_state(peer)
 
 
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
@@ -1686,6 +1848,7 @@ func _process(delta: float) -> void:
 	_tick_morphs(delta)  # revert finished morphs (every machine; morph is applied locally)
 	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
+	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
 	# started together via the lobby, so it stays roughly in sync without extra messages).
 	if not NetworkManager.is_host():
@@ -1950,6 +2113,7 @@ func _build_target_arrow(opponent: Node2D) -> void:
 	var arrow_parent: Node = _arrow_layer if _arrow_layer != null else _player_hud_layer
 	arrow_parent.add_child(_target_arrow)
 	_target_arrow.track_target(opponent)
+	_target_arrow.set_precision_tier(_my_arrow_tier)  # keep our PvE-earned precision across retargets
 	if _hunt_phase:
 		_target_arrow.set_flashing(true)
 	# If we're already in the sewer when the arrow is created, give it 100% uptime now.
