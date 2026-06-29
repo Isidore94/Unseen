@@ -36,6 +36,10 @@ class_name KillComponent
 
 ## Input action that locks/commits. Local co-op assigns each player their own.
 @export var action_primary_action: String = "action_primary"
+## Controller-friendly target lock: tap to switch the soft-lock to the next nearby character.
+@export var cycle_action: String = "cycle_target"
+## After a manual cycle, hold that lock this long before the auto soft-lock is allowed to re-snap.
+@export var cycle_hold_seconds: float = 2.5
 ## Group of actors THIS killer may actually kill. Co-op: "killable_for_1/2".
 @export var valid_target_group_name: String = "killable"
 
@@ -67,6 +71,8 @@ var exposure_penalty_multiplier: float = 1.0
 var _primed: Node2D = null
 ## The way we're facing, used to pick "the one in front" when locking.
 var _last_facing: Vector2 = Vector2.RIGHT
+## Seconds left of a manual-cycle hold (auto soft-lock pauses so it doesn't snap back instantly).
+var _cycle_hold: float = 0.0
 
 ## Online only: true on the machine that locally controls this killer. When set, we
 ## send a kill REQUEST to the host instead of resolving the kill ourselves.
@@ -97,24 +103,71 @@ func _physics_process(_delta: float) -> void:
 	_update_locked()
 
 
-# ONLINE: pick who we mean locally (using the replicated crowd we can see), then ask
-# the HOST to resolve it. We only fire when actually in range, for immediate feel.
+# ONLINE (controller-friendly): keep a sticky SOFT-LOCK on the best nearby character (drives the
+# private reticle), let the cycle key switch targets, and ASSASSINATE on the action press when the
+# locked character is in range. We pick locally (the crowd we can see) and the HOST re-validates.
 func _network_kill_input() -> void:
 	if _body.velocity.length() > 5.0:
 		_last_facing = _body.velocity.normalized()
 
-	if not Input.is_action_just_pressed(action_primary_action) or attacks_disabled:
-		return
+	_maintain_soft_lock()  # auto-acquire/keep _primed → the reticle tracks it
 
-	var suspect := _best_suspect_in_front()
-	if suspect == null:
-		return
-	var distance := _body.global_position.distance_to(suspect.global_position)
-	if distance > kill_range:
-		return  # not close enough to commit (the host enforces this as well)
+	if Input.is_action_just_pressed(cycle_action):
+		_cycle_lock()  # switch the lock to the next nearby character
 
-	_play_strike()  # instant local feedback; the host decides the actual outcome
-	request_kill.rpc_id(NetworkManager.HOST_PEER_ID, suspect.get_path())
+	if attacks_disabled:
+		return
+	# Press to assassinate — only if we have a lock AND it's within range (the host checks too).
+	if Input.is_action_just_pressed(action_primary_action) and _primed != null and is_instance_valid(_primed):
+		if _body.global_position.distance_to(_primed.global_position) <= kill_range:
+			_play_strike()  # instant local feedback; the host decides the actual outcome
+			request_kill.rpc_id(NetworkManager.HOST_PEER_ID, _primed.get_path())
+
+
+# Keep a sticky soft-lock: drop one that's gone/dead/too far, otherwise auto-snap to the best
+# candidate in front (unless we're inside a manual-cycle hold window).
+func _maintain_soft_lock() -> void:
+	if _primed != null and (not is_instance_valid(_primed) \
+			or (_primed.has_method("is_dead") and _primed.is_dead()) \
+			or _body.global_position.distance_to(_primed.global_position) > lose_range):
+		_clear_lock()
+	if _cycle_hold > 0.0:
+		_cycle_hold = maxf(0.0, _cycle_hold - get_physics_process_delta_time())
+		return
+	var best := _best_suspect_in_front()
+	if best != _primed:
+		var had_lock := _primed != null
+		_primed = best
+		if had_lock != (best != null):
+			lock_changed.emit(best != null)
+
+
+# Cycle the lock to the next character in front (controller target switching).
+func _cycle_lock() -> void:
+	var candidates := _candidates_in_front()
+	if candidates.is_empty():
+		return
+	var idx := candidates.find(_primed)
+	var next: Node2D = candidates[0]
+	if idx >= 0:
+		next = candidates[(idx + 1) % candidates.size()]
+	if next != _primed:
+		var had_lock := _primed != null
+		_primed = next
+		_cycle_hold = cycle_hold_seconds
+		if not had_lock:
+			lock_changed.emit(true)
+
+
+# The character currently soft-locked (or null), and whether it's within striking range — read by the
+# private reticle so a controller player can SEE who they'll hit and when to press.
+func locked_target() -> Node2D:
+	return _primed
+
+
+func lock_in_range() -> bool:
+	return _primed != null and is_instance_valid(_primed) \
+		and _body.global_position.distance_to(_primed.global_position) <= kill_range
 
 
 # HOST-ONLY: validate and resolve a kill request. Never trust the client — re-check
@@ -288,7 +341,19 @@ const KILL_TARGET_LAYERS := 2 | 4
 
 # Finds the best character to lock: roughly in front of us, within range, closest
 # to our facing line. Returns null if there's nobody suitable in front.
+# The single best suspect in front (the auto soft-lock target). Just the top of the candidate list.
 func _best_suspect_in_front() -> Node2D:
+	var candidates := _candidates_in_front()
+	return candidates[0] if not candidates.is_empty() else null
+
+
+# Every valid character in front, sorted best-first (well-centred + nearby wins). Used by both the
+# auto soft-lock and the cycle. Skips dead bodies and anyone on a different plane / in the sewer.
+func _candidates_in_front() -> Array:
+	var out: Array = []
+	var my_layer: int = _layer_of(_body)
+	if my_layer == LayerComponent.Layer.SEWER:
+		return out  # the sewer is a strict no-kill zone — nothing is targetable here
 	var space := _body.get_world_2d().direct_space_state
 	var shape := CircleShape2D.new()
 	shape.radius = prime_range
@@ -297,18 +362,14 @@ func _best_suspect_in_front() -> Node2D:
 	query.transform = Transform2D(0.0, _body.global_position)
 	query.collision_mask = KILL_TARGET_LAYERS
 	query.collide_with_bodies = true
-
-	var my_layer: int = _layer_of(_body)
-	if my_layer == LayerComponent.Layer.SEWER:
-		return null  # the sewer is a strict no-kill zone — nothing is targetable here
-
 	var cos_limit: float = cos(deg_to_rad(prime_cone_degrees))
-	var best: Node2D = null
-	var best_score: float = -INF
+	var scored: Array = []
 	for result in space.intersect_shape(query, 48):
 		var collider := result.get("collider") as Node2D
 		if collider == null or collider == _body or not (collider is CharacterBody2D):
 			continue
+		if collider.has_method("is_dead") and collider.is_dead():
+			continue  # don't lock a corpse
 		if _layer_of(collider) != my_layer:
 			continue  # you can only target someone on your own plane (ground/rooftop)
 		var to_target: Vector2 = collider.global_position - _body.global_position
@@ -318,12 +379,11 @@ func _best_suspect_in_front() -> Node2D:
 		var alignment: float = (to_target / distance).dot(_last_facing)
 		if alignment < cos_limit:
 			continue  # not in front of us
-		# Prefer suspects that are well in front and nearby.
-		var score: float = alignment - (distance / prime_range) * 0.5
-		if score > best_score:
-			best_score = score
-			best = collider
-	return best
+		scored.append({"node": collider, "score": alignment - (distance / prime_range) * 0.5})
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["score"]) > float(b["score"]))
+	for s in scored:
+		out.append(s["node"])
+	return out
 
 
 # Which plane a character is on. Anything without a LayerComponent (every NPC) is

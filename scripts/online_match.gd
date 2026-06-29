@@ -171,6 +171,7 @@ var _my_ladder_pending: int = 0
 ## How often (seconds) the host re-evaluates everyone's danger level.
 @export var danger_eval_interval: float = 0.25
 var _danger_overlay: DangerOverlay = null
+var _lock_reticle: LockReticle = null  ## private controller target-lock indicator (local player only)
 var _danger_accum: float = 0.0
 var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (only re-sent on change)
 
@@ -1841,6 +1842,21 @@ func _request_stun() -> void:
 		_notify_owner.rpc_id(prey, "No hunter close enough to stun.")
 
 
+# Owner-side: point the private lock reticle at whatever our KillComponent has soft-locked, and tell
+# it whether we're in striking range (so it turns red = "press to assassinate").
+func _update_lock_reticle() -> void:
+	if _lock_reticle == null:
+		return
+	if _spectating or _local_player == null or not is_instance_valid(_local_player) or _local_player.is_dead():
+		_lock_reticle.track(null, false)
+		return
+	var kc := _local_player.get_node_or_null("KillComponent")
+	if kc != null and kc.has_method("locked_target"):
+		_lock_reticle.track(kc.locked_target(), kc.lock_in_range())
+	else:
+		_lock_reticle.track(null, false)
+
+
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
 # (for the round average), and end on the time limit. Stops once the match is decided.
 func _host_score_tick(delta: float) -> void:
@@ -2092,6 +2108,7 @@ func _process(delta: float) -> void:
 	_tick_item_countdown(delta)
 	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
 	_read_stun_input()  # STUN: defend against your closing hunter (host validates range)
+	_update_lock_reticle()  # private target-lock reticle follows our soft-locked character
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
 	# started together via the lobby, so it stays roughly in sync without extra messages).
 	if not NetworkManager.is_host():
@@ -2288,6 +2305,12 @@ func _build_player_hud() -> void:
 	_danger_overlay = DangerOverlay.new()
 	_danger_overlay.name = "DangerOverlay"
 	danger_layer.add_child(_danger_overlay)
+
+	# Private target-lock reticle — drawn in WORLD space over the character we've soft-locked. Local
+	# only (added under the match, never replicated), so opponents never see our lock.
+	_lock_reticle = LockReticle.new()
+	_lock_reticle.name = "LockReticle"
+	add_child(_lock_reticle)
 
 	# Mini-map into the HUD's minimap slot, scaled to fit.
 	_mini_map = MINI_MAP_SCRIPT.new() as MiniMap
