@@ -224,16 +224,11 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 ## How long (seconds) players caught in the burst are stunned (can't move or kill).
 @export var firecracker_stun_seconds: float = 1.6
 
-# === STUN / counter-kill (AC Rearmed) — the prey turns the tables on a closing hunter =============
-## The prey can stun their hunter when the hunter is within this distance (px). Pair it with the
-## danger cue: the heartbeat tells you a hunter is near, the stun lets you punish them for closing in.
-@export var stun_range: float = 150.0
+# === COUNTER-STUN (AC Rearmed) — you can't kill the player hunting you; STRIKING them stuns them ====
 ## How long (seconds) a stunned hunter is frozen (can't move or kill) — reuses the smoke-stun system.
 @export var stun_duration: float = 3.0
-## Cooldown (seconds) before another stun attempt after a SUCCESS.
+## Cooldown (seconds) before you can counter-stun your hunter again.
 @export var stun_cooldown: float = 8.0
-## Smaller cooldown after a MISS (no hunter in range), so a whiffed stun isn't free to spam.
-@export var stun_fail_cooldown: float = 1.5
 ## Points for a successful counter-stun — "just like getting a kill" (defaults to a player kill).
 @export var counter_stun_points: int = 1000
 var _stun_ready_at: Dictionary = {}  ## peer -> the _elapsed time at which their next stun is allowed
@@ -1983,48 +1978,11 @@ func _spawn_firecracker_flash(pos: Vector2) -> void:
 
 
 # ================================================================================================
-# STUN / counter-kill (AC Rearmed). The prey presses STUN; the HOST checks whether their assigned
-# hunter is actually within stun_range and, if so, freezes that hunter — identity-safe (the prey
-# never picks a figure; the host resolves it). Assassination naturally wins: if the hunter's kill
-# resolves first the prey is already dead, so the stun no-ops.
+# COUNTER-STUN (AC Rearmed). You can't assassinate the player hunting you — STRIKING them (lock +
+# attack, in melee range) converts to a stun instead of a kill, worth kill-level points. The kill
+# component fires counter_stun_requested on the host; we resolve it here. Identity-safe: the prey
+# just attacks the threat, and the host knows whether that body was their hunter.
 # ================================================================================================
-
-# Owner-side per-frame: send a stun request when the player presses the stun key.
-func _read_stun_input() -> void:
-	if _spectating or _local_player == null or not is_instance_valid(_local_player) or _local_player.is_dead():
-		return
-	if Input.is_action_just_pressed("stun"):
-		_request_stun.rpc_id(NetworkManager.HOST_PEER_ID)
-
-
-# call_local so the host's own press runs; the is_server guard no-ops on clients.
-@rpc("any_peer", "call_local", "reliable")
-func _request_stun() -> void:
-	if not multiplayer.is_server():
-		return
-	var sender := multiplayer.get_remote_sender_id()
-	var prey := sender if sender != 0 else multiplayer.get_unique_id()
-	if bool(_dead_by_peer.get(prey, false)):
-		return
-	var prey_node := _players_by_peer.get(prey) as Player
-	if prey_node == null or not is_instance_valid(prey_node):
-		return
-	if bool(prey_node.get("_net_frozen")) or bool(prey_node.get("_net_stunned")):
-		return  # can't stun during the start freeze or while stunned yourself
-	if _elapsed < float(_stun_ready_at.get(prey, 0.0)):
-		return  # on cooldown
-	var hunter := _hunter_of_target(prey)
-	var hunter_node: Player = null
-	if hunter != 0:
-		hunter_node = _players_by_peer.get(hunter) as Player
-	var in_range: bool = hunter_node != null and is_instance_valid(hunter_node) \
-		and not bool(_dead_by_peer.get(hunter, false)) \
-		and prey_node.global_position.distance_to(hunter_node.global_position) <= stun_range
-	if not in_range:
-		_stun_ready_at[prey] = _elapsed + stun_fail_cooldown
-		_notify_owner.rpc_id(prey, "No hunter close enough to stun.")
-		return
-	_counter_stun_hunter(prey, hunter)  # honours the cooldown; scores like a kill
 
 
 # Host: a strike LANDED on your hunter (you can't kill them) → resolve it as a counter-stun.
@@ -2317,7 +2275,6 @@ func _process(delta: float) -> void:
 	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
 	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
-	_read_stun_input()  # STUN: defend against your closing hunter (host validates range)
 	_update_lock_reticle()  # private target-lock reticle follows our soft-locked character
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
 	# started together via the lobby, so it stays roughly in sync without extra messages).
