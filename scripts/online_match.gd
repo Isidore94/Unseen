@@ -148,6 +148,20 @@ const PERK_SURVIVOR := 4  ## longer respawn grace
 ## SURVIVOR: multiply post-respawn grace duration.
 @export var survivor_grace_scale: float = 1.8
 var _perk_by_peer: Dictionary = {}        ## peer -> chosen perk int (host-side; applied at spawn)
+
+# === ACTIVE BLENDING / HIDING SPOTS (AC-style) ====================================================
+## How many "hide here" zones to scatter (at dense-crowd points) per match.
+@export var blend_spot_count: int = 5
+## How close to a spot's centre you must be, and how slowly you must move, to count as blended.
+@export var blend_radius: float = 90.0
+@export var blend_still_speed: float = 30.0
+## Exposure (per second) bled off while blended — duck into cover to cool a loud moment fast.
+@export var blend_exposure_drop: float = 40.0
+## Bonus for assassinating while blended (a kill from cover).
+@export var blend_kill_bonus: int = 200
+var _blend_spots: Array = []              ## Array[Vector2] spot centres (host: the source of truth)
+var _blended_by_peer: Dictionary = {}     ## peer -> currently blended?
+
 var _streak_by_peer: Dictionary = {}      ## peer -> consecutive player kills without dying
 var _escape_ready_at: Dictionary = {}     ## peer -> _elapsed time when their next ESCAPE bonus is allowed
 var _drop_recent_until: Dictionary = {}   ## peer -> _elapsed time until which a kill counts as a DROP
@@ -494,6 +508,7 @@ func _maybe_begin_match() -> void:
 	for peer in spawn_order:
 		_spawn_player_for_peer(peer)
 	_spawn_crowd()
+	_setup_blend_spots()  # scatter hide-here zones at dense-crowd points
 	if _respawn_mode():
 		# RESPAWN MODE: PvP from the first life. Marks are OPTIONAL ladder content (off in this
 		# increment), so we skip the mandatory mark gate and put everyone straight into the hunt.
@@ -1776,6 +1791,68 @@ func _tick_drop_watch(_delta: float) -> void:
 		_last_layer_by_peer[peer] = layer
 
 
+# ================================================================================================
+# ACTIVE BLENDING / HIDING SPOTS (AC-style). The host scatters "hide here" zones at dense-crowd
+# points; standing still in one makes you BLENDED — exposure bleeds off fast and a kill from cover
+# is a BLEND KILL. Spot positions are host-authoritative and replicated only as markers.
+# ================================================================================================
+
+# Host: choose blend-spot positions (biased to dense crowd) and tell everyone to draw the markers.
+func _setup_blend_spots() -> void:
+	var map := _map as TestMap01
+	if map == null or not map.has_method("random_walkable_point"):
+		return
+	var spots: Array = []
+	for _i in blend_spot_count:
+		var best := map.random_walkable_point()
+		var best_density := _crowd_density_at(best, 200.0)
+		for _s in 7:  # keep the densest of a few samples — you blend into a crowd
+			var p: Vector2 = map.random_walkable_point()
+			var d := _crowd_density_at(p, 200.0)
+			if d > best_density:
+				best_density = d
+				best = p
+		spots.append(best)
+	_blend_spots = spots
+	_receive_blend_spots.rpc(spots)
+
+
+# Everyone: remember the spots and draw a marker at each (a ground decal under the characters).
+@rpc("authority", "call_local", "reliable")
+func _receive_blend_spots(spots: Array) -> void:
+	_blend_spots = spots
+	for p in spots:
+		var marker := BlendSpot.new()
+		marker.radius = blend_radius
+		marker.position = p
+		add_child(marker)
+
+
+# Host per-frame: a player standing still inside a spot is BLENDED — fast exposure bleed (a continuous
+# modifier) while in cover; the flag also drives the BLEND KILL bonus. Toggled on enter/exit.
+func _tick_blend(delta: float) -> void:
+	if _match_over or not _round_active or _blend_spots.is_empty():
+		return
+	for peer in _players_by_peer:
+		var node := _players_by_peer[peer] as Player
+		var blended := false
+		if node != null and is_instance_valid(node) and not bool(_dead_by_peer.get(peer, false)):
+			if node.velocity.length() <= blend_still_speed:
+				for spot in _blend_spots:
+					if node.global_position.distance_to(spot) <= blend_radius:
+						blended = true
+						break
+		if blended != bool(_blended_by_peer.get(peer, false)):
+			_blended_by_peer[peer] = blended
+			var exposure := node.get_node_or_null("ExposureComponent") if node != null else null
+			if exposure != null:
+				if blended:
+					exposure.set_continuous_modifier("blend", -blend_exposure_drop)
+				else:
+					exposure.remove_continuous_modifier("blend")
+			_notify_owner.rpc_id(int(peer), "Blended into cover — lying low." if blended else "You broke cover.")
+
+
 # Owner-only: render the danger level the host computed for us (0 safe / 1 near / 2 very near).
 @rpc("authority", "call_local", "reliable")
 func _receive_danger(level: int) -> void:
@@ -1829,6 +1906,10 @@ func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void
 	if streak >= 2:
 		bonus += streak_step_bonus * (streak - 1)
 		labels.append("STREAK x%d" % streak)
+	# BLEND KILL: you struck from a hiding spot.
+	if bool(_blended_by_peer.get(killer_peer, false)):
+		bonus += blend_kill_bonus
+		labels.append("BLEND KILL")
 	if bonus > 0:
 		_style_bonus_by_peer[killer_peer] = int(_style_bonus_by_peer.get(killer_peer, 0)) + bonus
 		_receive_kill_bonus.rpc_id(killer_peer, " · ".join(labels), bonus)
@@ -2210,6 +2291,7 @@ func _process(delta: float) -> void:
 		_tick_respawns(delta)  # RESPAWN MODE: count down pending respawns + grace windows
 		_tick_danger(delta)  # AC-style "hunter closing in" cue (host decides the level; identity-safe)
 		_tick_drop_watch(delta)  # watch rooftop->ground drops, for the DROP kill bonus
+		_tick_blend(delta)  # active blending: standing still in a hide-spot bleeds exposure fast
 	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
