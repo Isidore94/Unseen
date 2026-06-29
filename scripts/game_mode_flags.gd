@@ -14,10 +14,12 @@ extends Node
 # flag on the machine that HOSTS the match. With every flag at its classic default, the game runs
 # EXACTLY as the elimination build did (the "delete test").
 
-## Master switch. OFF = classic ELIMINATION (one life, spectate on death, match ends at last-standing).
-## ON = continuous RESPAWNS: on death you reset to base and drop back into the crowd with a re-assigned
-## contract; the round ends only on the clock.
-@export var respawn_mode_enabled: bool = false
+## Master switch. ON (the ACTIVE default) = PvP-first continuous RESPAWNS: from the first second every
+## player is hunting an assigned target and is hunted (AC Brotherhood/Rearmed style, no marks gate);
+## on death you reset to base and drop back into the crowd with a re-assigned contract; the round ends
+## only on the clock. OFF = the classic ELIMINATION loop (marks-first, one life, spectate on death,
+## match ends at last-standing) — kept as the A/B baseline; flip OFF to compare.
+@export var respawn_mode_enabled: bool = true
 
 ## The per-life PvE upgrade ladder — kill OPTIONAL NPC marks to earn arrow precision / extra tools, all
 ## of which wipes on death. NOT YET IMPLEMENTED — reserved for the next increment (Stages 5–6).

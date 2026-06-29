@@ -16,7 +16,8 @@
 - **Hook everything into the online authoritative kill path only**; the offline harness is left as-is and flagged.
 
 ## Feature flags (`scripts/game_mode_flags.gd`, autoload, host-authoritative)
-- `respawn_mode_enabled` — master switch. Off = classic elimination, unchanged.
+- `respawn_mode_enabled` — master switch. **ON by default (the active mode):** PvP-first respawns.
+  Flip OFF for the classic elimination A/B baseline.
 - `pve_ladder_enabled` — the per-life PvE upgrade ladder. (Next increment.)
 - `density_spawn_enabled` — crowd-density-weighted respawn picker (else authored-spawn fallback).
 
