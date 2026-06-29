@@ -36,7 +36,7 @@ var _taken_assassins: Array = []
 ## Host-only: which body id each peer has claimed (body_id String -> peer int). Never broadcast as a map.
 var _assassin_claims: Dictionary = {}
 ## Tool names in ItemComponent.Tool order, so an OptionButton's selected index IS the tool id.
-const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison"]
+const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison", "Firecracker"]
 ## One-line "what does it do" for each tool, shown in the lobby so players can choose informed.
 const TOOL_DESCRIPTIONS := [
 	"Smoke — drop a cloud at your feet; anyone caught inside (a chasing hunter included) is stunned and can't kill for a few seconds.",
@@ -44,6 +44,7 @@ const TOOL_DESCRIPTIONS := [
 	"Morph — turn nearby civilians into copies of YOU for a few seconds, so a hunter can't tell which one is real.",
 	"Decoy — spook the civilian you're aiming at into bolting, baiting a hunter into a wrong kill.",
 	"Poison — a delayed, silent kill: your target drops a few seconds later with no crowd panic, so you walk away clean.",
+	"Firecracker — throw a flashbang: every player caught in the burst is briefly stunned (can't move or kill). A panic button to break a chase or interrupt a hunter closing in.",
 ]
 ## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
 var _chosen_assassin: StringName = &""

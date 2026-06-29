@@ -22,7 +22,7 @@ class_name ItemComponent
 # Authority: offline this copy acts directly. Online the controlling client only READS its keys and
 # sends a request; the HOST owns charges + effects and applies them (server-authoritative).
 
-enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON }
+enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON, FIRECRACKER }
 
 ## The TWO tools this player brought, by slot (0 = item_primary key, 1 = item_secondary key).
 ## Set from the lobby pick (online: stamped into spawn data; offline: left at this default).
@@ -63,6 +63,10 @@ var owner_dead: bool = false
 @export var poison_charges: int = 1
 @export var poison_cooldown_seconds: float = 0.0
 @export var poison_delay_seconds: float = 4.0
+## FIRECRACKER — instant flashbang burst that briefly stuns nearby players (its radius + stun length
+## live on OnlineMatch since the effect is applied there).
+@export var firecracker_charges: int = 1
+@export var firecracker_cooldown_seconds: float = 12.0
 
 ## Exposure (0-100) ADDED to the user each time a tool is used — tools aren't free. Tuned so a tool
 ## or two is fine but leaning on them pushes you toward the 100% reveal. Applied by the authority.
@@ -71,6 +75,7 @@ var owner_dead: bool = false
 @export var morph_exposure_cost: float = 16.0
 @export var decoy_exposure_cost: float = 8.0
 @export var poison_exposure_cost: float = 12.0
+@export var firecracker_exposure_cost: float = 10.0
 
 ## Input actions (one per slot). Local co-op assigns each player its own (p1_/p2_).
 @export var item_primary_action: String = "item_primary"
@@ -143,6 +148,7 @@ func charges_for_tool(tool: int) -> int:
 		Tool.MORPH: return morph_charges
 		Tool.DECOY: return decoy_charges
 		Tool.POISON: return poison_charges
+		Tool.FIRECRACKER: return firecracker_charges
 	return 1
 
 func exposure_for_tool(tool: int) -> float:
@@ -152,6 +158,7 @@ func exposure_for_tool(tool: int) -> float:
 		Tool.MORPH: return morph_exposure_cost
 		Tool.DECOY: return decoy_exposure_cost
 		Tool.POISON: return poison_exposure_cost
+		Tool.FIRECRACKER: return firecracker_exposure_cost
 	return 0.0
 
 func cooldown_for_tool(tool: int) -> float:
@@ -161,6 +168,7 @@ func cooldown_for_tool(tool: int) -> float:
 		Tool.MORPH: return morph_cooldown_seconds
 		Tool.DECOY: return decoy_cooldown_seconds
 		Tool.POISON: return poison_cooldown_seconds
+		Tool.FIRECRACKER: return firecracker_cooldown_seconds
 	return 0.0
 
 # Duration of the slot's "active" readout (0 for instant tools). Smoke counts the cloud's life.
@@ -178,6 +186,7 @@ static func tool_name(tool: int) -> String:
 		Tool.MORPH: return "MORPH"
 		Tool.DECOY: return "DECOY"
 		Tool.POISON: return "POISON"
+		Tool.FIRECRACKER: return "FIRECRACKER"
 	return "—"
 
 # A MatchHud icon id for each tool (we reuse the existing PixelLab UI icons).
@@ -188,6 +197,7 @@ static func tool_icon(tool: int) -> String:
 		Tool.MORPH: return "ui_intel"
 		Tool.DECOY: return "ui_flag"
 		Tool.POISON: return "ui_target"
+		Tool.FIRECRACKER: return "ui_flag"
 	return "ui_coin"
 
 

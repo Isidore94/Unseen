@@ -110,6 +110,20 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 ## Subtracted from a player who is eliminated — being killed caps what you can still earn.
 @export var death_penalty: int = 300
 
+# === KILL-QUALITY BONUSES (AC Rearmed-style) — extra points + an on-screen label per stylish kill ===
+## Killer's exposure at/under this when they kill their target = INCOGNITO (the unseen-kill bonus).
+@export var incognito_exposure_max: float = 25.0
+## ...at/under this (but over incognito) = the smaller DISCREET bonus.
+@export var discreet_exposure_max: float = 60.0
+@export var incognito_bonus: int = 300
+@export var discreet_bonus: int = 150
+## Bonus for a silent POISON kill on your target.
+@export var poison_bonus: int = 150
+## Bonus for killing the player who most recently killed YOU (REVENGE).
+@export var revenge_bonus: int = 200
+var _style_bonus_by_peer: Dictionary = {}  ## peer -> accumulated kill-quality bonus points
+var _last_killed_by: Dictionary = {}       ## peer -> the peer who most recently killed them (for revenge)
+
 # === RESPAWN MODE (RESPAWN_MODE_PLAN.md) — only active when GameModeFlags.respawn_mode_enabled =====
 ## Seconds a killed player stays down (corpse) before respawning at a fresh life.
 @export var respawn_delay_seconds: float = 2.5
@@ -159,6 +173,12 @@ var _my_ladder_pending: int = 0
 var _danger_overlay: DangerOverlay = null
 var _danger_accum: float = 0.0
 var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (only re-sent on change)
+
+# === FIRECRACKER tool (AC Rearmed flashbang) ======================================================
+## Radius (px) of the firecracker's instant stun burst.
+@export var firecracker_radius: float = 320.0
+## How long (seconds) players caught in the burst are stunned (can't move or kill).
+@export var firecracker_stun_seconds: float = 1.6
 
 var _map: Node = null
 var _players_parent: Node2D = null
@@ -1098,6 +1118,7 @@ func _on_player_killed(loser_peer: int) -> void:
 		_completed_by_peer[killer_peer] = true
 		if not _respawn_mode():
 			_phase_by_peer[killer_peer] = "done"  # classic: contract finished. Respawn: keep hunting.
+	_award_kill_bonuses(killer_peer, loser_peer, loser)  # AC-style stealth/poison/revenge bonuses + label
 
 	# Freeze the corpse on EVERY machine. The host already ran die() on its own copy via the
 	# kill; this mirrors it so the dead player's own client stops predicting movement (no
@@ -1650,6 +1671,114 @@ func _receive_danger(level: int) -> void:
 		_danger_overlay.set_level(level)
 
 
+# ================================================================================================
+# KILL-QUALITY BONUSES (AC Rearmed-style). Host-side: when a player kills their target, grade the
+# kill (unseen / discreet / poison / revenge), bank the bonus, and pop a label on the killer's screen.
+# ================================================================================================
+
+# Host: grade `killer_peer`'s kill of `loser_peer` and award stealth/poison/revenge bonuses.
+func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void:
+	_last_killed_by[loser_peer] = killer_peer  # so the loser can later score REVENGE on this killer
+	if killer_peer <= 0:
+		return
+	var labels: Array = []
+	var bonus := 0
+	# Stealth tier from the KILLER's current exposure — a clean, unseen kill is worth the most.
+	var killer := _players_by_peer.get(killer_peer) as Player
+	var killer_exposure := 100.0
+	if killer != null and is_instance_valid(killer) and killer.exposure_component != null:
+		killer_exposure = killer.exposure_component.exposure
+	if killer_exposure <= incognito_exposure_max:
+		bonus += incognito_bonus
+		labels.append("INCOGNITO")
+	elif killer_exposure <= discreet_exposure_max:
+		bonus += discreet_bonus
+		labels.append("DISCREET")
+	# Silent poison finish.
+	if loser != null and String(loser.get("last_attacker_method")) == "poison":
+		bonus += poison_bonus
+		labels.append("POISON")
+	# Revenge: the player we just killed had most recently killed US.
+	if int(_last_killed_by.get(killer_peer, 0)) == loser_peer:
+		bonus += revenge_bonus
+		labels.append("REVENGE")
+		_last_killed_by.erase(killer_peer)  # consumed — no repeat-revenge on the same grudge
+	if bonus > 0:
+		_style_bonus_by_peer[killer_peer] = int(_style_bonus_by_peer.get(killer_peer, 0)) + bonus
+		_receive_kill_bonus.rpc_id(killer_peer, " · ".join(labels), bonus)
+
+
+# Owner-only: a stylish kill — log it and pop a fading centered label for juice.
+@rpc("authority", "call_local", "reliable")
+func _receive_kill_bonus(label: String, points: int) -> void:
+	var text := ("%s  +%d" % [label, points]) if label != "" else ("+%d" % points)
+	if _mhud != null:
+		_mhud.add_log(text)
+	_flash_bonus_label(text)
+
+
+func _flash_bonus_label(text: String) -> void:
+	if _player_hud_layer == null:
+		return
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", 36)
+	lbl.add_theme_color_override("font_color", Color(1.0, 0.86, 0.25))
+	lbl.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
+	lbl.add_theme_constant_override("outline_size", 6)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	lbl.offset_top = 150.0
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_player_hud_layer.add_child(lbl)
+	var tw := create_tween()
+	tw.tween_property(lbl, "offset_top", 110.0, 1.0).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(lbl, "modulate:a", 0.0, 1.0).set_delay(0.6)
+	tw.tween_callback(lbl.queue_free)
+
+
+# ================================================================================================
+# FIRECRACKER tool — an instant flashbang burst that briefly stuns nearby players (AC Rearmed).
+# ================================================================================================
+
+# Host: stun every OTHER living player within firecracker_radius of the user; flash for everyone.
+func _deploy_firecracker(user: Player, peer_id: int) -> void:
+	if user == null or not is_instance_valid(user):
+		return
+	var origin := user.global_position
+	for other in _players_by_peer:
+		if int(other) == peer_id or bool(_dead_by_peer.get(other, false)):
+			continue
+		var node := _players_by_peer[other] as Player
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.global_position.distance_to(origin) <= firecracker_radius:
+			# Reuse the smoke-stun bookkeeping (decremented + applied in _update_smoke_stuns).
+			_stun_left_by_peer[other] = maxf(float(_stun_left_by_peer.get(other, 0.0)), firecracker_stun_seconds)
+	_spawn_firecracker_flash.rpc(origin)
+
+
+# Everyone: a brief expanding white-yellow flash at the burst location (cosmetic).
+@rpc("authority", "call_local", "reliable")
+func _spawn_firecracker_flash(pos: Vector2) -> void:
+	var poly := Polygon2D.new()
+	var pts := PackedVector2Array()
+	var n := 24
+	for i in n:
+		var a := TAU * float(i) / float(n)
+		pts.append(Vector2(cos(a), sin(a)) * firecracker_radius)
+	poly.polygon = pts
+	poly.color = Color(1.0, 0.98, 0.85, 0.45)
+	poly.global_position = pos
+	poly.z_index = 60
+	var parent: Node = _map if _map != null else self
+	parent.add_child(poly)
+	var tw := create_tween()
+	tw.tween_property(poly, "scale", Vector2(1.3, 1.3), 0.35)
+	tw.parallel().tween_property(poly, "modulate:a", 0.0, 0.35)
+	tw.tween_callback(poly.queue_free)
+
+
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
 # (for the round average), and end on the time limit. Stops once the match is decided.
 func _host_score_tick(delta: float) -> void:
@@ -1706,7 +1835,8 @@ func _score_for_peer(peer_id: int) -> Dictionary:
 		outcome_bonus += contract_bonus
 	if bool(_dead_by_peer.get(peer_id, false)):
 		outcome_bonus -= death_penalty
-	var total: int = maxi(0, exposure_score + speed_score + kill_score + outcome_bonus)
+	var style_bonus: int = int(_style_bonus_by_peer.get(peer_id, 0))  # AC-style kill-quality bonuses
+	var total: int = maxi(0, exposure_score + speed_score + kill_score + outcome_bonus + style_bonus)
 	return {
 		"avg_exposure": avg_exposure,
 		"kills": int(_kills_by_peer.get(peer_id, 0)),
@@ -2486,6 +2616,8 @@ func _on_tool_activated(tool: int, slot: int, peer_id: int) -> void:
 				_apply_morph_host(character, peer_id)
 			ItemComponent.Tool.POISON:
 				ok = _apply_poison(character, peer_id)
+			ItemComponent.Tool.FIRECRACKER:
+				_deploy_firecracker(character, peer_id)
 			_:
 				_announce_panic_unimplemented(tool)  # placeholder until its slice lands
 		# A target-needing tool (disguise/decoy/poison) fired with nothing in the ring — refund + tell.
