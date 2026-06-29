@@ -660,6 +660,31 @@ func _verify_connectivity() -> void:
 ## Colour of the plank BRIDGES that cross the canal (the canal itself is grid 'W'/'B' cells now).
 @export var bridge_color: Color = Color(0.55, 0.42, 0.27)
 
+## --- PixelLab tile floor (warm Roman cobblestone, generated to match the sprite palette) ---
+## When true the floor is paved with the PixelLab cobblestone tile (real texture + colour-matched to
+## the characters) instead of the flat sand noise. Falls back to the sand noise if the asset is absent.
+@export var use_pixellab_floor: bool = true
+## The generated 128px Wang tileset PNG (16 × 32px tiles). The cobblestone "all-floor" tile is lifted from it.
+@export var tileset_png_path: String = "res://assets/tiles/roman_street_tileset.png"
+## On-screen size (px) of one paved tile. Smaller = finer + less obviously repetitive. Tune to taste.
+@export var floor_tile_world_px: int = 48
+## Where the all-floor (cobblestone) tile sits inside the 128px tileset (from the tileset metadata).
+const FLOOR_TILE_REGION := Rect2i(64, 32, 32, 32)
+var _floor_tile_tex: ImageTexture = null
+
+## --- PixelLab tile roofs (terracotta Roman roof, from the same tileset) ---
+## When true, building roofs are paved with the terracotta roof tile (tinted slightly per building for
+## variety) instead of a flat colour. Falls back to the flat roof colour if the asset is absent.
+@export var use_pixellab_roofs: bool = true
+## On-screen size (px) of one roof tile.
+@export var roof_tile_world_px: int = 48
+## How far each building's roof tile is tinted toward its palette colour (0 = pure terracotta tile,
+## 1 = fully the palette hue). A little keeps texture while varying roof-to-roof.
+@export_range(0.0, 1.0) var roof_tint_strength: float = 0.30
+## Where the all-roof (terracotta) tile sits inside the 128px tileset (from the tileset metadata).
+const ROOF_TILE_REGION := Rect2i(0, 96, 32, 32)
+var _roof_tile_tex: ImageTexture = null
+
 var _noise_tex: ImageTexture = null
 ## Cached per-cell building style {Vector2i(col,row) -> {"roof","side","height"}}. Cells of one
 ## connected building share a style, so a multi-cell L-shape reads as ONE block with one roof.
@@ -685,6 +710,35 @@ func _stylized_ground() -> ImageTexture:
 	return _noise_tex
 
 
+# Lift ONE tile region out of the PixelLab tileset PNG and scale it to a world size, so
+# draw_texture_rect(..., tile=true) can pave with it. Returns null (→ procedural fallback) if the
+# asset isn't present. NEAREST keeps the pixel art crisp when resized.
+func _extract_tile(region: Rect2i, world_px: int) -> ImageTexture:
+	if not ResourceLoader.exists(tileset_png_path):
+		return null
+	var sheet := load(tileset_png_path) as Texture2D
+	if sheet == null:
+		return null
+	var tile := sheet.get_image().get_region(region)
+	if world_px != region.size.x:
+		tile.resize(world_px, world_px, Image.INTERPOLATE_NEAREST)
+	return ImageTexture.create_from_image(tile)
+
+
+# The cobblestone "all-floor" tile, cached.
+func _floor_tile_texture() -> ImageTexture:
+	if _floor_tile_tex == null:
+		_floor_tile_tex = _extract_tile(FLOOR_TILE_REGION, floor_tile_world_px)
+	return _floor_tile_tex
+
+
+# The terracotta "all-roof" tile, cached.
+func _roof_tile_texture() -> ImageTexture:
+	if _roof_tile_tex == null:
+		_roof_tile_tex = _extract_tile(ROOF_TILE_REGION, roof_tile_world_px)
+	return _roof_tile_tex
+
+
 # Cheap deterministic 0..1 hash so each building gets a stable, repeatable shade.
 func _hash01(i: int) -> float:
 	return fmod(abs(sin(float(i) * 12.9898) * 43758.5453), 1.0)
@@ -693,12 +747,22 @@ func _hash01(i: int) -> float:
 func _draw_stylized() -> void:
 	var ox := play_half_width + solid_clearance
 	var oy := play_half_height + solid_clearance
+	# Crisp pixel tiles (matches the NEAREST-filtered sprites) and allow tiling for the paved floor/roofs.
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	# Teal "water" margin around the play area (echoes the reference's edges).
 	draw_rect(Rect2(Vector2(-ox, -oy), Vector2(2 * ox, 2 * oy)), water_color, true)
-	# Sand ground with broad soft variation (one stretched, smoothed noise texture).
+	# Floor: the PixelLab cobblestone (textured + colour-matched to the sprites), tiled across the play
+	# area. Falls back to the soft sand noise if the tile asset isn't present. tile=true needs canvas
+	# texture-repeat on, so enable it here.
 	var play := Rect2(Vector2(-play_half_width, -play_half_height),
 		Vector2(2 * play_half_width, 2 * play_half_height))
-	draw_texture_rect(_stylized_ground(), play, false)
+	var floor_tex: ImageTexture = _floor_tile_texture() if use_pixellab_floor else null
+	if floor_tex != null:
+		texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		draw_texture_rect(floor_tex, play, true)
+	else:
+		draw_texture_rect(_stylized_ground(), play, false)
 	# Central plaza decal — a lighter paved circle to anchor the eye.
 	var centre := _fountain_center() if _has_fountain() else Vector2.ZERO
 	draw_circle(centre, 360.0, Color(sand_light.r, sand_light.g, sand_light.b, 0.55))
@@ -724,13 +788,23 @@ func _draw_stylized() -> void:
 		for col in _cols():
 			if _is_building(col, row):
 				draw_rect(_cell_rect(col, row), styles[Vector2i(col, row)]["side"], true)
+	var roof_tex: ImageTexture = _roof_tile_texture() if use_pixellab_roofs else null
+	if roof_tex != null:
+		texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	for row in _rows():
 		for col in _cols():
 			if _is_building(col, row):
 				var style: Dictionary = styles[Vector2i(col, row)]
 				var r := _cell_rect(col, row)
 				var h: float = style["height"]
-				draw_rect(Rect2(r.position + Vector2(0, -h), r.size), style["roof"], true)
+				var roof_rect := Rect2(r.position + Vector2(0, -h), r.size)
+				if roof_tex != null:
+					# Terracotta roof tile, tinted a little toward this building's palette hue so the town
+					# still varies roof-to-roof while every roof reads as the same tiled material.
+					var tint: Color = Color.WHITE.lerp(style["roof"], roof_tint_strength)
+					draw_texture_rect(roof_tex, roof_rect, true, tint)
+				else:
+					draw_rect(roof_rect, style["roof"], true)
 	# Roof detail per cell: a lit edge where the roof is exposed to the sky above, an OVERHANG
 	# shadow cast on the ground below a building's front (south) edge — the bit assassins hide
 	# under — and a faint ridge seam so the roof reads as tiled, not a flat colour fill.

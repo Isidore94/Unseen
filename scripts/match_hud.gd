@@ -19,6 +19,9 @@ var _name_label: Label = null
 var _title_label: Label = null
 var _exposure_segs: Array[ColorRect] = []
 var _objective_label: Label = null
+var _objective_panel: Panel = null   # the OBJECTIVE box — pops in on change, fades out when stale (contextual)
+var _objective_last: String = ""     # so we only pulse when the objective actually changes
+var _objective_tween: Tween = null
 var _legend_target_swatch: ColorRect = null  # the "your kill targets" colour chip in the legend
 var _countdown_label: Label = null            # big centred start-of-round "3/2/1/GO!" overlay
 var _round_label: Label = null
@@ -36,6 +39,8 @@ var _reveals: HBoxContainer = null     # holds the TARGET (red) + EXPOSED (blue)
 var _target_plate: Control = null
 var _exposed_plates: Dictionary = {}   # reveal_id (revealed peer) -> its EXPOSED plate, so it updates
 const MAX_LOG := 6
+## Seconds the OBJECTIVE box stays fully visible after a change before it fades away.
+const OBJECTIVE_HOLD_SECONDS := 4.5
 
 
 func _ready() -> void:
@@ -145,6 +150,9 @@ func _portrait_panel(rect: Rect2) -> void:
 
 func _objectives_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
+	_objective_panel = p
+	p.pivot_offset = rect.size * 0.5  # scale-pop from the centre
+	p.modulate.a = 0.0                # hidden until the first objective arrives (contextual)
 	_mklabel(p, "OBJECTIVE", Vector2(8, 6), 15, GOLD)
 	# Wider panel + word-wrap so the full contract line fits instead of clipping at the edge.
 	_objective_label = _mklabel(p, "Locating your marks…", Vector2(10, 34), 14, TEXT)
@@ -179,11 +187,13 @@ func _roster_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
 	for i in 4:
 		var y := 8 + i * 34
-		_mklabel(p, str(i + 1), Vector2(8, y), 16, GOLD)
+		# The leading number is now data-driven (set per row from the player's stable number), since the
+		# board ranks by score — so we store the label instead of baking in a fixed "1/2/3/4".
+		var num_lbl := _mklabel(p, str(i + 1), Vector2(8, y), 16, GOLD)
 		var dot := ColorRect.new(); dot.position = Vector2(34, y + 3); dot.size = Vector2(16, 16); dot.color = Color(0.4, 0.4, 0.4); p.add_child(dot)
 		var nm := _mklabel(p, "—", Vector2(58, y), 15, TEXT)
 		var sc := _mklabel(p, "", Vector2(rect.size.x - 40, y), 15, TEXT)
-		_roster_rows.append({"name": nm, "score": sc, "dot": dot})
+		_roster_rows.append({"num": num_lbl, "name": nm, "score": sc, "dot": dot})
 
 func _log_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
@@ -300,6 +310,25 @@ func set_exposure(fraction: float) -> void:
 
 func set_objective(main_text: String, _optional_text: String = "") -> void:
 	if _objective_label: _objective_label.text = main_text
+	# CONTEXTUAL: only surface the OBJECTIVE box when the objective actually CHANGES — it pops in,
+	# holds a few seconds, then fades away, instead of sitting on screen permanently.
+	if main_text != _objective_last:
+		_objective_last = main_text
+		_pulse_objective()
+
+
+# Pop the objective box to full visibility, hold, then fade it out — "objective appears as necessary".
+func _pulse_objective() -> void:
+	if _objective_panel == null:
+		return
+	if _objective_tween != null and _objective_tween.is_valid():
+		_objective_tween.kill()
+	_objective_panel.modulate.a = 1.0
+	_objective_panel.scale = Vector2(1.05, 1.05)
+	_objective_tween = create_tween()
+	_objective_tween.tween_property(_objective_panel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_objective_tween.tween_interval(OBJECTIVE_HOLD_SECONDS)
+	_objective_tween.tween_property(_objective_panel, "modulate:a", 0.0, 0.8)
 
 # Show the big centred countdown text ("3"/"GO!"); pass "" to hide it.
 func set_countdown(text: String) -> void:
@@ -317,14 +346,22 @@ func set_timer(round_text: String, time_text: String) -> void:
 	if _round_label: _round_label.text = round_text
 	if _time_label: _time_label.text = time_text
 
-func set_roster(rows: Array) -> void:  # rows: Array of {name, color, score}
+func set_roster(rows: Array) -> void:  # rows: Array of {name, num, color, score, dead}, ranked highest-first
 	for i in _roster_rows.size():
 		var r: Dictionary = _roster_rows[i]
 		if i < rows.size():
-			r.name.text = str(rows[i].get("name", "—")); r.name.modulate = rows[i].get("color", TEXT)
-			r.dot.color = rows[i].get("color", Color(0.4, 0.4, 0.4)); r.score.text = str(rows[i].get("score", 0))
+			# An eliminated player is dimmed and tagged, so the live board shows who's "out" at a glance.
+			var dead: bool = bool(rows[i].get("dead", false))
+			var dim: float = 0.45 if dead else 1.0
+			var col: Color = rows[i].get("color", TEXT)
+			r.num.text = str(rows[i].get("num", i + 1)); r.num.modulate = Color(1, 1, 1, dim)
+			r.name.text = str(rows[i].get("name", "—")) + ("  ✗" if dead else "")
+			r.name.modulate = col * Color(1, 1, 1, dim)
+			r.dot.color = col * Color(1, 1, 1, dim)
+			r.score.text = str(rows[i].get("score", 0)); r.score.modulate = Color(1, 1, 1, dim)
 		else:
-			r.name.text = "—"; r.score.text = ""; r.dot.color = Color(0.25, 0.25, 0.25)
+			r.num.text = str(i + 1); r.num.modulate = Color(1, 1, 1, 0.35)
+			r.name.text = "—"; r.name.modulate = TEXT; r.score.text = ""; r.dot.color = Color(0.25, 0.25, 0.25)
 
 func set_ability(id: String, text: String, available: bool = true) -> void:
 	if not _ability_slots.has(id):
@@ -374,6 +411,14 @@ func clear_reveals() -> void:
 	if _reveals != null:
 		for c in _reveals.get_children():
 			c.queue_free()
+
+
+# Remove just ONE player's EXPOSED plate (used when that player is eliminated, so it doesn't linger).
+func remove_exposed_reveal(reveal_id: int) -> void:
+	if _exposed_plates.has(reveal_id):
+		if is_instance_valid(_exposed_plates[reveal_id]):
+			_exposed_plates[reveal_id].queue_free()
+		_exposed_plates.erase(reveal_id)
 
 
 # Experiments (crowd_reaction etc.) call this via the "experiment_toast" group — into the log.

@@ -28,6 +28,11 @@ enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON }
 ## Set from the lobby pick (online: stamped into spawn data; offline: left at this default).
 @export var equipped: Array[int] = [Tool.SMOKE, Tool.DECOY]
 
+## True once this player is eliminated (set by Player.die on every machine). A dead player reads no
+## keys and can't activate a tool — but the authority's timers keep ticking so any tool that was
+## already active still expires/reverts cleanly.
+var owner_dead: bool = false
+
 # === per-tool tunables (charges / cooldown / effect, all editable — Principle #6) ============
 ## SMOKE
 @export var smoke_charges: int = 1
@@ -184,8 +189,8 @@ func is_active_slot(slot: int) -> bool:
 
 
 func _physics_process(delta: float) -> void:
-	# Read this machine's slot keys (only on the copy that controls this player).
-	if local_input:
+	# Read this machine's slot keys (only on the copy that controls this player, and not when dead).
+	if local_input and not owner_dead:
 		if Input.is_action_just_pressed(item_primary_action):
 			_on_press(0)
 		if Input.is_action_just_pressed(item_secondary_action):
@@ -231,6 +236,8 @@ func refund(slot: int) -> void:
 func _activate(slot: int) -> void:
 	if slot < 0 or slot > 1:
 		return
+	if owner_dead:
+		return  # server-authoritative guard: a dead player can't fire a tool (covers the relayed request too)
 	if _charges[slot] <= 0 or _cooldown_left[slot] > 0.0 or _active_left[slot] > 0.0:
 		return
 	var tool := _tool(slot)

@@ -222,6 +222,7 @@ func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
 	_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 	if attacker_peer >= 0 and target.is_in_group("player"):
 		target.set("last_attacker_peer", attacker_peer)
+		target.set("last_attacker_method", "blade")  # a melee assassination, for the death screen
 	if target.has_method("die"):
 		target.die()
 
@@ -236,7 +237,10 @@ func host_poison(target: Node2D, delay: float) -> bool:
 		return false
 	var controller := int(_body.get("controlling_peer_id"))
 	var is_valid: bool = target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller)
-	_play_strike()  # immediate "you struck" feedback on the poisoner
+	# NO strike animation: poison is a totally silent, deniable kill. The poisoner gets text feedback
+	# ("Target poisoned…") from the match instead, and the crowd never panics (is_poisoned, below) — so
+	# nothing about applying poison reads as an action to onlookers. The only visible thing is the
+	# victim quietly dropping later, by which point you've walked away.
 	if target.get("is_poisoned") != null:
 		target.set("is_poisoned", true)  # crowd-reaction skips a poisoned death
 	_strip_killable(target)  # committed — no second kill, and they keep walking until they drop
@@ -248,6 +252,7 @@ func host_poison(target: Node2D, delay: float) -> bool:
 			kill_landed.emit()  # scoring credited when the body drops
 			if controller >= 0 and target.is_in_group("player"):
 				target.set("last_attacker_peer", controller)
+				target.set("last_attacker_method", "poison")  # a delayed poison, for the death screen
 		else:
 			_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
 		if target.has_method("die"):

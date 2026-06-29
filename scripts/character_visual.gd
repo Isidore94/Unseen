@@ -163,7 +163,21 @@ signal cosmetic_animation_played(animation_slot: int, cosmetic_id: StringName)
 signal kill_card_requested(killer_appearance: int)
 
 
+# --- Map colour cohesion (tunable; tweak with the artist after seeing the tiled map) ---
+## Saturation of every character sprite. 1.0 = original colours; <1 desaturates so sprites sit in the
+## warm map palette (the dev's "same saturation ramp as the map"). saturation=1.0 + tint_strength=0 disables it.
+@export var cohesion_saturation: float = 0.9
+## The warm hue sprites are nudged toward (≈ the map's sand tone).
+@export var cohesion_tint: Color = Color(1.0, 0.94, 0.82)
+## How strongly that warm tint is applied (0 = none).
+@export_range(0.0, 1.0) var cohesion_tint_strength: float = 0.12
+const SPRITE_GRADE_SHADER := "res://assets/shaders/sprite_grade.gdshader"
+var _grade_material: ShaderMaterial = null
+
+
 func _ready() -> void:
+	# One shared grade material for all rig layers, so every character matches the map's colour world.
+	_grade_material = _build_grade_material()
 	# BODY — the animated sheet. Built first so it sits at the bottom (z=0).
 	_sprite = _make_layer("Body", SHEET_COLUMNS, SHEET_ROWS, Z_BODY)
 	# OUTFIT / HEAD — overlays that animate in LOCKSTEP with the body (same frame grid),
@@ -185,6 +199,20 @@ func _ready() -> void:
 		set_appearance(randi() % SHEET_TEXTURES.size())
 
 
+# Build the shared saturation/tint material that pulls sprites into the map's palette. Returns null
+# (→ sprites render untouched) if the shader asset is missing, so this can never break the rig.
+func _build_grade_material() -> ShaderMaterial:
+	var shader := load(SPRITE_GRADE_SHADER) as Shader
+	if shader == null:
+		return null
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("saturation", cohesion_saturation)
+	mat.set_shader_parameter("tint", cohesion_tint)
+	mat.set_shader_parameter("tint_strength", cohesion_tint_strength)
+	return mat
+
+
 # Builds one rig layer (a Sprite2D) with the shared, LOCKED transform. `hframes`/`vframes`
 # set its frame grid; `z` fixes its draw order. Every layer goes through here so they are
 # guaranteed pixel-aligned against the one origin (see the header's locked-anchor note).
@@ -198,6 +226,8 @@ func _make_layer(layer_name: String, hframes: int, vframes: int, z: int) -> Spri
 	sprite.centered = true
 	sprite.position = sprite_offset
 	sprite.z_index = z
+	if _grade_material != null:
+		sprite.material = _grade_material  # map-cohesion grade (shared across all layers)
 	add_child(sprite)
 	# Initial scale uses the FRAME_PX fallback; once a texture is assigned, _rescale_layer
 	# recomputes it from the real sheet so the size is correct for 32px OR 48px art.

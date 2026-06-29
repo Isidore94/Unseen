@@ -8,10 +8,10 @@ extends Node
 # REMOVABILITY (§1): inert unless ExperimentFlags.crowd_reaction_enabled. Host/offline owns NPC
 # motion and the flee replicates to clients as ordinary movement. Core never references this.
 #
-# TRIGGER (the multiplayer fix): ONLINE we listen to the match's `host_kill_resolved` signal, which
-# the host emits for EVERY validated kill by EVERY player — so a client's kills scatter the crowd just
-# like the host's. OFFLINE (no match) we fall back to each NPC's own `died` signal. The panic feedback
-# is broadcast to ALL peers' HUD logs (it used to show only on the host's screen).
+# TRIGGER: ONLINE crowd panic is now owned by the MATCH CORE (OnlineMatch._scatter_crowd_on_kill),
+# because this experiment's file-scan loader doesn't run in exported builds — so relying on it for a
+# shipped feature meant the crowd never reacted in MP. This experiment therefore handles the OFFLINE
+# case only: it hooks each NPC's own `died` signal. Online, it detects the match and stays out of the way.
 
 @export var reaction_radius_px: float = 560.0
 @export var reaction_style_scatter: bool = true
@@ -20,7 +20,6 @@ extends Node
 @export var reaction_speed_scale: float = 2.2
 
 var _match: Node = null
-var _hooked_match := false
 var _connected: Dictionary = {}  # offline: NPCs whose `died` we've hooked
 
 
@@ -35,26 +34,18 @@ func _is_authority() -> bool:
 func _process(_delta: float) -> void:
 	if not ExperimentFlags.crowd_reaction_enabled or not _is_authority():
 		return
-	# ONLINE: hook the match's per-kill signal (covers EVERY player's kills reliably).
+	# ONLINE: the match core owns crowd panic now (reliable in exported builds), so we do nothing —
+	# we'd only double-up on what OnlineMatch._scatter_crowd_on_kill already does.
 	if _match == null:
 		_match = get_tree().get_first_node_in_group("online_match")
 	if _match != null:
-		if not _hooked_match and _match.has_signal("host_kill_resolved"):
-			_match.connect("host_kill_resolved", Callable(self, "_on_kill_resolved"))
-			_hooked_match = true
-		return  # online: don't also hook `died` (would double-fire)
+		return
 	# OFFLINE: hook each NPC's own death.
 	for node in get_tree().get_nodes_in_group("npc"):
 		if _connected.has(node) or not node.has_signal("died"):
 			continue
 		node.connect("died", Callable(self, "_on_npc_died").bind(node))
 		_connected[node] = true
-
-
-# ONLINE: the host resolved a kill (any player, any victim). Scatter the crowd around it.
-func _on_kill_resolved(_killer: Node, victim: Node, _was_valid: bool) -> void:
-	if victim != null and is_instance_valid(victim):
-		_panic_around(victim.global_position)
 
 
 # OFFLINE: an NPC died.

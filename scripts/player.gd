@@ -160,6 +160,10 @@ var _pending_tool_target: NodePath = NodePath("")
 ## by a player (e.g. an offline hunter bot).
 var last_attacker_peer: int = -1
 
+## (Online, host-side) HOW we were killed — "blade" (a melee assassination) or "poison" — stamped
+## by KillComponent alongside last_attacker_peer, so the death screen can say what got us. "" = unknown.
+var last_attacker_method: String = ""
+
 
 func _ready() -> void:
 	# Join the "player" group so other systems (like hunter bots) can find us by
@@ -273,7 +277,24 @@ func die() -> void:
 	velocity = Vector2.ZERO
 	_remove_killable_groups()
 	set_physics_process(false)
+	_disable_actions_on_death()
+	# Ghost the corpse on every screen so a downed player reads as "out" (not an idle live one).
+	# Runs once — die() guards re-entry — and the tween is independent of physics being off.
+	var fade := create_tween()
+	fade.tween_property(self, "modulate:a", 0.35, 0.5)
 	died.emit()
+
+
+# A dead player can't act. die() runs on EVERY machine (the host's resolve + the replicated
+# _freeze_player), so flipping these here blocks kills/tools on the host (server-authoritative)
+# AND stops the dead player's own client from reading the keys — no ghost strikes or tools.
+func _disable_actions_on_death() -> void:
+	var kill_component := get_node_or_null("KillComponent")
+	if kill_component != null:
+		kill_component.set("attacks_disabled", true)  # request_kill + local kill input both honour this
+	var item_component := get_node_or_null("ItemComponent") as ItemComponent
+	if item_component != null:
+		item_component.owner_dead = true  # refuses new activations + stops local key reading
 
 
 func is_dead() -> bool:

@@ -63,6 +63,11 @@ var selected_map: int = Map.COMPACT
 ## sends it to the host, who stamps it into this player's spawn. Default: smoke + decoy.
 var selected_tools: Array = [0, 3]
 
+## The nickname this player typed in the lobby. Lives here (an autoload) so it survives the lobby →
+## match scene change like selected_tools; the match sends it to the host, who shows it on the roster,
+## the end scoreboard, and the death screen. Empty = the game falls back to "Player N".
+var player_nickname: String = ""
+
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.
 const STEAM_APP_ID := 480
@@ -182,6 +187,14 @@ func is_steam_ready() -> bool:
 # Human-readable Steam state for the menu.
 func steam_status() -> String:
 	return _steam_status_text
+
+
+# A sensible default nickname to prefill the lobby field with: the player's Steam persona name when
+# Steam is up, otherwise "" (the lobby then shows a placeholder and the match falls back to "Player N").
+func default_nickname() -> String:
+	if _steam != null and _steam_ready and _steam.has_method("getPersonaName"):
+		return str(_steam.getPersonaName())
+	return ""
 
 
 # True while we're connected through Steam (so the lobby shows the Steam code + invite).

@@ -24,6 +24,13 @@ var _start_button: Button = null
 var _map_picker: OptionButton = null
 var _tool1_picker: OptionButton = null
 var _tool2_picker: OptionButton = null
+var _skin_picker: OptionButton = null
+## Base labels for the assassin picker, so we can append/remove "(taken)" without losing the name.
+var _skin_base_labels: Array = []
+## Assassin body ids OTHER players have claimed (the host sends this — anonymised, never WHO). Greyed out.
+var _taken_assassins: Array = []
+## Host-only: which body id each peer has claimed (body_id String -> peer int). Never broadcast as a map.
+var _assassin_claims: Dictionary = {}
 ## Tool names in ItemComponent.Tool order, so an OptionButton's selected index IS the tool id.
 const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison"]
 ## One-line "what does it do" for each tool, shown in the lobby so players can choose informed.
@@ -45,6 +52,8 @@ func _ready() -> void:
 	# The roster changes as people come and go; refresh the screen when it does.
 	NetworkManager.player_joined.connect(_on_roster_changed)
 	NetworkManager.player_left.connect(_on_roster_changed)
+	# Host also frees a leaver's claimed assassin so that skin opens back up for others.
+	NetworkManager.player_left.connect(_on_lobby_peer_left)
 	# If our connection drops or the host closes, bail back to the menu.
 	NetworkManager.connection_failed.connect(_return_to_menu)
 	NetworkManager.server_closed.connect(_return_to_menu)
@@ -83,19 +92,41 @@ func _build_ui() -> void:
 	_roster_label.add_theme_font_size_override("font_size", 22)
 	panel.add_child(_roster_label)
 
-	# EVERY player privately picks their assassin look. This is LOCAL — it never broadcasts to the
-	# lobby, so opponents never learn your sprite (the hidden-identity pillar starts at character
-	# select). It's stored on your CosmeticInventory and submitted to the host at spawn.
+	# NICKNAME: shown to everyone on the roster, scoreboard, and death screen — so unlike the assassin
+	# pick (which is private), this name IS public. Prefilled with your Steam name when available, and
+	# stored on NetworkManager so it survives the lobby → match scene change.
+	var name_label := Label.new()
+	name_label.text = "Your nickname"
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(name_label)
+	var name_field := LineEdit.new()
+	name_field.max_length = 14  # keeps names from overflowing the HUD roster / scoreboard
+	name_field.placeholder_text = "enter a nickname"
+	# Use the name we already have (e.g. from a previous lobby visit), else the Steam persona name.
+	name_field.text = NetworkManager.player_nickname if NetworkManager.player_nickname != "" else NetworkManager.default_nickname()
+	NetworkManager.player_nickname = name_field.text.strip_edges()
+	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(name_field)
+	name_field.text_changed.connect(func(t: String) -> void:
+		NetworkManager.player_nickname = t.strip_edges())
+
+	# EVERY player picks their assassin look. To stop two players wearing the SAME assassin, the host
+	# shares which skins are TAKEN and we grey those out — but only the SET of body ids, never WHO took
+	# them (anonymised). So opponents learn "that skin is in play" (the crowd already clones those looks
+	# anyway), never which figure is you. WHICH assassin you ended on is still submitted privately at spawn.
 	var skin_label := Label.new()
-	skin_label.text = "Your assassin (private)"
+	skin_label.text = "Your assassin"
 	skin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	panel.add_child(skin_label)
-	var skin_picker := OptionButton.new()
+	_skin_picker = OptionButton.new()
+	_skin_base_labels.clear()
 	for i in CosmeticRegistry.ASSASSIN_BODY_IDS.size():
 		var id: StringName = CosmeticRegistry.ASSASSIN_BODY_IDS[i]
-		skin_picker.add_item(str(id).replace("body_", "").capitalize(), i)
-	skin_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_child(skin_picker)
+		var label := str(id).replace("body_", "").capitalize()
+		_skin_base_labels.append(label)
+		_skin_picker.add_item(label, i)
+	_skin_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(_skin_picker)
 
 	# NPC DISGUISE: if checked, you appear in-match as a regular COMMONER (your picked assassin is
 	# still duplicated as crowd decoys, and so is your commoner look) — so opponents can't track you
@@ -109,11 +140,13 @@ func _build_ui() -> void:
 	# never touches the controls still spawns correctly.
 	_disguise_commoner = CosmeticRegistry.COMMONER_BODY_IDS[randi() % CosmeticRegistry.COMMONER_BODY_IDS.size()]
 	_chosen_assassin = CosmeticRegistry.ASSASSIN_BODY_IDS[randi() % CosmeticRegistry.ASSASSIN_BODY_IDS.size()]
-	skin_picker.selected = CosmeticRegistry.ASSASSIN_BODY_IDS.find(_chosen_assassin)
+	_skin_picker.selected = CosmeticRegistry.ASSASSIN_BODY_IDS.find(_chosen_assassin)
 	_apply_look_choice()
-	skin_picker.item_selected.connect(func(i: int) -> void:
-		_chosen_assassin = CosmeticRegistry.ASSASSIN_BODY_IDS[i]
-		_apply_look_choice())
+	_skin_picker.item_selected.connect(func(i: int) -> void:
+		_on_pick_assassin(CosmeticRegistry.ASSASSIN_BODY_IDS[i]))
+	# Claim our default assassin so the lobby starts deduped. If our random default collided with
+	# someone already here, the host bumps us to a free skin (and tells us via _confirm_assassin).
+	_send_pick(_chosen_assassin)
 	disguise_check.toggled.connect(func(on: bool) -> void:
 		_npc_disguise = on
 		_apply_look_choice())
@@ -277,3 +310,130 @@ func _begin_match(map_id: int) -> void:
 func _return_to_menu() -> void:
 	NetworkManager.leave()
 	get_tree().change_scene_to_file(MAIN_MENU_SCENE)
+
+
+# === assassin dedupe (anonymised "taken" list) =============================
+# Two players must never wear the SAME assassin. The host is the authority on who has which skin; it
+# only ever tells clients the SET of taken body ids (minus their own), never the owner — so picks stay
+# private in identity while still being unique. With 4 skins and up to 4 players, a full 4p lobby ends
+# with every skin claimed, so there's nothing left to switch to (your "no changing in 4p").
+
+# We chose an assassin in the picker — apply it locally and claim it on the host.
+func _on_pick_assassin(id: StringName) -> void:
+	_chosen_assassin = id
+	_apply_look_choice()
+	_send_pick(id)
+
+
+# Send our pick to the authority: the host runs the claim directly; a client asks over the wire.
+func _send_pick(id: StringName) -> void:
+	if multiplayer.multiplayer_peer == null:
+		return
+	if multiplayer.is_server():
+		_host_handle_pick(multiplayer.get_unique_id(), String(id))
+	else:
+		_request_assassin.rpc_id(NetworkManager.HOST_PEER_ID, String(id))
+
+
+# Apply a host-confirmed pick locally WITHOUT re-sending it. Setting OptionButton.selected in code
+# doesn't emit item_selected, so this can't loop back into another claim.
+func _set_local_pick(id: StringName) -> void:
+	_chosen_assassin = id
+	var idx := CosmeticRegistry.ASSASSIN_BODY_IDS.find(id)
+	if idx >= 0 and _skin_picker != null:
+		_skin_picker.selected = idx
+	_apply_look_choice()
+
+
+# Grey out (disable) every assassin another player has claimed, so a duplicate can't be selected.
+func _refresh_skin_availability() -> void:
+	if _skin_picker == null:
+		return
+	for i in CosmeticRegistry.ASSASSIN_BODY_IDS.size():
+		var id := String(CosmeticRegistry.ASSASSIN_BODY_IDS[i])
+		var taken: bool = id in _taken_assassins
+		_skin_picker.set_item_disabled(i, taken)
+		var base: String = str(_skin_base_labels[i]) if i < _skin_base_labels.size() else id
+		_skin_picker.set_item_text(i, base + ("  (taken)" if taken else ""))
+
+
+# --- host-only claim bookkeeping ---
+
+# The authority records a peer's claim (freeing their old one), bumping them to a free skin if the
+# one they asked for is already someone else's, then confirms it back and re-syncs everyone.
+func _host_handle_pick(peer: int, requested: String) -> void:
+	if not multiplayer.is_server():
+		return
+	for id in _assassin_claims.keys():
+		if int(_assassin_claims[id]) == peer:
+			_assassin_claims.erase(id)  # free this peer's previous claim so re-picking your own works
+	var chosen := requested
+	if _assassin_claims.has(chosen):
+		chosen = _first_free_assassin()  # the requested skin is another player's — bump to a free one
+	if chosen == "":
+		chosen = requested  # more players than skins (shouldn't happen at 4/4) — allow the dup as a fallback
+	_assassin_claims[chosen] = peer
+	if peer == multiplayer.get_unique_id():
+		_set_local_pick(StringName(chosen))  # the host is a player too
+	else:
+		_confirm_assassin.rpc_id(peer, chosen)
+	_sync_taken()
+
+
+func _first_free_assassin() -> String:
+	for id in CosmeticRegistry.ASSASSIN_BODY_IDS:
+		if not _assassin_claims.has(String(id)):
+			return String(id)
+	return ""
+
+
+# Host: send each peer the set of skins taken by OTHERS (so their own stays selectable). Just ids.
+func _sync_taken() -> void:
+	if not multiplayer.is_server():
+		return
+	var peers := multiplayer.get_peers().duplicate()
+	peers.append(multiplayer.get_unique_id())
+	for p in peers:
+		var others: Array = []
+		for id in _assassin_claims:
+			if int(_assassin_claims[id]) != int(p):
+				others.append(id)
+		if int(p) == multiplayer.get_unique_id():
+			_taken_assassins = others
+			_refresh_skin_availability()
+		else:
+			_receive_taken.rpc_id(int(p), others)
+
+
+# Host: a peer left the lobby — free their claim so that skin opens back up.
+func _on_lobby_peer_left(peer_id: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var freed := false
+	for id in _assassin_claims.keys():
+		if int(_assassin_claims[id]) == peer_id:
+			_assassin_claims.erase(id)
+			freed = true
+	if freed:
+		_sync_taken()
+
+
+# Client → host: "I'd like this assassin." The host validates + bumps if needed.
+@rpc("any_peer", "reliable")
+func _request_assassin(id: String) -> void:
+	if not multiplayer.is_server():
+		return
+	_host_handle_pick(multiplayer.get_remote_sender_id(), id)
+
+
+# Host → one client: your confirmed skin (equals your request unless it collided and we bumped you).
+@rpc("authority", "reliable")
+func _confirm_assassin(id: String) -> void:
+	_set_local_pick(StringName(id))
+
+
+# Host → one client: the set of skins taken by OTHER players. Grey these out in the picker.
+@rpc("authority", "reliable")
+func _receive_taken(taken_ids: Array) -> void:
+	_taken_assassins = taken_ids
+	_refresh_skin_availability()

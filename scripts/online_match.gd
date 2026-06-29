@@ -188,6 +188,24 @@ var _mhud: MatchHud = null   ## the premium themed HUD (panels); _player_hud_lay
 ## hidden behind a corner panel (the sewer-dim overlay must stay BELOW the panels, so the arrow
 ## can't share _player_hud_layer with it).
 var _arrow_layer: CanvasLayer = null
+
+## --- spectate (after THIS machine's player is eliminated) ---
+## True once our local player has died: their GUI is hidden and we drive a free camera instead.
+var _spectating: bool = false
+## The free-roam camera the eliminated player flies with WASD / the left stick.
+var _spectate_camera: Camera2D = null
+## The "ELIMINATED" banner layer, kept so we can hide it when the end scoreboard takes over.
+var _death_overlay: CanvasLayer = null
+## How fast (px/sec) the free-spectate camera pans. @export so it's tunable (Principle #6).
+@export var spectate_camera_speed: float = 900.0
+
+## --- crowd panic on a kill (CORE, host-authoritative) ---
+## NPCs within this distance (px) of a kill scatter away from it.
+@export var crowd_panic_radius_px: float = 560.0
+## How long (seconds) panicked NPCs flee before returning to normal wandering.
+@export var crowd_panic_seconds: float = 6.0
+## Flee speed as a multiple of an NPC's walk speed (so the scatter clearly out-paces the crowd).
+@export var crowd_panic_speed_scale: float = 2.2
 ## Our marks, as the host named them (owner-only). We resolve each name to its local
 ## node once that NPC has replicated to us, highlight it, and point the mini-map at the
 ## nearest living one. The host tells us when each dies so we can drop it.
@@ -235,6 +253,9 @@ var _item_label: Label = null
 var _item_state: Dictionary = {"slots": [[0, 0, 0.0, 0.0], [0, 0, 0.0, 0.0]]}
 ## Host-side: each peer's two chosen tools (from the lobby), and how long each player is stunned.
 var _tools_by_peer: Dictionary = {}
+## Host-side: each peer's public nickname (from the lobby). Used to build ONE identity (name + number
+## + colour) that BOTH the live roster and the end scoreboard read, so they can never disagree.
+var _nickname_by_peer: Dictionary = {}
 var _stun_left_by_peer: Dictionary = {}
 ## Local (per-machine): which OTHER players we're currently showing disguised (so we only swap the
 ## body on transition), and the active MORPH overrides we'll revert ([{visual, restore_index, left}]).
@@ -648,6 +669,8 @@ func _announce_ready_to_host() -> void:
 	_submit_loadout.rpc_id(NetworkManager.HOST_PEER_ID, _local_loadout_payload())
 	# Tell the host the two TOOLS we picked in the lobby (so it stamps them into our spawn).
 	_submit_tools.rpc_id(NetworkManager.HOST_PEER_ID, _local_tools())
+	# Tell the host our public nickname (shown on the roster / scoreboard / death screen).
+	_submit_nickname.rpc_id(NetworkManager.HOST_PEER_ID, _local_nickname())
 	# "Host, my scene is up — please spawn my character." Runs the host's _request_spawn.
 	_request_spawn.rpc_id(NetworkManager.HOST_PEER_ID)
 	_update_status()
@@ -732,6 +755,49 @@ func _submit_tools(tools: Array) -> void:
 # The two tools chosen at THIS machine (from NetworkManager, set by the lobby; sensible default).
 func _local_tools() -> Array:
 	return NetworkManager.selected_tools.duplicate()
+
+
+# === player identity (nickname + number + colour), shared by BOTH leaderboards ==============
+
+# Client → host: "here is my public nickname." Stored, then read by _display_name_for everywhere.
+@rpc("any_peer", "reliable")
+func _submit_nickname(nickname: String) -> void:
+	if not multiplayer.is_server():
+		return
+	_nickname_by_peer[multiplayer.get_remote_sender_id()] = nickname.strip_edges().left(14)
+
+# The nickname typed at THIS machine (from NetworkManager, set by the lobby).
+func _local_nickname() -> String:
+	return str(NetworkManager.player_nickname).strip_edges()
+
+# Host-only: a peer's nickname — their submitted one, our own for the host's own player, or "".
+func _nickname_for_peer(peer_id: int) -> String:
+	var nm := ""
+	if _nickname_by_peer.has(peer_id):
+		nm = str(_nickname_by_peer[peer_id])
+	elif peer_id == multiplayer.get_unique_id():
+		nm = _local_nickname()
+	return nm.strip_edges()
+
+# Host-only: the name to SHOW for a peer — their nickname, or "Player N" when they didn't set one.
+# This is the single source of truth both the roster and the scoreboard use, so names always match.
+func _display_name_for(peer_id: int) -> String:
+	var nm := _nickname_for_peer(peer_id)
+	if nm != "":
+		return nm
+	return "Player %d" % int(_player_num.get(peer_id, 0))
+
+# Host-only: a peer's colour, keyed by their stable player NUMBER (not row order) so it never changes
+# when the boards re-sort by score, and so the roster, the scoreboard, and the player's ring all agree.
+func _color_for_num(num: int) -> Color:
+	return ROSTER_COLORS[maxi(0, num - 1) % ROSTER_COLORS.size()]
+
+# Host-only: find a peer's display name inside an already-built rows array (used by the scoreboard).
+func _name_of(rows: Array, peer_id: int) -> String:
+	for row in rows:
+		if int(row["peer"]) == peer_id:
+			return str(row.get("name", "Player %d" % int(row.get("num", 0))))
+	return "Player"
 
 # Host-only: the two tools to spawn `peer_id` with — their submitted pick, our own for the host, or
 # a safe default. Always returns exactly two tool ints.
@@ -956,6 +1022,11 @@ func _on_player_killed(loser_peer: int) -> void:
 		return  # already eliminated
 	_dead_by_peer[loser_peer] = true
 
+	# Drop the dead player from the EXPOSED reveal row on every screen — they're out, so their blue
+	# plate shouldn't keep hanging around (the roster already dims + ✗-tags them via _build_roster_rows).
+	_exposure_revealed[loser_peer] = false
+	_remove_exposed_reveal.rpc(loser_peer)
+
 	# Attribute the kill. request_kill stamps last_attacker_peer on the victim. If the killer
 	# was this player's assigned hunter, it COMPLETES their contract (the +contract_bonus).
 	var loser := _players_by_peer.get(loser_peer) as Player
@@ -973,6 +1044,15 @@ func _on_player_killed(loser_peer: int) -> void:
 	if loser != null:
 		_freeze_player.rpc(String(loser.name))
 
+	# Tell the eliminated player WHO got them + HOW, so their machine shows the death screen and
+	# drops them into free-spectate. Sent only to the loser (their identity stays private to others).
+	var killer_name: String = _display_name_for(killer_peer) if killer_peer > 0 else ""
+	var method: String = str(loser.get("last_attacker_method")) if loser != null else ""
+	if loser_peer == multiplayer.get_unique_id():
+		_enter_spectate(killer_name, method)  # the host themselves died
+	else:
+		_receive_eliminated.rpc_id(loser_peer, killer_name, method)
+
 	_relink_hunters_of(loser_peer)
 	_update_status()
 	if _alive_count() <= 1:
@@ -989,6 +1069,101 @@ func _freeze_player(player_name: String) -> void:
 		node.die()
 
 
+# The eliminated player's OWN machine (sent only to them by _on_player_killed): show the death
+# screen and hand them the free-spectate camera. call_remote so the host doesn't double-run it —
+# the host calls _enter_spectate directly when the host's own player dies.
+@rpc("authority", "call_remote", "reliable")
+func _receive_eliminated(killer_name: String, method: String) -> void:
+	_enter_spectate(killer_name, method)
+
+
+# This machine's player is out: drop the in-match GUI, show the death screen, and start the free
+# camera where they fell. Runs once (guarded) on the eliminated player's machine only.
+func _enter_spectate(killer_name: String, method: String) -> void:
+	if _spectating:
+		return
+	_spectating = true
+	_show_death_overlay(killer_name, method)
+	# Take the player out of their in-match GUI — they're spectating now, not playing.
+	if _mhud != null:
+		_mhud.visible = false
+	if _player_hud_layer != null:
+		_player_hud_layer.visible = false
+	if _arrow_layer != null:
+		_arrow_layer.visible = false
+	# A free camera, starting on the spot where we were killed, that we fly with WASD / the stick.
+	_spectate_camera = Camera2D.new()
+	_spectate_camera.name = "SpectateCamera"
+	_spectate_camera.zoom = Vector2(1.1, 1.1)
+	if _local_player != null and is_instance_valid(_local_player):
+		_spectate_camera.global_position = _local_player.global_position
+	add_child(_spectate_camera)
+	_spectate_camera.make_current()
+
+
+# Per-frame (while spectating): pan the free camera with the movement actions. Uses the same
+# move_* actions as walking — the dead body ignores them (its physics is off), so they only fly
+# the camera. Clamped to the map so you can't drift off into the void.
+func _update_spectate_camera(delta: float) -> void:
+	if _spectate_camera == null or not is_instance_valid(_spectate_camera):
+		return
+	var dir := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	if dir != Vector2.ZERO:
+		_spectate_camera.global_position += dir * spectate_camera_speed * delta
+	if _mini_map != null and _mini_map.map_size_px.x > 0.0:
+		_spectate_camera.global_position.x = clampf(_spectate_camera.global_position.x, 0.0, _mini_map.map_size_px.x)
+		_spectate_camera.global_position.y = clampf(_spectate_camera.global_position.y, 0.0, _mini_map.map_size_px.y)
+
+
+# The "ELIMINATED — by X" banner, pinned to the top so it never covers the spectate view.
+func _show_death_overlay(killer_name: String, method: String) -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "DeathOverlay"
+	layer.layer = 6  # above the HUD (which sits at layer 5)
+	add_child(layer)
+	_death_overlay = layer
+
+	var box := VBoxContainer.new()
+	box.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	box.offset_top = 40.0
+	box.offset_bottom = 220.0  # explicit height so the stacked labels lay out (a 0-height container won't)
+	box.add_theme_constant_override("separation", 6)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(box)
+
+	var headline := Label.new()
+	headline.text = "ELIMINATED"
+	headline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	headline.add_theme_font_size_override("font_size", 64)
+	headline.add_theme_color_override("font_color", Color(0.92, 0.24, 0.20))
+	box.add_child(headline)
+
+	var detail := Label.new()
+	detail.text = _death_cause_text(killer_name, method)
+	detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	detail.add_theme_font_size_override("font_size", 24)
+	box.add_child(detail)
+
+	var hint := Label.new()
+	hint.text = "Spectating — move to fly the camera"
+	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 16)
+	hint.modulate = Color(1, 1, 1, 0.7)
+	box.add_child(hint)
+
+
+# How the death screen reads, based on the method KillComponent stamped.
+func _death_cause_text(killer_name: String, method: String) -> String:
+	if killer_name == "":
+		return "You were eliminated."
+	if method == "poison":
+		return "Poisoned by %s" % killer_name
+	return "Assassinated by %s" % killer_name
+
+
 # Re-link anyone whose assigned target is `gone_peer` (just died or left) onto a live opponent,
 # so their arrow/reveal keep pointing somewhere real and a contract is still reachable.
 func _relink_hunters_of(gone_peer: int) -> void:
@@ -1000,6 +1175,13 @@ func _relink_hunters_of(gone_peer: int) -> void:
 				(_players_by_peer[new_target] as Node).add_to_group("killable_for_%d" % hunter)
 				if _phase_by_peer.get(hunter, "marks") == "target":
 					_send_target_to(hunter)  # retargets their hunt arrow
+					# Tell them why their target changed (no identity leaked — just "you have a new one").
+					_notify_owner.rpc_id(hunter, "Your target was eliminated — a new target is assigned.")
+					# If this hunter earned the one-time TARGET reveal, move the red plate to the NEW target
+					# so it never keeps showing a dead player (mirrors _refresh_reveals_for's send).
+					if hunter == _target_reveal_to:
+						_target_reveal_subject = new_target
+						_receive_target_reveal.rpc_id(_target_reveal_to, _revealed_look(_players_by_peer[new_target]))
 
 
 # Any living player other than `hunter` (used to re-link a hunter whose target just died).
@@ -1080,8 +1262,11 @@ func _end_match(reason: String) -> void:
 	var rows: Array = []
 	for peer_id in _players_by_peer:
 		var row := _score_for_peer(peer_id)
+		var num: int = int(_player_num.get(peer_id, 0))
 		row["peer"] = peer_id
-		row["num"] = int(_player_num.get(peer_id, 0))
+		row["num"] = num
+		row["name"] = _display_name_for(peer_id)  # same identity the live roster used
+		row["color"] = _color_for_num(num)
 		rows.append(row)
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if int(a["total"]) != int(b["total"]):
@@ -1121,6 +1306,8 @@ func _score_for_peer(peer_id: int) -> Dictionary:
 @rpc("authority", "call_local", "reliable")
 func _declare_match_over(rows: Array, winner_peer: int, reason: String) -> void:
 	get_tree().paused = true
+	if _death_overlay != null and is_instance_valid(_death_overlay):
+		_death_overlay.visible = false  # let the final scoreboard show cleanly over the spectate view
 	_show_scoreboard(rows, winner_peer, reason)
 
 
@@ -1168,7 +1355,7 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 	var we_won := winner_peer == my_id
 	if we_won:
 		_play_local_win_animation()  # fire the winner's WIN_ANIM cosmetic on the results screen (§6)
-	headline.text = "YOU WIN" if we_won else ("PLAYER %d WINS" % _num_of(rows, winner_peer))
+	headline.text = "YOU WIN" if we_won else ("%s WINS" % _name_of(rows, winner_peer))
 	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	headline.add_theme_font_size_override("font_size", 52)
 	box.add_child(headline)
@@ -1198,11 +1385,13 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 			status = "   [eliminated]"
 		elif bool(row["completed"]):
 			status = "   [contract ✓]"
-		line.text = "P%d — %d pts   ·   kills %d   ·   avg exp %d%%%s%s" % [
-			int(row["num"]), int(row["total"]), int(row["kills"]),
+		line.text = "%d. %s — %d pts   ·   kills %d   ·   avg exp %d%%%s%s" % [
+			int(row["num"]), str(row.get("name", "Player")), int(row["total"]), int(row["kills"]),
 			int(round(float(row["avg_exposure"]))), status, you_tag]
 		if int(row["peer"]) == winner_peer:
 			line.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))  # gold winner
+		else:
+			line.add_theme_color_override("font_color", row.get("color", Color(0.9, 0.87, 0.8)))  # roster colour
 		line.add_theme_font_size_override("font_size", 20)
 		box.add_child(line)
 
@@ -1279,6 +1468,8 @@ func _notify_mark_down(mark_name: String) -> void:
 # === this machine's private view (host AND client each have one) ============
 
 func _process(delta: float) -> void:
+	if _spectating:
+		_update_spectate_camera(delta)  # the eliminated player flies the free camera
 	if NetworkManager.is_host():
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
@@ -1313,17 +1504,23 @@ func _format_time(seconds: float) -> String:
 # Host-only: a rough scoreboard — each player's name (by spawn order), colour, and total score.
 func _build_roster_rows() -> Array:
 	var rows: Array = []
-	var peers := _players_by_peer.keys()
-	peers.sort()
-	var i := 0
-	for peer in peers:
+	for peer in _players_by_peer.keys():
+		var num: int = int(_player_num.get(peer, 0))
 		rows.append({
-			"name": "PLAYER %d" % (i + 1),
-			"color": ROSTER_COLORS[i % ROSTER_COLORS.size()],
+			"name": _display_name_for(peer),         # nickname, or "Player N" — same as the scoreboard
+			"num": num,                              # stable display number (colour + ranking key)
+			"color": _color_for_num(num),            # keyed by number, so it survives the re-sort below
 			"score": int(_score_for_peer(peer).get("total", 0)),
+			"dead": bool(_dead_by_peer.get(peer, false)),
 			"peer": peer,  # so each client can find ITS OWN row and label the top-left box
 		})
-		i += 1
+	# Rank highest-first (ties → lower player number) so the LIVE board reads the same way the end
+	# scoreboard does. Each client still finds its own row by `peer`, and colours are by number, so
+	# re-sorting every tick never reshuffles anyone's colour.
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a["score"]) != int(b["score"]):
+			return int(a["score"]) > int(b["score"])
+		return int(a["num"]) < int(b["num"]))
 	return rows
 
 
@@ -1878,6 +2075,13 @@ func _notify_owner(text: String) -> void:
 		_mhud.add_log(text)
 
 
+# Everyone: remove an eliminated player's EXPOSED reveal plate so it doesn't linger after they're out.
+@rpc("authority", "call_local", "reliable")
+func _remove_exposed_reveal(reveal_id: int) -> void:
+	if _mhud != null:
+		_mhud.remove_exposed_reveal(reveal_id)
+
+
 func _on_tool_expired(tool: int, _slot: int, peer_id: int) -> void:
 	if tool == ItemComponent.Tool.DISGUISE:
 		_clear_disguise(peer_id)
@@ -2266,6 +2470,30 @@ func _unhandled_input(event: InputEvent) -> void:
 # Re-emit a player's resolved kill at the match level (wired from each KillComponent on spawn).
 func _relay_kill_resolved(killer: Node, victim: Node, was_valid: bool) -> void:
 	host_kill_resolved.emit(killer, victim, was_valid)
+	# CORE crowd panic: scatter nearby NPCs on EVERY resolved kill. Owned here (not the optional
+	# crowd_reaction experiment) so it's reliable online and in exported builds — the experiment's
+	# file-scan loader doesn't run in exports, which is why the crowd never reacted in MP. Poison never
+	# emits kill_resolved, so a poisoning stays silent (no scatter) exactly as designed.
+	_scatter_crowd_on_kill(victim)
+
+
+# Host-only: make living NPCs near a kill flee outward for a few seconds. The host owns NPC motion,
+# so the flee replicates to every client as ordinary movement (same path the decoy tool uses).
+func _scatter_crowd_on_kill(victim: Node) -> void:
+	if not multiplayer.is_server() or victim == null or not is_instance_valid(victim):
+		return
+	var kill_pos: Vector2 = (victim as Node2D).global_position
+	for node in get_tree().get_nodes_in_group("npc"):
+		var npc := node as Npc
+		if npc == null or not is_instance_valid(npc) or npc.is_dead() or not npc.has_method("react_to_kill"):
+			continue
+		var distance: float = npc.global_position.distance_to(kill_pos)
+		if distance > crowd_panic_radius_px:
+			continue
+		# Closer NPCs bolt faster (a tighter, more obviously-startled knot right at the kill).
+		var closeness: float = 1.0 - clampf(distance / crowd_panic_radius_px, 0.0, 1.0)
+		var scale: float = lerpf(crowd_panic_speed_scale * 0.6, crowd_panic_speed_scale, closeness)
+		npc.react_to_kill(kill_pos, true, crowd_panic_seconds, scale)
 
 
 # Spin up whatever experiment scripts live in scripts/experiments/. This loop loads whatever .gd
