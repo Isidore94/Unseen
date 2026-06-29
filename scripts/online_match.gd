@@ -1872,17 +1872,7 @@ func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void
 		return
 	var labels: Array = []
 	var bonus := 0
-	# Stealth tier from the KILLER's current exposure — a clean, unseen kill is worth the most.
-	var killer := _players_by_peer.get(killer_peer) as Player
-	var killer_exposure := 100.0
-	if killer != null and is_instance_valid(killer) and killer.exposure_component != null:
-		killer_exposure = killer.exposure_component.exposure
-	if killer_exposure <= incognito_exposure_max:
-		bonus += incognito_bonus
-		labels.append("INCOGNITO")
-	elif killer_exposure <= discreet_exposure_max:
-		bonus += discreet_bonus
-		labels.append("DISCREET")
+	# (The exposure-based INCOGNITO/DISCREET tiers were dropped — scoring no longer uses exposure.)
 	# Silent poison finish.
 	if loser != null and String(loser.get("last_attacker_method")) == "poison":
 		bonus += poison_bonus
@@ -2085,7 +2075,8 @@ func _end_match(reason: String) -> void:
 	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		if int(a["total"]) != int(b["total"]):
 			return int(a["total"]) > int(b["total"])
-		return float(a["avg_exposure"]) < float(b["avg_exposure"]))
+		# Ties break toward more PLAYER kills (scoring is kill-based now, not exposure-based).
+		return int(a.get("player_kills", 0)) > int(b.get("player_kills", 0)))
 	var winner_peer: int = int(rows[0]["peer"]) if not rows.is_empty() else 0
 	_declare_match_over.rpc(rows, winner_peer, reason)
 
@@ -2094,19 +2085,15 @@ func _end_match(reason: String) -> void:
 func _score_for_peer(peer_id: int) -> Dictionary:
 	var samples: int = maxi(1, int(_exposure_samples.get(peer_id, 0)))
 	var avg_exposure: float = float(_exposure_sum.get(peer_id, 0.0)) / float(samples)
-	var exposure_score: int = int(round((100.0 - avg_exposure) * exposure_weight))
-	var speed_score: int = int(maxf(0.0, speed_bonus_cap - _elapsed * speed_bleed_per_second))
-	# Split kills: PLAYER kills score massively; the rest (NPC marks) score the normal amount.
+	# SCORE IS PURELY FROM KILLS now: PLAYER kills score massively, NPC marks the normal amount, plus
+	# the AC kill-quality bonuses and completing your contract. Exposure, speed, and the death penalty
+	# NO LONGER affect the score (exposure already drives detection / the arrow, which is enough).
 	var player_kills: int = int(_player_kills_by_peer.get(peer_id, 0))
 	var npc_kills: int = maxi(0, int(_kills_by_peer.get(peer_id, 0)) - player_kills)
 	var kill_score: int = npc_kills * kill_points + player_kills * player_kill_points
-	var outcome_bonus: int = 0
-	if bool(_completed_by_peer.get(peer_id, false)):
-		outcome_bonus += contract_bonus
-	if bool(_dead_by_peer.get(peer_id, false)):
-		outcome_bonus -= death_penalty
+	var outcome_bonus: int = contract_bonus if bool(_completed_by_peer.get(peer_id, false)) else 0
 	var style_bonus: int = int(_style_bonus_by_peer.get(peer_id, 0))  # AC-style kill-quality bonuses
-	var total: int = maxi(0, exposure_score + speed_score + kill_score + outcome_bonus + style_bonus)
+	var total: int = maxi(0, kill_score + outcome_bonus + style_bonus)
 	return {
 		"avg_exposure": avg_exposure,
 		"kills": int(_kills_by_peer.get(peer_id, 0)),
