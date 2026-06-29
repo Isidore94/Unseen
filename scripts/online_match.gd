@@ -123,6 +123,20 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 @export var revenge_bonus: int = 200
 var _style_bonus_by_peer: Dictionary = {}  ## peer -> accumulated kill-quality bonus points
 var _last_killed_by: Dictionary = {}       ## peer -> the peer who most recently killed them (for revenge)
+## Per extra kill in a streak (no death between). STREAK x3 = +2*this. Reset to 0 on death.
+@export var streak_step_bonus: int = 100
+## Bonus for killing your target while YOUR OWN hunter is closing on you (danger level >= 1).
+@export var focus_bonus: int = 150
+## Bonus for a DROP kill — striking within drop_kill_window seconds of dropping off a rooftop.
+@export var drop_bonus: int = 150
+@export var drop_kill_window: float = 2.5
+## Bonus + cooldown for shaking a hunter who'd closed to "very near" (danger 2 -> 0 while alive).
+@export var escape_bonus: int = 120
+@export var escape_cooldown: float = 6.0
+var _streak_by_peer: Dictionary = {}      ## peer -> consecutive player kills without dying
+var _escape_ready_at: Dictionary = {}     ## peer -> _elapsed time when their next ESCAPE bonus is allowed
+var _drop_recent_until: Dictionary = {}   ## peer -> _elapsed time until which a kill counts as a DROP
+var _last_layer_by_peer: Dictionary = {}  ## peer -> last-seen layer, to detect a ROOFTOP->GROUND drop
 
 # === RESPAWN MODE (RESPAWN_MODE_PLAN.md) — only active when GameModeFlags.respawn_mode_enabled =====
 ## Seconds a killed player stays down (corpse) before respawning at a fresh life.
@@ -1116,6 +1130,7 @@ func _on_player_killed(loser_peer: int) -> void:
 	if bool(_dead_by_peer.get(loser_peer, false)):
 		return  # already eliminated
 	_dead_by_peer[loser_peer] = true
+	_streak_by_peer[loser_peer] = 0  # dying ends your kill streak
 
 	# Drop the dead player from the EXPOSED reveal row on every screen — they're out, so their blue
 	# plate shouldn't keep hanging around (the roster already dims + ✗-tags them via _build_roster_rows).
@@ -1674,9 +1689,30 @@ func _tick_danger(delta: float) -> void:
 						level = 2
 					elif d <= danger_near_px:
 						level = 1
-		if int(_danger_level_by_peer.get(prey, -1)) != level:
+		var prev := int(_danger_level_by_peer.get(prey, -1))
+		if prev != level:
 			_danger_level_by_peer[prey] = level
 			_receive_danger.rpc_id(int(prey), level)
+		# ESCAPE: were "very near" (2), now clear (0), still alive, off cooldown → reward shaking them.
+		if prev >= 2 and level == 0 and not bool(_dead_by_peer.get(prey, false)) and _elapsed >= float(_escape_ready_at.get(prey, 0.0)):
+			_escape_ready_at[prey] = _elapsed + escape_cooldown
+			_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + escape_bonus
+			_receive_kill_bonus.rpc_id(int(prey), "ESCAPED", escape_bonus)
+
+
+# Host per-frame: watch for a player dropping ROOFTOP -> GROUND, so a quick kill after counts as a DROP.
+func _tick_drop_watch(_delta: float) -> void:
+	if _match_over:
+		return
+	for peer in _players_by_peer:
+		var node := _players_by_peer[peer] as Node
+		if node == null or not is_instance_valid(node):
+			continue
+		var layer := _layer_of_character(node)
+		var was := int(_last_layer_by_peer.get(peer, layer))
+		if was == _LAYER_ROOFTOP and layer == _LAYER_GROUND:
+			_drop_recent_until[peer] = _elapsed + drop_kill_window
+		_last_layer_by_peer[peer] = layer
 
 
 # Owner-only: render the danger level the host computed for us (0 safe / 1 near / 2 very near).
@@ -1718,6 +1754,20 @@ func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void
 		bonus += revenge_bonus
 		labels.append("REVENGE")
 		_last_killed_by.erase(killer_peer)  # consumed — no repeat-revenge on the same grudge
+	# FOCUS: you killed your target while your OWN hunter was closing on you (under pressure).
+	if int(_danger_level_by_peer.get(killer_peer, 0)) >= 1:
+		bonus += focus_bonus
+		labels.append("FOCUS")
+	# DROP: you struck just after dropping off a rooftop.
+	if _elapsed < float(_drop_recent_until.get(killer_peer, 0.0)):
+		bonus += drop_bonus
+		labels.append("DROP")
+	# STREAK: consecutive player kills without dying.
+	var streak := int(_streak_by_peer.get(killer_peer, 0)) + 1
+	_streak_by_peer[killer_peer] = streak
+	if streak >= 2:
+		bonus += streak_step_bonus * (streak - 1)
+		labels.append("STREAK x%d" % streak)
 	if bonus > 0:
 		_style_bonus_by_peer[killer_peer] = int(_style_bonus_by_peer.get(killer_peer, 0)) + bonus
 		_receive_kill_bonus.rpc_id(killer_peer, " · ".join(labels), bonus)
@@ -2098,6 +2148,7 @@ func _process(delta: float) -> void:
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
 		_tick_respawns(delta)  # RESPAWN MODE: count down pending respawns + grace windows
 		_tick_danger(delta)  # AC-style "hunter closing in" cue (host decides the level; identity-safe)
+		_tick_drop_watch(delta)  # watch rooftop->ground drops, for the DROP kill bonus
 	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
