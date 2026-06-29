@@ -46,6 +46,15 @@ const TOOL_DESCRIPTIONS := [
 	"Poison — a delayed, silent kill: your target drops a few seconds later with no crowd panic, so you walk away clean.",
 	"Firecracker — throw a flashbang: every player caught in the burst is briefly stunned (can't move or kill). A panic button to break a chase or interrupt a hunter closing in.",
 ]
+## Passive PERKS, in OnlineMatch's perk-id order (the picker index IS the perk id). One per match.
+const PERK_NAMES := ["None", "Ghost", "Blender", "Swift", "Survivor"]
+const PERK_DESCRIPTIONS := [
+	"None — no passive perk.",
+	"Ghost — your exposure cools off faster, so you recover from running sooner.",
+	"Blender — your exposure rises slower when you run, so you stand out less.",
+	"Swift — your tool cooldowns are shorter.",
+	"Survivor — you stay safe (kill-immune) longer after each respawn.",
+]
 ## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
 var _chosen_assassin: StringName = &""
 var _npc_disguise: bool = false
@@ -188,6 +197,26 @@ func _build_ui() -> void:
 	tool_help.custom_minimum_size = Vector2(420.0, 0.0)
 	tool_help.modulate = Color(1, 1, 1, 0.75)
 	panel.add_child(tool_help)
+
+	# PASSIVE PERK — one build-defining modifier, picked like the tools. Index = OnlineMatch perk id.
+	var perk_label := Label.new()
+	perk_label.text = "Your perk (passive)"
+	perk_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	panel.add_child(perk_label)
+	var perk_picker := OptionButton.new()
+	for i in PERK_NAMES.size():
+		perk_picker.add_item(PERK_NAMES[i], i)
+	perk_picker.selected = int(NetworkManager.selected_perk)
+	perk_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.add_child(perk_picker)
+	perk_picker.item_selected.connect(func(i: int) -> void: NetworkManager.selected_perk = i)
+	var perk_help := Label.new()
+	perk_help.text = "\n".join(PERK_DESCRIPTIONS)
+	perk_help.add_theme_font_size_override("font_size", 12)
+	perk_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	perk_help.custom_minimum_size = Vector2(420.0, 0.0)
+	perk_help.modulate = Color(1, 1, 1, 0.75)
+	panel.add_child(perk_help)
 
 	if NetworkManager.is_host():
 		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.

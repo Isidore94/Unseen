@@ -94,6 +94,8 @@ var _charges: Array[int] = [0, 0]
 ## unlocks only slot 0 (your first lobby tool); the ladder's TOOL upgrade unlocks slot 1. [true, true]
 ## (the default) = both usable, so classic/elimination play is unchanged.
 var slot_unlocked: Array[bool] = [true, true]
+## SWIFT perk: multiplies every tool's cooldown (1.0 = normal). Set by OnlineMatch on the host copy.
+var cooldown_scale: float = 1.0
 var _cooldown_left: Array[float] = [0.0, 0.0]
 var _active_left: Array[float] = [0.0, 0.0]   # seconds the slot's durational effect has left (HUD)
 
@@ -279,7 +281,7 @@ func _activate(slot: int) -> void:
 		return
 	var tool := _tool(slot)
 	_charges[slot] -= 1
-	_cooldown_left[slot] = cooldown_for_tool(tool)
+	_cooldown_left[slot] = cooldown_for_tool(tool) * cooldown_scale  # SWIFT perk scales this
 	_active_left[slot] = duration_for_tool(tool)
 	# Tools cost exposure. We run only on the authority, so adding it here is server-authoritative
 	# and covers BOTH online (host) and offline — the one place every tool pays its tell.

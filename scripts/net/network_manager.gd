@@ -63,6 +63,11 @@ var selected_map: int = Map.COMPACT
 ## sends it to the host, who stamps it into this player's spawn. Default: smoke + decoy.
 var selected_tools: Array = [0, 3]
 
+## The passive PERK this player picked in the lobby (0=None, 1=Ghost, 2=Blender, 3=Swift, 4=Survivor).
+## Lives here so it survives the lobby → match scene change; the match sends it to the host, who applies
+## its passive modifier to this player at spawn.
+var selected_perk: int = 0
+
 ## The nickname this player typed in the lobby. Lives here (an autoload) so it survives the lobby →
 ## match scene change like selected_tools; the match sends it to the host, who shows it on the roster,
 ## the end scoreboard, and the death screen. Empty = the game falls back to "Player N".

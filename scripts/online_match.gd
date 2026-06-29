@@ -133,6 +133,21 @@ var _last_killed_by: Dictionary = {}       ## peer -> the peer who most recently
 ## Bonus + cooldown for shaking a hunter who'd closed to "very near" (danger 2 -> 0 while alive).
 @export var escape_bonus: int = 120
 @export var escape_cooldown: float = 6.0
+# === PASSIVE PERKS (AC-style loadout modifier, picked in the lobby) ================================
+const PERK_NONE := 0
+const PERK_GHOST := 1     ## faster exposure recovery
+const PERK_BLENDER := 2   ## exposure rises slower
+const PERK_SWIFT := 3     ## faster tool cooldowns
+const PERK_SURVIVOR := 4  ## longer respawn grace
+## GHOST: multiply how fast exposure bleeds off while walking/idle.
+@export var ghost_recovery_scale: float = 1.6
+## BLENDER: multiply how fast exposure RISES while running / turning sharply (lower = stealthier).
+@export var blender_rise_scale: float = 0.7
+## SWIFT: multiply tool cooldowns (lower = faster).
+@export var swift_cooldown_scale: float = 0.7
+## SURVIVOR: multiply post-respawn grace duration.
+@export var survivor_grace_scale: float = 1.8
+var _perk_by_peer: Dictionary = {}        ## peer -> chosen perk int (host-side; applied at spawn)
 var _streak_by_peer: Dictionary = {}      ## peer -> consecutive player kills without dying
 var _escape_ready_at: Dictionary = {}     ## peer -> _elapsed time when their next ESCAPE bonus is allowed
 var _drop_recent_until: Dictionary = {}   ## peer -> _elapsed time until which a kill counts as a DROP
@@ -652,6 +667,7 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	}
 	var character := _player_spawner.spawn(spawn_data)
 	_players_by_peer[peer_id] = character
+	_apply_perk(character, peer_id)  # passive lobby perk modifier (host-side; persists across lives)
 	# Spawn frozen until the start-of-round countdown ends (a late joiner after the round is active
 	# spawns unfrozen). Replicated, so the freeze holds on every screen.
 	character.set("_net_frozen", not _round_active)
@@ -778,6 +794,8 @@ func _announce_ready_to_host() -> void:
 	_submit_loadout.rpc_id(NetworkManager.HOST_PEER_ID, _local_loadout_payload())
 	# Tell the host the two TOOLS we picked in the lobby (so it stamps them into our spawn).
 	_submit_tools.rpc_id(NetworkManager.HOST_PEER_ID, _local_tools())
+	# Tell the host our passive PERK (the host applies its modifier to us at spawn).
+	_submit_perk.rpc_id(NetworkManager.HOST_PEER_ID, _local_perk())
 	# Tell the host our public nickname (shown on the roster / scoreboard / death screen).
 	_submit_nickname.rpc_id(NetworkManager.HOST_PEER_ID, _local_nickname())
 	# "Host, my scene is up — please spawn my character." Runs the host's _request_spawn.
@@ -864,6 +882,46 @@ func _submit_tools(tools: Array) -> void:
 # The two tools chosen at THIS machine (from NetworkManager, set by the lobby; sensible default).
 func _local_tools() -> Array:
 	return NetworkManager.selected_tools.duplicate()
+
+
+# Client → host: "here is my passive perk." Stored, then applied to our player at spawn.
+@rpc("any_peer", "reliable")
+func _submit_perk(perk: int) -> void:
+	if not multiplayer.is_server():
+		return
+	_perk_by_peer[multiplayer.get_remote_sender_id()] = int(perk)
+
+func _local_perk() -> int:
+	return int(NetworkManager.selected_perk)
+
+# Host-only: the perk to apply to `peer_id` — their submitted pick, our own for the host, else None.
+func _perk_for_peer(peer_id: int) -> int:
+	if _perk_by_peer.has(peer_id):
+		return int(_perk_by_peer[peer_id])
+	if peer_id == multiplayer.get_unique_id():
+		return _local_perk()
+	return PERK_NONE
+
+# Host-only: apply a peer's passive perk modifier to their (host-side) character at spawn. Persists
+# across respawns (revive() doesn't touch these tunables); SURVIVOR is handled at respawn instead.
+func _apply_perk(character: Player, peer_id: int) -> void:
+	var perk := _perk_for_peer(peer_id)
+	if perk == PERK_NONE:
+		return
+	var exposure := character.get_node_or_null("ExposureComponent")
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	match perk:
+		PERK_GHOST:
+			if exposure != null:
+				exposure.walk_fall_per_second *= ghost_recovery_scale
+				exposure.idle_fall_per_second *= ghost_recovery_scale
+		PERK_BLENDER:
+			if exposure != null:
+				exposure.run_rise_per_second *= blender_rise_scale
+				exposure.erratic_rise_per_second *= blender_rise_scale
+		PERK_SWIFT:
+			if item != null:
+				item.cooldown_scale = swift_cooldown_scale
 
 
 # === player identity (nickname + number + colour), shared by BOTH leaderboards ==============
@@ -1397,7 +1455,10 @@ func _respawn_player(peer: int) -> void:
 	_revive_player.rpc(String(node.name), pos)  # every machine un-dies + repositions the body
 	_dead_by_peer[peer] = false
 	node.set("grace_active", true)
-	_grace_due[peer] = respawn_grace_seconds
+	var grace := respawn_grace_seconds
+	if _perk_for_peer(peer) == PERK_SURVIVOR:
+		grace *= survivor_grace_scale  # SURVIVOR perk: a longer safe window
+	_grace_due[peer] = grace
 	_recompute_ring_from_seats()
 	_respawn_rewire_all()
 	_ladder_reset_life(peer)  # fresh life: wipe earned upgrades, re-lock the 2nd tool, new marks (no-op if ladder off)
