@@ -55,6 +55,12 @@ class_name ExposureArrow
 ## the target is on your screen at every tier, so the final identification stays a crowd read.
 @export var precision_tier: int = 0
 
+## EXPOSURE TEETH (Pillar #2 — acting is exposing): the TARGET's own exposure also forces the arrow
+## sharper, so a loud prey is easier to pin. At/above exposure_8way_at the arrow is at least 8-way;
+## at/above exposure_precise_at it's fully precise. The arrow uses the SHARPER of this and precision_tier.
+@export var exposure_8way_at: float = 45.0
+@export var exposure_precise_at: float = 80.0
+
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
 
@@ -148,14 +154,28 @@ func _process_exposure(delta: float) -> void:
 # giving the target away). Re-points live whenever they're off-screen again.
 func _process_flashing(_delta: float) -> void:
 	if _compute_offscreen_arrow():
-		# PvE-ladder precision: tier 0 = 4 cardinals (base), 1 = 8-way, 2 = precise bearing (no snap).
-		if precision_tier <= 0:
+		# Precision = the SHARPER of your PvE-earned tier and the tier the TARGET's exposure forces.
+		# (0 = 4 cardinals, 1 = 8-way, 2 = precise bearing/no snap.)
+		var tier := maxi(precision_tier, _exposure_precision_tier())
+		if tier <= 0:
 			_snap_to_cardinal()
-		elif precision_tier == 1:
+		elif tier == 1:
 			_snap_to_8way()
 		_alpha = 1.0
 	else:
 		_alpha = 0.0  # on-screen / dead / gone → off, no fade
+
+
+# The hunt-arrow precision FORCED by the target's exposure — acting loud makes you easier to pin.
+func _exposure_precision_tier() -> int:
+	if _target_exposure == null:
+		return 0
+	var e: float = _target_exposure.exposure
+	if e >= exposure_precise_at:
+		return 2
+	if e >= exposure_8way_at:
+		return 1
+	return 0
 
 
 # Works out whether the target is valid, alive, and OFF-screen — and if so, where on

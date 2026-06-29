@@ -49,6 +49,12 @@ signal kill_landed
 ## Emitted when a suspect lock is gained/lost, so the HUD can show "LOCKED".
 signal lock_changed(is_locked: bool)
 
+## The peer id of the player who is HUNTING us. You can't assassinate the one hunting you — striking
+## them STUNS them instead (a counter, worth kill-level points). Set by OnlineMatch (host) on the ring.
+var stun_only_peer: int = 0
+## Emitted (host) when a strike lands on your hunter: OnlineMatch freezes them + scores the counter.
+signal counter_stun_requested(target: Node2D)
+
 ## Phase 9 HOOK (PHASE_9_EXPERIMENTS.md §9A/§9E). Announces EVERY resolved kill and its outcome,
 ## so experiments can react WITHOUT core knowing they exist (the one-way dependency rule, §1.2).
 ## `was_valid_target` = true for a clean kill (a player or your own mark), false for a whiff (an
@@ -210,6 +216,13 @@ func request_kill(target_path: NodePath) -> void:
 		return
 	if not _layers_allow_kill(target):
 		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
+
+	# COUNTER-STUN: you can't assassinate the player hunting YOU — striking them in range STUNS them
+	# instead (worth kill-level points). The host knows the relationship; the prey just acts on the
+	# threat. (NPC marks have no controlling_peer_id, so this never catches them.)
+	if stun_only_peer != 0 and int(target.get("controlling_peer_id")) == stun_only_peer:
+		counter_stun_requested.emit(target)
+		return
 
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.

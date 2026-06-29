@@ -234,8 +234,8 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 @export var stun_cooldown: float = 8.0
 ## Smaller cooldown after a MISS (no hunter in range), so a whiffed stun isn't free to spam.
 @export var stun_fail_cooldown: float = 1.5
-## Score bonus for a successful counter-stun.
-@export var stun_bonus: int = 150
+## Points for a successful counter-stun — "just like getting a kill" (defaults to a player kill).
+@export var counter_stun_points: int = 1000
 var _stun_ready_at: Dictionary = {}  ## peer -> the _elapsed time at which their next stun is allowed
 
 var _map: Node = null
@@ -714,6 +714,8 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		kill.kill_landed.connect(_on_peer_kill_landed.bind(peer_id))
 		# Phase 9: re-announce this player's kills (clean AND whiff) at the match level.
 		kill.kill_resolved.connect(_relay_kill_resolved)
+		# Striking your hunter is a counter-STUN (not a kill) — the host freezes them + scores it.
+		kill.counter_stun_requested.connect(_on_counter_stun.bind(peer_id))
 
 	# Host owns this player's tool kit: apply each tool's world effect when used + push the
 	# charges/cooldown readout to the owner whenever it changes.
@@ -1528,6 +1530,10 @@ func _respawn_rewire_all() -> void:
 			_enter_hunt_phase.rpc_id(hunter)
 		_send_target_to(hunter)
 		_receive_hunted.rpc_id(prey, true)
+		# The prey can't kill their hunter — striking them counter-STUNS instead (set host-side).
+		var prey_kc := (_players_by_peer[prey] as Node).get_node_or_null("KillComponent")
+		if prey_kc != null:
+			prey_kc.set("stun_only_peer", int(hunter))
 
 
 # Host: choose a SAFE-BUT-RELEVANT respawn point. Density-weighted when enabled; authored fallback else.
@@ -2011,17 +2017,40 @@ func _request_stun() -> void:
 	var hunter_node: Player = null
 	if hunter != 0:
 		hunter_node = _players_by_peer.get(hunter) as Player
-	if hunter_node != null and is_instance_valid(hunter_node) and not bool(_dead_by_peer.get(hunter, false)) and prey_node.global_position.distance_to(hunter_node.global_position) <= stun_range:
-		# SUCCESS — freeze the hunter (reuses the smoke-stun bookkeeping), reward + notify both.
-		_stun_left_by_peer[hunter] = maxf(float(_stun_left_by_peer.get(hunter, 0.0)), stun_duration)
-		_stun_ready_at[prey] = _elapsed + stun_cooldown
-		_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + stun_bonus
-		_receive_kill_bonus.rpc_id(prey, "COUNTER-STUN", stun_bonus)
-		_notify_owner.rpc_id(hunter, "Stunned! Your prey turned the tables — re-blend and try again.")
-		_danger_level_by_peer[prey] = -1  # force a danger refresh next tick (the hunter is frozen now)
-	else:
+	var in_range: bool = hunter_node != null and is_instance_valid(hunter_node) \
+		and not bool(_dead_by_peer.get(hunter, false)) \
+		and prey_node.global_position.distance_to(hunter_node.global_position) <= stun_range
+	if not in_range:
 		_stun_ready_at[prey] = _elapsed + stun_fail_cooldown
 		_notify_owner.rpc_id(prey, "No hunter close enough to stun.")
+		return
+	_counter_stun_hunter(prey, hunter)  # honours the cooldown; scores like a kill
+
+
+# Host: a strike LANDED on your hunter (you can't kill them) → resolve it as a counter-stun.
+func _on_counter_stun(target: Node2D, prey_peer: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var hunter := 0
+	if target != null and is_instance_valid(target):
+		hunter = int(target.get("controlling_peer_id"))
+	_counter_stun_hunter(prey_peer, hunter)
+
+
+# Host: freeze `prey`'s `hunter`, score it like a kill, notify both. Honours the stun cooldown.
+# Shared by the dedicated stun key and a strike landing on your hunter. Returns true if it fired.
+func _counter_stun_hunter(prey: int, hunter: int) -> bool:
+	if hunter == 0 or bool(_dead_by_peer.get(hunter, false)):
+		return false
+	if _elapsed < float(_stun_ready_at.get(prey, 0.0)):
+		return false  # on cooldown
+	_stun_left_by_peer[hunter] = maxf(float(_stun_left_by_peer.get(hunter, 0.0)), stun_duration)
+	_stun_ready_at[prey] = _elapsed + stun_cooldown
+	_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + counter_stun_points
+	_receive_kill_bonus.rpc_id(prey, "COUNTER-STUN", counter_stun_points)
+	_notify_owner.rpc_id(hunter, "Stunned! Your prey turned the tables — re-blend and try again.")
+	_danger_level_by_peer[prey] = -1  # force a danger refresh next tick (the hunter is frozen now)
+	return true
 
 
 # Owner-side: point the private lock reticle at whatever our KillComponent has soft-locked, and tell
