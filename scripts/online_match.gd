@@ -149,6 +149,17 @@ var _ladder_marks_by_peer: Dictionary = {}   ## peer -> Array[Npc] marks assigne
 var _my_arrow_tier: int = 0
 var _my_ladder_pending: int = 0
 
+# === HUNTER-DANGER CUES (AC Rearmed-style pursuer warning) =========================================
+## Distance (px) under which your assigned hunter triggers the NEAR cue (level 1: glow + slow heartbeat).
+@export var danger_near_px: float = 900.0
+## Distance (px) under which your hunter triggers the VERY-NEAR cue (level 2: brighter + fast heartbeat).
+@export var danger_close_px: float = 460.0
+## How often (seconds) the host re-evaluates everyone's danger level.
+@export var danger_eval_interval: float = 0.25
+var _danger_overlay: DangerOverlay = null
+var _danger_accum: float = 0.0
+var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (only re-sent on change)
+
 var _map: Node = null
 var _players_parent: Node2D = null
 var _player_spawner: MultiplayerSpawner = null
@@ -1601,6 +1612,44 @@ func _apply_ladder_spend(peer: int, axis: int) -> void:
 		_push_ladder_state(peer)
 
 
+# ================================================================================================
+# HUNTER-DANGER CUES (AC Rearmed-style pursuer warning). Host decides each player's danger level from
+# how close their assigned hunter is, and tells ONLY that player — never which figure the hunter is.
+# ================================================================================================
+
+# Host per-frame (throttled): grade everyone's danger by distance to their hunter; send on change.
+func _tick_danger(delta: float) -> void:
+	if _match_over or not _round_active:
+		return
+	_danger_accum += delta
+	if _danger_accum < danger_eval_interval:
+		return
+	_danger_accum = 0.0
+	for prey in _players_by_peer:
+		var level := 0
+		if not bool(_dead_by_peer.get(prey, false)):
+			var hunter := _hunter_of_target(prey)
+			if hunter != 0 and not bool(_dead_by_peer.get(hunter, false)):
+				var prey_node := _players_by_peer[prey] as Node2D
+				var hunter_node := _players_by_peer.get(hunter) as Node2D
+				if prey_node != null and is_instance_valid(prey_node) and hunter_node != null and is_instance_valid(hunter_node):
+					var d := prey_node.global_position.distance_to(hunter_node.global_position)
+					if d <= danger_close_px:
+						level = 2
+					elif d <= danger_near_px:
+						level = 1
+		if int(_danger_level_by_peer.get(prey, -1)) != level:
+			_danger_level_by_peer[prey] = level
+			_receive_danger.rpc_id(int(prey), level)
+
+
+# Owner-only: render the danger level the host computed for us (0 safe / 1 near / 2 very near).
+@rpc("authority", "call_local", "reliable")
+func _receive_danger(level: int) -> void:
+	if _danger_overlay != null and is_instance_valid(_danger_overlay):
+		_danger_overlay.set_level(level)
+
+
 # Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
 # (for the round average), and end on the time limit. Stops once the match is decided.
 func _host_score_tick(delta: float) -> void:
@@ -1840,6 +1889,7 @@ func _process(delta: float) -> void:
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
 		_tick_respawns(delta)  # RESPAWN MODE: count down pending respawns + grace windows
+		_tick_danger(delta)  # AC-style "hunter closing in" cue (host decides the level; identity-safe)
 	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
@@ -2035,6 +2085,16 @@ func _build_player_hud() -> void:
 	_arrow_layer.name = "ArrowLayer"
 	_arrow_layer.layer = 5
 	add_child(_arrow_layer)
+
+	# The hunter-danger vignette + heartbeat, on its own layer just under the arrow. The HOST drives
+	# its level (identity-safe — only how close your hunter is, never which figure).
+	var danger_layer := CanvasLayer.new()
+	danger_layer.name = "DangerLayer"
+	danger_layer.layer = 4
+	add_child(danger_layer)
+	_danger_overlay = DangerOverlay.new()
+	_danger_overlay.name = "DangerOverlay"
+	danger_layer.add_child(_danger_overlay)
 
 	# Mini-map into the HUD's minimap slot, scaled to fit.
 	_mini_map = MINI_MAP_SCRIPT.new() as MiniMap
