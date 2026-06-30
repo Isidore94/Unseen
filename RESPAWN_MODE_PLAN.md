@@ -7,6 +7,16 @@
 > feature flags so it A/B's against today's elimination loop. Ground-truth code reference:
 > `MULTIPLAYER_PLAN.md`. Design intent: `master_plan.md`.
 
+## CURRENT RUN CONFIG (2026-06-29) — pure PvP
+The shipping mode is **PvP-first respawns with the PvE ladder OFF** (`pve_ladder_enabled = false`):
+- No NPC marks are assigned, so **NPC killing is not a scoring/upgrade action** — striking a civilian is
+  just a wrong-target **whiff** (+exposure penalty, 0 points), which is kept on purpose as the
+  identify-the-right-target deterrent. The `npc_kills × kill_points` scoring branch is therefore dormant.
+- Scoring is **purely kills** (player kills + the AC kill-quality bonuses); exposure no longer scores but
+  instead **sharpens the arrow on you** (acting-is-exposing) and drives the danger cue / blending.
+- The PvE ladder stays **gated, not deleted** — flip `pve_ladder_enabled` on to bring back NPC marks +
+  per-life arrow/tool upgrades if we ever want a PvE-flavored mode.
+
 ## Locked decisions (2026-06-29)
 - **Design target = 4 players.** 2p is a feature-test harness only. (Confirms the `MAX_PLAYERS = 4` cap.)
 - **PvE ladder = player chooses the axis** per NPC kill (sharpen arrow *or* gain a tool), capped per axis.
