@@ -4,8 +4,9 @@ Short, session-by-session log so we never lose the thread between sessions.
 
 ## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
 
-- **Camera pulled back to 75% of the old zoom** (`network_camera_zoom` / `single_player_game.camera_zoom`
-  / the spectate camera all `1.1 → 0.825`), so more of the map reads in one view.
+- **Camera zoom** kept at `1.1` (a closer, zoomed-in view) across `network_camera_zoom` /
+  `single_player_game.camera_zoom` / the spectate camera. (Briefly tried a wider 0.825 for the bigger
+  map, but the zoomed-in feel read better.)
 - **New CITADEL map (`maps/test_map_03.tscn`)** — the AC-Rearmed-style evolution of the Compact arena,
   reusing the WHOLE `test_map_01.gd` script (only the grid + play size change). **~33% bigger**
   (`play_half` 1920×1493 vs Compact's 1440×1120) on a **denser 27×21 grid** so the 1-cell streets are

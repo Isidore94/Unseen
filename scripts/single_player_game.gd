@@ -33,9 +33,9 @@ const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 ## NPC marks to kill before the bot hunter becomes your valid target (buildplan §7.0, note 9).
 @export var marks_to_kill: int = 2
 
-## Camera zoom for the view. >1 tightens it (zoom IN); LOWER pulls back to show MORE. Set to 0.825
-## (75% of the old 1.1) so the bigger, denser map reads in one view. Pure feel — tune freely.
-@export var camera_zoom: Vector2 = Vector2(0.825, 0.825)
+## Camera zoom for the view. >1 tightens it (zoom IN); LOWER pulls back to show MORE. Set to 1.1 for
+## a closer, more zoomed-in view. Pure feel — tune freely.
+@export var camera_zoom: Vector2 = Vector2(1.1, 1.1)
 
 var _player: Player = null
 var _hunter: HunterAi = null
