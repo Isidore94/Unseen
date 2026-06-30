@@ -2,6 +2,16 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: heartbeat-stalking-detection — NEAR cue gated to on-screen
+
+- **Hunter heartbeat (level 1) now only fires when your hunter is ON YOUR SCREEN, not by raw distance.**
+  The old NEAR cue triggered inside a 900px radius, so an off-screen hunter would speed up your heartbeat
+  as they approached — letting you stand still and triangulate which figure was them (a tell). Now the
+  host grades level 1 by whether the hunter sits inside the prey's visible camera box, approximated from
+  the live 1.4 zoom + a reference 1080p viewport (new `view_half_width_px` / `view_half_height_px`
+  `@export`s; `danger_near_px` removed). The VERY-NEAR cue (level 2, `danger_close_px`) is unchanged.
+  Stays fully host-side — identity-safe, clients still send no view data. (`scripts/online_match.gd`)
+
 ## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
 
 - **Camera zoom** kept at `1.1` (a closer, zoomed-in view) across `network_camera_zoom` /
