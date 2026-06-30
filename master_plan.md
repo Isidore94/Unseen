@@ -10,6 +10,17 @@
 > reference is **`MULTIPLAYER_PLAN.md`**; for the identity rig see **`COSMETIC_SYSTEM_SPEC.md`**. The old
 > `buildplan.md` referenced here no longer exists.
 
+> **⚠ DESIGN UPDATE (2026-06-30) — the active mode is now inverted PvP RESPAWNS, AC-Rearmed combat,
+> kill-based scoring.** Several rules below were *changed*, not just drifted. The active config (all
+> feature-flag gated — `scripts/game_mode_flags.gd`) is **5-minute rounds with continuous respawns**
+> (no elimination), a maintained one-hunter/one-prey chain, **death keeps nothing**. Three rule changes
+> ripple through this doc and are flagged inline as **`UPDATE 2026-06-30`**: **(1) committed exposure
+> now DECAYS over time** (it is no longer a permanent floor); **(2) ability use costs a flat +25
+> exposure spike, except poison (silent)**; **(3) scoring is PURELY kills + kill-quality bonuses** —
+> each kill banks a flat base + an exposure modifier (cleaner kill = bigger bonus), and exposure no
+> longer scores directly (it sharpens your hunter's arrow on you instead). Full detail of the respawn
+> loop is in **`RESPAWN_MODE_PLAN.md`**.
+
 ---
 
 ## 1. THE CORE FANTASY
@@ -37,9 +48,16 @@ Exposure is the heartbeat of the game. A 0–100 value representing how much you
 
 **Exposure has TWO parts (v0.6 design decision):**
 - **Movement exposure — RECOVERABLE.** Running and erratic movement build it; **blend-walking and standing still bring it back down.** This is the heat of moving fast, and you cool it off by moving like a civilian. So a sprint is not a life sentence — calm down and it fades.
-- **Committed exposure — PERMANENT.** Kills and tools add to a *floor* your total can **never** fall below for the rest of the round, no matter how much you walk. This is what makes using a tool or taking a kill a hard, lasting decision that locks you into less flexibility.
+- **Committed exposure — a SPIKE that decays over time.** Kills and tools add an instant spike; it then bleeds away on its own (it is **not** a permanent floor). A tool/kill is a *temporary* tell you out-run by going quiet, not a lifelong scar.
 
-Your total exposure = movement + committed (clamped 0–100). You can always recover from running; you can never walk off a kill or a spent tool.
+Your total exposure = movement + committed (clamped 0–100). Both parts trend back toward 0 when you go quiet.
+
+> **⚠ UPDATE 2026-06-30:** committed exposure used to be a **permanent floor** (the original v0.6 rule, still
+> described in much of the older text below). It now **DECAYS** at `committed_decay_per_second`
+> (`ExposureComponent`, ≈0.42 → a +25 spike clears in ~60s). Reason: scoring no longer rewards low average
+> exposure, so a permanent floor had no scoring purpose and just punished a long life forever. Exposure now
+> "always works off over time" and is purely a *detection / arrow-sharpness* signal. Read every "permanent
+> floor" / "never lowers" line below as **"a spike that decays."**
 
 **What raises exposure (tunable rates):**
 - Running — the largest and fastest source (movement part).
@@ -125,22 +143,39 @@ Every player is simultaneously a hunter (of their target) and prey (of whoever i
 - **Wrong-target penalty:** killing a civilian or a non-target player is punished (large exposure spike, score penalty, and/or temporary stun). You must be sure before you strike — this preserves the social-deduction tension and prevents spray-killing.
 - **Server-authoritative:** kill validity is always confirmed by the authority (designed this way from day one for the online port). Clients never self-confirm a kill.
 
-> **⚠ AS-BUILT (audit 2026-06-29):** the kill exposure spike is **permanent committed exposure**
-> (`kill_exposure_spike` 22), not a "~2–3s" temporary bump — this section's "for ~2–3s" wording contradicts §3's
-> own (correct) permanent-floor model; trust §3. Wrong-target = `wrong_commit_exposure` 40 (also permanent), and
-> the victim dies anyway. The host re-validates sender, range, layer, and target group on the **online** path
-> (`request_kill`). There are **three** kill code paths (online blade, online poison, offline harness) with real
-> differences — see `MULTIPLAYER_PLAN.md` §4. Poison ships as a **shared tool**, deliberately silent (no strike,
-> no crowd panic), exposure paid at tool use.
+> **⚠ AS-BUILT (audit 2026-06-29 / UPDATE 2026-06-30):** the kill spike is `kill_exposure_spike` 22 and the
+> wrong-target whiff is `wrong_commit_exposure` 40. These now **DECAY over time** like all committed exposure
+> (see §3's UPDATE 2026-06-30) — so the "~2–3s temporary bump" wording is actually closer to true again than
+> the old permanent-floor model. The host re-validates sender, range, layer, and target group on the **online**
+> path (`request_kill`). **The killer's own spike is applied AFTER the kill is scored**, so the kill-quality
+> *exposure modifier* (§6.1) reflects your approach exposure, not the unavoidable post-kill spike. There are
+> **three** kill code paths (online blade, online poison, offline harness) — see `MULTIPLAYER_PLAN.md` §4.
+> Poison ships as a **shared tool**, deliberately silent (no strike, no crowd panic) and is the **one ability
+> with no exposure spike at all**.
+>
+> **COUNTER-STUN (new):** you **cannot** assassinate the player hunting *you* — striking them **stuns** them
+> instead, worth kill-level points (`counter_stun_points`). It has a **more forgiving range** than a kill
+> (`counter_stun_range` 160 > `kill_range` 90): a deliberate skill window to turn on your pursuer. The client
+> fires at the larger reach and the host resolves kill vs stun vs nothing, so the prey never learns who its
+> hunter is.
 
-### 6.1 Death, elimination, and modes (no respawns)
-- **No respawns.** A killed player is out for the round. This keeps kills meaningful and preserves the AC-Rearmed-style PvP climax (see §7/§12).
+### 6.1 Death, elimination, and scoring
+- **Active mode = RESPAWNS (no elimination).** A killed player respawns after a short delay, keeping nothing
+  (exposure / tools / arrow precision all wipe). The classic **no-respawn elimination** loop is still
+  selectable behind `respawn_mode_enabled = false`. Respawn loop detail: `RESPAWN_MODE_PLAN.md`.
 
-> **⚠ AS-BUILT (audit 2026-06-29):** this matches the code today — death is terminal for the round
-> (`_on_player_killed` sets `_dead_by_peer`, the loser enters free-fly **spectate**, the match ends at ≤1 alive,
-> and the **winner is the highest scorer, not the survivor**). NOTE: an **inverted, respawn-based** mode is under
-> active design — if/when it lands it will live behind a feature flag (so this elimination loop stays selectable)
-> and is documented in `MULTIPLAYER_PLAN.md` rather than overwriting this section.
+> **⚠ UPDATE 2026-06-30 — scoring is PURELY kills now.** The old "scored on low average exposure + speed +
+> cleanliness + objectives" model (§10 still describes it) is **replaced**: each **player kill** banks a flat
+> base (`player_kill_points` 100) plus an **EXPOSURE MODIFIER** measured at the strike — 0 exposure → +100,
+> 50 → +50, 100 → +0 (AC "Incognito": an unseen kill scores most; labelled INCOGNITO / DISCREET / CLEAN) —
+> plus **kill-quality bonuses** (POISON, REVENGE, FOCUS, DROP, STREAK xN, BLEND KILL, ESCAPE). Exposure, speed,
+> and a death penalty **no longer score**; the avg-exposure scoreboard column was removed (it shows points +
+> kills). Exposure instead **sharpens your hunter's arrow on you** (`exposure_arrow.gd` precision tiers) — its
+> only job now is detection, not points.
+>
+> **AS-BUILT (audit 2026-06-29), elimination baseline:** with `respawn_mode_enabled = false`, death is terminal
+> (`_on_player_killed` sets `_dead_by_peer`, the loser spectates, the match ends at ≤1 alive, winner = highest
+> scorer not survivor).
 - **Casual mode:** elimination doesn't matter much — rounds are short, you re-queue. Death is low-stakes. (Decide in playtest what a dead player does meanwhile: spectate, quick post-death filler, or immediate re-queue — casual must not become dead time.)
 - **Ranked mode:** you are scored on **performance, not just survival** — how well you played, how low your average exposure was, kill cleanliness, speed/placement, objectives completed. A run you died early in still earns a meaningful score, so elimination never feels like "you lose, go watch." **The ranked ladder is built on this scoring spine** (see §10) — it's a core long-term system, not an afterthought.
 
@@ -247,12 +282,18 @@ A **limited, consumable** resource that powers map control. The economy is built
 
 **Tradeoff that keeps players aggressive:** in a future scoring/economy tie-in, spending tools on defense should cost progress toward winning, so the cautious player who locks everything down falls *behind*. We reward productive risk, the inverse of what made *Murderous Pursuits* feel timid.
 
-> **⚠ AS-BUILT (audit 2026-06-29):** the shipped tool economy is **two equipped tools per player**
-> (`ItemComponent`), charge-based with cooldowns, from a pool of **SMOKE, DISGUISE, MORPH, DECOY, POISON** — each
-> costs committed exposure on use (10/14/16/8/12). The §9 "spend a tool to **secure a passage**, hunter spends a
-> tool to **break the lock**" duel is **not implemented**: passage/rooftop control is via `access_point.gd`
-> **claim** (pays `claim_exposure_cost` 20) + a shared `global_cooldown` (15s), with no tool-vs-tool break. The
+> **⚠ AS-BUILT (audit 2026-06-29 / UPDATE 2026-06-30):** the shipped tool economy is **two equipped tools per
+> player** (`ItemComponent`), charge-based with cooldowns, from a pool of **SMOKE, DISGUISE, MORPH, DECOY,
+> POISON, FIRECRACKER**. **UPDATE 2026-06-30:** the six per-tool exposure costs were replaced by a single **flat
+> +25 spike** (`ability_exposure_spike`) on every ability use **except POISON** (silent — no spike), and that
+> spike now **decays over ~60s** (§3 UPDATE). The §9 "spend a tool to **secure a passage**, hunter spends a tool
+> to **break the lock**" duel is **not implemented**: passage/rooftop control is via `access_point.gd` **claim**
+> (pays `claim_exposure_cost` 20) + a shared `global_cooldown` (15s), with no tool-vs-tool break. The
 > single-occupancy "something lurks in the darkness" rule (§8.1a) is likewise not wired yet.
+>
+> **Passive perks (new):** a lobby-picked loadout modifier — None / Ghost (faster exposure recovery) / Blender
+> (slower exposure rise) / Swift (shorter cooldowns) / Survivor (longer respawn grace). **Active blending
+> (`BlendSpot`):** hide in a spot to drop exposure; striking from one scores a BLEND KILL bonus.
 
 ---
 
@@ -376,6 +417,8 @@ If a future feature conflicts with one of these, the feature is wrong:
 
 *Mechanics reference v0.4 — June 2026. Online ground truth: `MULTIPLAYER_PLAN.md`.*
 *Audit 2026-06-29: inline `AS-BUILT` callouts added to reconcile intent with shipped code (arrow tiers §3.1, permanent kill exposure §6, elimination/no-respawn confirmed §6.1, online contract ring §7/§11, instant teleports §8.5, shared-tool economy & no passage-lock §9, classes unbuilt/Poisoner-as-tool §9A). Intent text preserved; callouts record present behaviour.*
+
+*UPDATE 2026-06-30: the active mode flipped to inverted **PvP respawns** with an AC-Rearmed combat layer and **kill-based scoring**. Three rules changed (flagged `UPDATE 2026-06-30` inline): committed exposure now **decays** (§3), ability use is a **flat +25 spike except poison** (§9), and scoring is **purely kills + an exposure modifier + kill-quality bonuses** (§6.1) with exposure repurposed to **arrow sharpness**. Added: counter-stun (§6), passive perks + active blending (§9). Respawn loop spec: `RESPAWN_MODE_PLAN.md`. Everything is feature-flag gated; the old elimination/exposure-scoring loop stays selectable.*
 *v0.2: exposure arrow (§3.1), single-occupancy passages (§8.1a), asymmetric classes (§9A).*
 *v0.3: color-coded arrows + sameness guardrail (§3.1), teleport pads + free-teleport reward (§8.5).*
 *v0.4: intended exposure arc / pacing model (§3), death + casual/ranked rules, no respawns (§6.1), speed-reward target pings (§7.1), how-you-kill micro-decision (§7.2), Poisoner & Crossbow rebalanced (§9A), exposure-scaled teleport cast time (§8.5), Known Balance Risks (§15).*

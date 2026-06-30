@@ -2,6 +2,47 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — inverted RESPAWN PvP, AC-Rearmed combat layer, kill-based scoring
+
+A big mode overhaul toward an Assassin's-Creed-Multiplayer-Rearmed-style PvP duel. Everything new is
+**feature-flag gated** (`scripts/game_mode_flags.gd`, host-authoritative) so it A/Bs against the old
+elimination loop; the **active config is PvP-first respawns with the PvE ladder OFF**.
+
+- **RESPAWN MODE (`respawn_mode_enabled`, default ON)** — 5-minute rounds, **continuous respawns** (no
+  elimination). Each player hunts exactly one and is hunted by one (a maintained one-hunter/one-prey
+  chain re-formed on every death/respawn). **Death keeps nothing**: exposure, tools, and arrow
+  precision all wipe to base. The same Player node is revived in place after `respawn_delay_seconds`
+  with a short `respawn_grace_seconds` immunity. **Density-weighted spawn picker** (`density_spawn_enabled`)
+  samples walkable points, hard-excludes spots near live players / your killer (anti-farm), and scores
+  the rest by crowd density + closeness to your new target. Full detail: `RESPAWN_MODE_PLAN.md`.
+- **Optional per-life PvE ladder (`pve_ladder_enabled`, default OFF)** — gated, not deleted. When on,
+  killing optional NPC marks earns upgrade points you spend on **[F] sharpen arrow** or **[G] unlock 2nd
+  tool**, wiped on death. Off = pure PvP (NPC-killing is just a wrong-target whiff, never a score).
+- **Ready-up lobby** — players ready before the host can start.
+- **Hunter danger cues (AC heartbeat)** — `DangerOverlay`: a red vignette + a quickening **heartbeat**
+  (`assets/audio/heartbeat.wav`) as your hunter closes (`danger_near_px` / `danger_close_px`).
+- **Kill-quality bonuses (AC-style)** — extra points + an on-screen label per stylish kill: POISON,
+  REVENGE (kill who last killed you), FOCUS (kill under pressure), DROP, STREAK xN, BLEND KILL, ESCAPE.
+- **Counter-stun** — you CAN'T assassinate the player hunting you; **striking them STUNS them** instead,
+  worth kill-level points. The old dedicated stun key was removed — only attacking your attacker stuns.
+- **Firecracker tool** — instant flashbang burst that briefly stuns nearby players.
+- **Controller-friendly target lock** — a sticky soft-lock + private reticle; you must FACE a suspect
+  to lock and strike them (`LockReticle`).
+- **Passive perks (lobby loadout modifier)** — None / Ghost (faster exposure recovery) / Blender
+  (slower exposure rise) / Swift (shorter cooldowns) / Survivor (longer grace).
+- **Active blending / hiding spots** — `BlendSpot`: hide to drop exposure; striking from one = BLEND KILL.
+- **Scoring is now PURELY kills + kill-quality bonuses.** Each player kill banks a flat base (100) plus an
+  **EXPOSURE MODIFIER** scored at the strike: 0 exposure → +100, 50 → +50, 100 → +0 (INCOGNITO /
+  DISCREET / CLEAN). Exposure, speed, and the death penalty no longer score; the kill's own spike is
+  applied *after* the kill is scored so a clean approach reads as clean. Removed all the inert scoring
+  knobs and the avg-exposure scoreboard column (it now shows points + kills). A focal **SCORE / KILLS**
+  readout was added to the HUD (left side, above the log).
+- **Exposure → "arrow teeth" + always-decaying.** Exposure no longer scores; instead, the more exposed
+  you are, the **sharper your hunter's arrow on you** gets (acting is exposing). And exposure now
+  **always works off over time** — the committed (kill/tool) part is no longer a permanent floor; it
+  decays at `committed_decay_per_second`. **Ability use adds a flat +25 spike** (clears in ~60s) for
+  every tool **except poison** (silent: no spike).
+
 ## Session: prayer — arrows, exposure tuning, crowd walk anims, HUD, round countdown
 
 - **Hunt arrow (post-marks)**: binary now — solid cardinal (N/E/S/W) while the target is off-screen,
