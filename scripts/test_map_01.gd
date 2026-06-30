@@ -106,6 +106,10 @@ enum Zone { NW, NE, SW, SE, HUB }
 ## When false, this map spawns NO map-control portals (teleporters / trapdoor / underground
 ## passage). Street-only maps like Rome set this false — just tight lanes, no shortcuts (§8).
 @export var enable_portals: bool = true
+## Finer control: when false, the cross-map TELEPORTER pads are skipped but the trapdoor still
+## spawns (if enable_portals is on). Citadel sets this false — no magic top↔bottom jump, but the
+## short trapdoor hop stays. Only matters when enable_portals is true.
+@export var enable_teleporters: bool = true
 
 # ===== colours =====
 ## Out-of-bounds border behind everything.
@@ -568,8 +572,9 @@ func _add_static_box(center: Vector2, size: Vector2) -> void:
 # === map-control features (Portal pairs, §8) ===============================
 func _spawn_portals() -> void:
 	# Teleporter pads — TOP ↔ BOTTOM cross-map jump, exposure cost + 15s shared cooldown
-	# (teal). Notes 2/10/§7.3.
-	_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, teleporter_radius, teleporter_cooldown)
+	# (teal). Notes 2/10/§7.3. Skipped on maps that opt out (enable_teleporters = false).
+	if enable_teleporters:
+		_spawn_portal_pair(_teleport_pads[0], _teleport_pads[1], Color(0.2, 0.8, 0.85, 0.85), teleporter_cost, teleporter_radius, teleporter_cooldown)
 	# Trapdoor — a medium diagonal hop with a small exposure tell (orange): NW alley
 	# to SE alley. No cooldown.
 	_spawn_portal_pair(_cell_center(4, 5), _cell_center(_cols() - 7, _rows() - 6), Color(0.95, 0.55, 0.2, 0.85), trapdoor_cost, trapdoor_radius, 0.0)
