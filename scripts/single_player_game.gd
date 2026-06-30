@@ -16,8 +16,9 @@ class_name SinglePlayerGame
 # the "hunter" group, and RoundManager finds "player" / "contract" / "end_screen". So this
 # builder just spawns the pieces and positions the HUD.
 
-# The COMPACT arena is our main map now (smaller, denser, the one we're building variety into).
-const MAP_SCENE := preload("res://maps/test_map_02.tscn")
+# The CITADEL (AC-Rearmed-style dense city) is our main map now — bigger + denser than Compact,
+# the one we're building variety into. Swap back to test_map_02 (Compact) to compare.
+const MAP_SCENE := preload("res://maps/test_map_03.tscn")
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const HUNTER_SCENE := preload("res://scenes/hunter.tscn")
@@ -32,9 +33,9 @@ const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
 ## NPC marks to kill before the bot hunter becomes your valid target (buildplan §7.0, note 9).
 @export var marks_to_kill: int = 2
 
-## Camera zoom for the view. >1 tightens it (zoom IN); ~1.1 shows ~¾ of the old span so the
-## four-zone map reads better (buildplan §7.0, note 1). Pure feel — tune freely.
-@export var camera_zoom: Vector2 = Vector2(1.1, 1.1)
+## Camera zoom for the view. >1 tightens it (zoom IN); LOWER pulls back to show MORE. Set to 0.825
+## (75% of the old 1.1) so the bigger, denser map reads in one view. Pure feel — tune freely.
+@export var camera_zoom: Vector2 = Vector2(0.825, 0.825)
 
 var _player: Player = null
 var _hunter: HunterAi = null

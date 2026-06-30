@@ -242,7 +242,8 @@ func _build_ui() -> void:
 		_map_picker.add_item("Four Zones (full — rooftops & sewers)", NetworkManager.Map.FOUR_ZONE)
 		_map_picker.add_item("Compact Arena (small)", NetworkManager.Map.COMPACT)
 		_map_picker.add_item("Rome (small — tight streets, no verticality)", NetworkManager.Map.ROME)
-		_map_picker.selected = NetworkManager.Map.COMPACT  # the compact arena is our main map
+		_map_picker.add_item("Citadel (AC-style — bigger, dense, tight alleys)", NetworkManager.Map.CITADEL)
+		_map_picker.selected = NetworkManager.Map.CITADEL  # the Citadel is our main map now
 		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panel.add_child(_map_picker)
 
@@ -344,7 +345,7 @@ func _on_start_pressed() -> void:
 	if _player_count() < MIN_PLAYERS_TO_START or not _all_clients_ready():
 		return
 	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice.
-	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.COMPACT
+	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.CITADEL
 	_begin_match.rpc(map_id)
 
 

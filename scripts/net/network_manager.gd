@@ -52,11 +52,12 @@ signal steam_lobby_failed(reason: String)
 var small_arena: bool = true
 
 ## Which map the lobby picked (Phase 10). Index into the lobby's map list — the match reads
-## it to load the right scene. FOUR_ZONE is the full main map; COMPACT and ROME are small
-## (so they also set small_arena = true for the lighter crowd). Survives the scene change.
-enum Map { FOUR_ZONE, COMPACT, ROME }
-## Defaults to COMPACT — our main map for now (matches small_arena = true above).
-var selected_map: int = Map.COMPACT
+## it to load the right scene. FOUR_ZONE is the full main map; COMPACT, ROME and CITADEL are the
+## small/medium maps (so they also set small_arena = true for the lighter crowd). Survives the
+## scene change. CITADEL is the new AC-Rearmed-style main map (bigger + denser than COMPACT).
+enum Map { FOUR_ZONE, COMPACT, ROME, CITADEL }
+## Defaults to CITADEL — our main map now (matches small_arena = true above).
+var selected_map: int = Map.CITADEL
 
 ## The two TOOLS this player picked in the lobby (ItemComponent.Tool ints: 0=smoke, 1=disguise,
 ## 2=morph, 3=decoy, 4=poison). Lives here so it survives the lobby → match scene change; the match

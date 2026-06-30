@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3 uid="uid://btestmap03unsn"]
+
+[ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
+
+; CITADEL — an AC-Rearmed-style dense city, the evolution of the Compact arena. Reuses the WHOLE
+; test_map_01 script; only the grid (layout_override) and the play size change. It is ~33% BIGGER
+; than Compact (play_half 1920x1493 vs 1440x1120) and uses a DENSER 27x21 grid so the 1-cell streets
+; are TIGHTER and there are far MORE buildings (274 vs Compact's ~95) — irregular blocks, L-shapes,
+; merged superblocks and a big central palazzo, split by winding 1-cell alleys, around a central
+; piazza with a fountain + short canal & bridge. Same procedural stylized art as every other map.
+; Generated + flood-fill connectivity-verified (scratchpad/gen_citadel.py).
+
+[node name="TestMap03" type="Node2D"]
+script = ExtResource("1_map")
+play_half_width = 1920.0
+play_half_height = 1493.0
+layout_override = Array[String](["###########################", "#.........................#", "#.###.###.###.###....###..#", "#..##.###..##.###....###..#", "#.###................###..#", "#.##..###.###.###.##.###..#", "#.###..##..##.###..#.##...#", "#.....###............###..#", "#.###.###.#.....#.##......#", "#.###.###.#.....#.##......#", "#.###.###....F............#", "#..##.#####..W..#..#.##...#", "#.###.#####..B..#.##.###..#", "#.###.####...W..#.##.###..#", "#....................###..#", "#.###.###.....######.###..#", "#.###.###.#.#.######.###..#", "#.###.###.....######.##...#", "#.........................#", "#.........................#", "###########################"])
+
+[node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]

@@ -2,6 +2,21 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
+
+- **Camera pulled back to 75% of the old zoom** (`network_camera_zoom` / `single_player_game.camera_zoom`
+  / the spectate camera all `1.1 → 0.825`), so more of the map reads in one view.
+- **New CITADEL map (`maps/test_map_03.tscn`)** — the AC-Rearmed-style evolution of the Compact arena,
+  reusing the WHOLE `test_map_01.gd` script (only the grid + play size change). **~33% bigger**
+  (`play_half` 1920×1493 vs Compact's 1440×1120) on a **denser 27×21 grid** so the 1-cell streets are
+  **tighter** and there are **far more buildings** (274 vs Compact's ~95): irregular blocks, L-shapes,
+  merged superblocks and a big central palazzo, split by winding alleys around a central piazza with a
+  fountain + short canal & bridge. Generated + flood-fill connectivity-verified (`scratchpad/gen_citadel.py`).
+- **Citadel is now the default map** (lobby picker default + `NetworkManager.selected_map` +
+  `single_player_game`), and is selectable alongside Four Zones / Compact / Rome. New
+  `citadel_npc_count` (85) keeps the bigger arena's crowd from feeling thin; a `_crowd_size_for_map()`
+  helper picks the right count so the build + the client's "crowd fully arrived" check always agree.
+
 ## Session: prayer — inverted RESPAWN PvP, AC-Rearmed combat layer, kill-based scoring
 
 A big mode overhaul toward an Assassin's-Creed-Multiplayer-Rearmed-style PvP duel. Everything new is

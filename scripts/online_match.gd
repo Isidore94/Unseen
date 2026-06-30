@@ -15,6 +15,7 @@ class_name OnlineMatch
 const MAP_SCENE := preload("res://maps/test_map_01.tscn")
 const SMALL_MAP_SCENE := preload("res://maps/test_map_02.tscn")
 const ROME_SCENE := preload("res://maps/rome.tscn")  # Phase 10 — street-only small map
+const CITADEL_SCENE := preload("res://maps/test_map_03.tscn")  # AC-Rearmed-style dense city (new main map)
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const NPC_SCENE := preload("res://scenes/npc.tscn")
 const MINI_MAP_SCRIPT := preload("res://scripts/mini_map.gd")
@@ -26,6 +27,10 @@ const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 ## Tighter crowd (Phase 9 decision): a smaller, readable haystack. At clone_crowd_fraction = 0.25
 ## this is ~10 clones + ~30 filler. Raise it (or the fraction) if hiding feels too easy.
 @export var compact_npc_count: int = 55
+
+## Crowd size for the CITADEL map. It's ~33% bigger than Compact (≈1.8× the open area), so it needs
+## a bigger crowd than compact_npc_count or the haystack feels thin. Tune for host load + readability.
+@export var citadel_npc_count: int = 85
 
 ## How many sprite sheets exist (assets/sprites). Keep in sync with CharacterVisual's sheet list.
 const NUM_SHEETS := 15
@@ -422,6 +427,8 @@ func _build_world() -> void:
 			map_scene = SMALL_MAP_SCENE
 		NetworkManager.Map.ROME:
 			map_scene = ROME_SCENE
+		NetworkManager.Map.CITADEL:
+			map_scene = CITADEL_SCENE
 		_:
 			map_scene = MAP_SCENE
 	_map = map_scene.instantiate()
@@ -538,10 +545,21 @@ func _tick_round_countdown(delta: float) -> void:
 			_mhud.set_countdown("")
 
 
+# The crowd size for the chosen map. Big map (FOUR_ZONE) uses npc_count; the small arenas use the
+# lighter compact_npc_count, except CITADEL (bigger + denser) which gets its own citadel_npc_count.
+# Every peer computes this the same way from the shared lobby choice — no extra network message.
+func _crowd_size_for_map() -> int:
+	if not NetworkManager.small_arena:
+		return npc_count
+	if NetworkManager.selected_map == NetworkManager.Map.CITADEL:
+		return citadel_npc_count
+	return compact_npc_count
+
+
 func _spawn_crowd() -> void:
 	var map := _map as TestMap01
-	# Fewer NPCs in the compact arena (lighter for the host to simulate + replicate).
-	var crowd_size := compact_npc_count if NetworkManager.small_arena else npc_count
+	# Fewer NPCs in the small arenas (lighter for the host to simulate + replicate).
+	var crowd_size := _crowd_size_for_map()
 	for _i in crowd_size:
 		# A minority cross the whole map (entering from an edge); most are homebodies
 		# that spawn wherever and potter around there.
@@ -1266,7 +1284,7 @@ func _enter_spectate(killer_name: String, method: String) -> void:
 	# A free camera, starting on the spot where we were killed, that we fly with WASD / the stick.
 	_spectate_camera = Camera2D.new()
 	_spectate_camera.name = "SpectateCamera"
-	_spectate_camera.zoom = Vector2(1.1, 1.1)
+	_spectate_camera.zoom = Vector2(0.825, 0.825)  # match the live camera (75% of the old 1.1 — wider view)
 	if _local_player != null and is_instance_valid(_local_player):
 		_spectate_camera.global_position = _local_player.global_position
 	add_child(_spectate_camera)
@@ -2643,7 +2661,7 @@ func _maybe_assign_crowd_appearances() -> void:
 		return
 	# Every peer can compute the crowd size itself (it knows the same lobby choice), so a client
 	# can tell when its crowd is fully here without any extra network message.
-	var expected_crowd := compact_npc_count if NetworkManager.small_arena else npc_count
+	var expected_crowd := _crowd_size_for_map()
 	if _crowd_parent.get_child_count() < expected_crowd:
 		return  # still arriving — wait for the last NPC so the dupe/filler counts come out right
 	_crowd_appearance_done = true
