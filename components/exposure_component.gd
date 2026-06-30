@@ -12,14 +12,16 @@ class_name ExposureComponent
 #   1. MOVEMENT exposure — RECOVERABLE. Running (and erratic movement) raise it;
 #      walking calmly and standing still bring it back down. This is the heat you
 #      build by moving fast, and you can cool it off by moving like a civilian.
-#   2. COMMITTED exposure — PERMANENT. Kills and tools add to this, and nothing
-#      ever lowers it within the round. It acts as a FLOOR your total can never go
-#      below, no matter how much you walk. This is what makes using a tool or
-#      taking a kill a hard, lasting decision that locks you into less flexibility.
+#   2. COMMITTED exposure — a one-off SPIKE that DECAYS over time. Kills and tools
+#      add to this; it then bleeds away on its own at `committed_decay_per_second`
+#      (an ability spike of +25 fully clears in about a minute). It is NOT a
+#      permanent floor — exposure "always works off over time" — so a tool/kill is
+#      a temporary tell that you out-run by going quiet, not a lifelong scar.
 #
 # Your TOTAL exposure (what everyone reads) = movement + committed, clamped 0–100.
-# So you can always calm down from a sprint, but every kill/tool permanently
-# raises the floor you're stuck above for the rest of the round.
+# So you always cool down: walk off the movement heat, and the committed spike
+# decays on its own. (POISON is the deliberate exception — a silent kill that
+# adds NO committed spike at all; see ItemComponent.)
 #
 # ---------------------------------------------------------------------------
 # THIS COMPONENT IS A HUB — three "doors" for the rest of the game to push it:
@@ -45,6 +47,10 @@ class_name ExposureComponent
 ## Movement exposure bled away per second while standing completely still.
 @export var idle_fall_per_second: float = 8.0
 
+## The COMMITTED (kill/tool) spike bleeds away at this many points per second, always — no input
+## needed. 0.42 ≈ a +25 ability spike clearing in ~60s ("comes down over a minute").
+@export var committed_decay_per_second: float = 0.42
+
 ## A direction change bigger than this many degrees between frames counts as
 ## "erratic" (0 = straight line, 180 = full reverse).
 @export var erratic_angle_threshold_degrees: float = 75.0
@@ -62,7 +68,7 @@ var exposure: float = 0.0
 ## never erase a kill/tool commitment.
 var _movement_exposure: float = 0.0
 
-## The permanent floor added by kills/tools. Never lowered within a round.
+## The spike added by kills/tools. Decays over time (committed_decay_per_second), not permanent.
 var _committed_exposure: float = 0.0
 
 ## Remembers last frame's direction so we can measure how sharply you turned.
@@ -77,11 +83,15 @@ func update(is_running: bool, is_moving: bool, direction: Vector2, delta: float)
 	var rate_per_second: float = _movement_rate_per_second(is_running, is_moving, direction)
 	rate_per_second += _total_continuous_rate()
 	_movement_exposure = clampf(_movement_exposure + rate_per_second * delta, 0.0, 100.0)
+	# The committed spike always bleeds away over time (it is no longer a permanent floor).
+	if _committed_exposure > 0.0:
+		_committed_exposure = maxf(0.0, _committed_exposure - committed_decay_per_second * delta)
 	_recompute_total()
 
 
-# === DOOR 2: COMMITTED, PERMANENT ONE-OFF RISES ============================
-# Kills and tools call this. It raises the permanent floor; walking can't undo it.
+# === DOOR 2: COMMITTED ONE-OFF SPIKES (then decay over time) ===============
+# Kills and tools call this. It adds an instant spike that then bleeds away on its
+# own (committed_decay_per_second) — a temporary tell, not a permanent floor.
 func add_exposure(amount: float, reason: String = "") -> void:
 	_committed_exposure = clampf(_committed_exposure + amount, 0.0, 100.0)
 	if debug_print_changes:
@@ -139,8 +149,8 @@ func _movement_rate_per_second(is_running: bool, is_moving: bool, direction: Vec
 	return rate
 
 
-# Combines the two parts into the total, clamps, and announces real changes. The
-# committed floor means the total can never fall below _committed_exposure.
+# Combines the two parts into the total, clamps, and announces real changes. Both parts
+# decay on their own, so the total always trends back toward 0 when you go quiet.
 func _recompute_total() -> void:
 	var total: float = clampf(_movement_exposure + _committed_exposure, 0.0, 100.0)
 	if total == exposure:

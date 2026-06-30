@@ -68,14 +68,11 @@ var owner_dead: bool = false
 @export var firecracker_charges: int = 1
 @export var firecracker_cooldown_seconds: float = 12.0
 
-## Exposure (0-100) ADDED to the user each time a tool is used — tools aren't free. Tuned so a tool
-## or two is fine but leaning on them pushes you toward the 100% reveal. Applied by the authority.
-@export var smoke_exposure_cost: float = 10.0
-@export var disguise_exposure_cost: float = 14.0
-@export var morph_exposure_cost: float = 16.0
-@export var decoy_exposure_cost: float = 8.0
-@export var poison_exposure_cost: float = 12.0
-@export var firecracker_exposure_cost: float = 10.0
+## Exposure (0-100) ADDED to the user each time an ability is used — a FLAT spike for every tool, so
+## any ability use reads the same on your hunter's arrow. It then decays over ~a minute
+## (ExposureComponent.committed_decay_per_second). POISON is the deliberate exception (a silent kill:
+## NO spike — see exposure_for_tool). Applied by the authority.
+@export var ability_exposure_spike: float = 25.0
 
 ## Input actions (one per slot). Local co-op assigns each player its own (p1_/p2_).
 @export var item_primary_action: String = "item_primary"
@@ -154,14 +151,11 @@ func charges_for_tool(tool: int) -> int:
 	return 1
 
 func exposure_for_tool(tool: int) -> float:
-	match tool:
-		Tool.SMOKE: return smoke_exposure_cost
-		Tool.DISGUISE: return disguise_exposure_cost
-		Tool.MORPH: return morph_exposure_cost
-		Tool.DECOY: return decoy_exposure_cost
-		Tool.POISON: return poison_exposure_cost
-		Tool.FIRECRACKER: return firecracker_exposure_cost
-	return 0.0
+	# POISON is silent — no exposure spike (that's the whole point of a quiet kill). Every other
+	# ability adds the same flat spike.
+	if tool == Tool.POISON:
+		return 0.0
+	return ability_exposure_spike
 
 func cooldown_for_tool(tool: int) -> float:
 	match tool:

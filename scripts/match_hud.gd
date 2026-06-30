@@ -29,6 +29,8 @@ var _time_label: Label = null
 var _roster_rows: Array = []          # Array of {name:Label, score:Label, dot:ColorRect}
 var _log_lines: Array[String] = []
 var _log_label: Label = null
+var _score_value_label: Label = null   # YOUR running point total (the big focal number)
+var _score_kills_label: Label = null   # YOUR kill count, beside the points
 var _portrait: TextureRect = null
 var _portrait_unknown: Label = null   # the big "?" shown over the portrait while disguised/morphed
 var _portrait_box: StyleBoxFlat = null  # the portrait panel's frame, turned RED while you're hunted
@@ -67,6 +69,7 @@ func _ready() -> void:
 	_legend_panel(Rect2(16, 222, 330, 126))
 	_timer_banner(Rect2(vp.x * 0.5 - 200, 12, 400, 60))
 	_roster_panel(Rect2(vp.x - 316, 16, 300, 156))
+	_score_panel(Rect2(16, vp.y - 268, 360, 44))  # YOUR kill-score, just above the log box (left side)
 	_log_panel(Rect2(16, vp.y - 220, 360, 204))
 	_ability_bar(Rect2(vp.x * 0.5 - 300, vp.y - 106, 600, 92))
 	_minimap_panel(Rect2(vp.x - 268, vp.y - 268, 252, 252))
@@ -194,6 +197,14 @@ func _roster_panel(rect: Rect2) -> void:
 		var nm := _mklabel(p, "—", Vector2(58, y), 15, TEXT)
 		var sc := _mklabel(p, "", Vector2(rect.size.x - 40, y), 15, TEXT)
 		_roster_rows.append({"num": num_lbl, "name": nm, "score": sc, "dot": dot})
+
+# YOUR kill-score readout (left side, above the log). Scoring is purely kills + kill-quality
+# bonuses now, so this is the number the player is actually playing for — given its own focal panel.
+func _score_panel(rect: Rect2) -> void:
+	var p := _panel(rect)
+	_mklabel(p, "SCORE", Vector2(8, 12), 15, GOLD)
+	_score_value_label = _mklabel(p, "0", Vector2(82, 6), 26, TEXT)
+	_score_kills_label = _mklabel(p, "KILLS 0", Vector2(rect.size.x - 110, 14), 15, GOLD_DIM)
 
 func _log_panel(rect: Rect2) -> void:
 	var p := _panel(rect)
@@ -362,6 +373,13 @@ func set_roster(rows: Array) -> void:  # rows: Array of {name, num, color, score
 		else:
 			r.num.text = str(i + 1); r.num.modulate = Color(1, 1, 1, 0.35)
 			r.name.text = "—"; r.name.modulate = TEXT; r.score.text = ""; r.dot.color = Color(0.25, 0.25, 0.25)
+
+# Update YOUR focal kill-score readout (points + kills), fed each roster tick from the match.
+func set_kill_score(points: int, kills: int) -> void:
+	if _score_value_label != null:
+		_score_value_label.text = str(points)
+	if _score_kills_label != null:
+		_score_kills_label.text = "KILLS %d" % kills
 
 func set_ability(id: String, text: String, available: bool = true) -> void:
 	if not _ability_slots.has(id):

@@ -94,29 +94,11 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 ## Start-of-round countdown (seconds). Players are frozen and kills blocked until it ends — this is
 ## the window for the per-viewer crowd reskin + replication to settle before play begins.
 @export var round_start_countdown: float = 3.0
-## Points per % of "ghostliness" (100 − your average exposure). Low exposure is the fantasy.
-@export var exposure_weight: float = 5.0
-## Starting speed bonus; it bleeds away over the match, rewarding a fast clean game.
-@export var speed_bonus_cap: float = 500.0
-@export var speed_bleed_per_second: float = 2.0
-## Points for each clean kill (your marks + the player you eliminate).
-@export var kill_points: int = 100
-## Points for killing a PLAYER (the PvP payoff) — MASSIVE vs an NPC mark, so taking out a human
-## dominates the scoreboard. Counted separately from NPC-mark kills.
-@export var player_kill_points: int = 1000
-## Awarded for COMPLETING your contract (killing your assigned target) — an achievement that
-## scores points, not a circular "you won" flag (the winner is decided from the totals).
-@export var contract_bonus: int = 500
-## Subtracted from a player who is eliminated — being killed caps what you can still earn.
-@export var death_penalty: int = 300
+## Base points for a kill (every player kill is worth this before kill-quality modifiers are added).
+## A clean low-exposure kill stacks the exposure modifier on top of this (see `_award_kill_bonuses`).
+@export var player_kill_points: int = 100
 
 # === KILL-QUALITY BONUSES (AC Rearmed-style) — extra points + an on-screen label per stylish kill ===
-## Killer's exposure at/under this when they kill their target = INCOGNITO (the unseen-kill bonus).
-@export var incognito_exposure_max: float = 25.0
-## ...at/under this (but over incognito) = the smaller DISCREET bonus.
-@export var discreet_exposure_max: float = 60.0
-@export var incognito_bonus: int = 300
-@export var discreet_bonus: int = 150
 ## Bonus for a silent POISON kill on your target.
 @export var poison_bonus: int = 150
 ## Bonus for killing the player who most recently killed YOU (REVENGE).
@@ -229,8 +211,8 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 @export var stun_duration: float = 3.0
 ## Cooldown (seconds) before you can counter-stun your hunter again.
 @export var stun_cooldown: float = 8.0
-## Points for a successful counter-stun — "just like getting a kill" (defaults to a player kill).
-@export var counter_stun_points: int = 1000
+## Points for a successful counter-stun — "just like getting a kill" (matches the flat per-kill base).
+@export var counter_stun_points: int = 100
 var _stun_ready_at: Dictionary = {}  ## peer -> the _elapsed time at which their next stun is allowed
 
 var _map: Node = null
@@ -271,8 +253,6 @@ var _match_over: bool = false
 
 ## Host-only scoring accumulators, one entry per peer (mirrors LocalMatchManager).
 var _player_num: Dictionary = {}        # peer -> 1-based display number (spawn order)
-var _exposure_sum: Dictionary = {}      # peer -> summed exposure samples
-var _exposure_samples: Dictionary = {}  # peer -> sample count
 var _kills_by_peer: Dictionary = {}     # peer -> clean kills landed (NPC marks + players)
 var _player_kills_by_peer: Dictionary = {}  # peer -> PLAYER kills (subset of above; scored huge)
 var _completed_by_peer: Dictionary = {} # peer -> killed their assigned target?
@@ -686,8 +666,6 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	# Start this peer's score row (host-only). _player_num is 1-based spawn order, for the
 	# scoreboard ("Player 1/2/3/4").
 	_player_num[peer_id] = _next_spawn_index
-	_exposure_sum[peer_id] = 0.0
-	_exposure_samples[peer_id] = 0
 	_kills_by_peer[peer_id] = 0
 	_player_kills_by_peer[peer_id] = 0
 	_completed_by_peer[peer_id] = false
@@ -1208,11 +1186,13 @@ func _on_player_killed(loser_peer: int) -> void:
 	_remove_exposed_reveal.rpc(loser_peer)
 
 	# Attribute the kill. request_kill stamps last_attacker_peer on the victim. If the killer
-	# was this player's assigned hunter, it COMPLETES their contract (the +contract_bonus).
+	# was this player's assigned hunter, it marks their contract complete (tracked for the badge,
+	# not scored — scoring is purely kills + kill-quality bonuses now).
 	var loser := _players_by_peer.get(loser_peer) as Player
 	var killer_peer: int = int(loser.get("last_attacker_peer")) if loser != null else -1
 	if killer_peer > 0:
-		# A PLAYER kill — worth massive points (covers melee AND poison, both stamp last_attacker_peer).
+		# A PLAYER kill — banks the flat per-kill base + its exposure/quality modifiers (covers melee
+		# AND poison, both stamp last_attacker_peer). Bonuses are awarded in _award_kill_bonuses.
 		_player_kills_by_peer[killer_peer] = int(_player_kills_by_peer.get(killer_peer, 0)) + 1
 	if killer_peer > 0 and int(_ring_target.get(killer_peer, 0)) == loser_peer:
 		_completed_by_peer[killer_peer] = true
@@ -1873,7 +1853,18 @@ func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void
 		return
 	var labels: Array = []
 	var bonus := 0
-	# (The exposure-based INCOGNITO/DISCREET tiers were dropped — scoring no longer uses exposure.)
+	# EXPOSURE MODIFIER (on top of the flat per-kill base): the cleaner you were at the moment of the
+	# kill, the bigger the bonus. 0 exposure → +100, 50 → +50, 100 → +0 (AC "Incognito" model — an
+	# unseen kill is worth the most). Exposure now decays over time, so staying quiet between kills pays.
+	var killer_exposure := 0.0
+	var killer_node := _players_by_peer.get(killer_peer) as Player
+	if killer_node != null and is_instance_valid(killer_node) and killer_node.exposure_component != null:
+		killer_exposure = killer_node.exposure_component.exposure
+	var exposure_modifier: int = clampi(int(round(100.0 - killer_exposure)), 0, 100)
+	if exposure_modifier > 0:
+		bonus += exposure_modifier
+		var stealth_label := "INCOGNITO" if exposure_modifier >= 80 else ("DISCREET" if exposure_modifier >= 40 else "CLEAN")
+		labels.append("%s +%d" % [stealth_label, exposure_modifier])
 	# Silent poison finish.
 	if loser != null and String(loser.get("last_attacker_method")) == "poison":
 		bonus += poison_bonus
@@ -2026,20 +2017,13 @@ func _update_lock_reticle() -> void:
 		_lock_reticle.track(null, false)
 
 
-# Host-only: per-frame scoring tick — advance the clock, sample every LIVING player's exposure
-# (for the round average), and end on the time limit. Stops once the match is decided.
+# Host-only: per-frame scoring tick — advance the clock and end on the time limit. Exposure is no
+# longer sampled for scoring (score is purely kills + kill-quality bonuses); it still drives the
+# arrow and detection live. Stops once the match is decided.
 func _host_score_tick(delta: float) -> void:
 	if not _match_begun or _match_over:
 		return
 	_elapsed += delta
-	for peer_id in _players_by_peer:
-		if bool(_dead_by_peer.get(peer_id, false)):
-			continue
-		var character := _players_by_peer[peer_id] as Player
-		if character == null or not is_instance_valid(character) or character.exposure_component == null:
-			continue
-		_exposure_sum[peer_id] = float(_exposure_sum.get(peer_id, 0.0)) + character.exposure_component.exposure
-		_exposure_samples[peer_id] = int(_exposure_samples.get(peer_id, 0)) + 1
 	if round_time_limit > 0.0 and _elapsed >= round_time_limit:
 		_end_match("timeout")
 
@@ -2068,21 +2052,19 @@ func _end_match(reason: String) -> void:
 	_declare_match_over.rpc(rows, winner_peer, reason)
 
 
-# Host-only: one player's score breakdown (mirrors LocalMatchManager._score_for_player).
+# Host-only: one player's score breakdown.
+# SCORE IS PURELY FROM KILLS now. Each player kill banks `player_kill_points` (100) PLUS its
+# kill-quality bonuses (the exposure modifier + REVENGE / STREAK / FOCUS / DROP / BLEND / POISON /
+# SAVIOUR) at the moment of the kill — all of which accumulate into `_style_bonus_by_peer`. So the
+# running total is just: base-per-kill + all banked bonuses. Exposure no longer scores directly
+# (it already drives detection, the arrow, and the per-kill exposure modifier), NPC marks don't
+# score in pure-PvP, and there's no contract bonus or death penalty.
 func _score_for_peer(peer_id: int) -> Dictionary:
-	var samples: int = maxi(1, int(_exposure_samples.get(peer_id, 0)))
-	var avg_exposure: float = float(_exposure_sum.get(peer_id, 0.0)) / float(samples)
-	# SCORE IS PURELY FROM KILLS now: PLAYER kills score massively, NPC marks the normal amount, plus
-	# the AC kill-quality bonuses and completing your contract. Exposure, speed, and the death penalty
-	# NO LONGER affect the score (exposure already drives detection / the arrow, which is enough).
 	var player_kills: int = int(_player_kills_by_peer.get(peer_id, 0))
-	var npc_kills: int = maxi(0, int(_kills_by_peer.get(peer_id, 0)) - player_kills)
-	var kill_score: int = npc_kills * kill_points + player_kills * player_kill_points
-	var outcome_bonus: int = contract_bonus if bool(_completed_by_peer.get(peer_id, false)) else 0
-	var style_bonus: int = int(_style_bonus_by_peer.get(peer_id, 0))  # AC-style kill-quality bonuses
-	var total: int = maxi(0, kill_score + outcome_bonus + style_bonus)
+	var kill_score: int = player_kills * player_kill_points
+	var style_bonus: int = int(_style_bonus_by_peer.get(peer_id, 0))  # exposure modifier + AC kill-quality bonuses
+	var total: int = maxi(0, kill_score + style_bonus)
 	return {
-		"avg_exposure": avg_exposure,
 		"kills": int(_kills_by_peer.get(peer_id, 0)),
 		"player_kills": player_kills,
 		"completed": bool(_completed_by_peer.get(peer_id, false)),
@@ -2174,9 +2156,9 @@ func _show_scoreboard(rows: Array, winner_peer: int, reason: String) -> void:
 			status = "   [eliminated]"
 		elif bool(row["completed"]):
 			status = "   [contract ✓]"
-		line.text = "%d. %s — %d pts   ·   kills %d   ·   avg exp %d%%%s%s" % [
-			int(row["num"]), str(row.get("name", "Player")), int(row["total"]), int(row["kills"]),
-			int(round(float(row["avg_exposure"]))), status, you_tag]
+		line.text = "%d. %s — %d pts   ·   kills %d%s%s" % [
+			int(row["num"]), str(row.get("name", "Player")), int(row["total"]),
+			int(row.get("player_kills", 0)), status, you_tag]
 		if int(row["peer"]) == winner_peer:
 			line.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))  # gold winner
 		else:
@@ -2301,11 +2283,13 @@ func _build_roster_rows() -> Array:
 	var rows: Array = []
 	for peer in _players_by_peer.keys():
 		var num: int = int(_player_num.get(peer, 0))
+		var score_row := _score_for_peer(peer)
 		rows.append({
 			"name": _display_name_for(peer),         # nickname, or "Player N" — same as the scoreboard
 			"num": num,                              # stable display number (colour + ranking key)
 			"color": _color_for_num(num),            # keyed by number, so it survives the re-sort below
-			"score": int(_score_for_peer(peer).get("total", 0)),
+			"score": int(score_row.get("total", 0)),
+			"player_kills": int(score_row.get("player_kills", 0)),  # for each client's focal kill-score box
 			"dead": bool(_dead_by_peer.get(peer, false)),
 			"peer": peer,  # so each client can find ITS OWN row and label the top-left box
 		})
@@ -2330,6 +2314,7 @@ func _receive_roster(rows: Array) -> void:
 	for row in rows:
 		if int(row.get("peer", 0)) == my_id:
 			_mhud.set_player_name(String(row.get("name", "YOU")), "YOU")
+			_mhud.set_kill_score(int(row.get("score", 0)), int(row.get("player_kills", 0)))
 			# Our mark rings use our own roster colour (matches our scoreboard dot), applied locally.
 			var col: Color = row.get("color", _my_ring_color)
 			if col != _my_ring_color:

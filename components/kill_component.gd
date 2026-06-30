@@ -17,6 +17,10 @@ class_name KillComponent
 
 ## How close you must get to your locked suspect for the kill/whiff to resolve.
 @export var kill_range: float = 90.0
+## Counter-stunning the player HUNTING you is more forgiving than a kill — you can turn and strike
+## them from a bit further out (a deliberate skill window: spot your hunter early, punish the approach).
+## TODO(AC): copy AC Rearmed's circle-width-around-the-player stun proximity instead of a flat radius.
+@export var counter_stun_range: float = 160.0
 ## How far away you can LOCK a suspect from.
 @export var prime_range: float = 520.0
 ## A suspect must be within this angle (degrees) of the way you're facing to lock.
@@ -123,9 +127,12 @@ func _network_kill_input() -> void:
 
 	if attacks_disabled:
 		return
-	# Press to assassinate — only if we have a lock AND it's within range (the host checks too).
+	# Press to strike when we have a lock in reach. We fire at the LARGER counter_stun_range and let
+	# the HOST resolve it: a kill needs the tight kill_range, but striking the player hunting US stuns
+	# them from a bit further out. We never learn who our hunter is — we just strike what we've locked
+	# and the authority decides kill / counter-stun / nothing (so no identity leak through the client).
 	if Input.is_action_just_pressed(action_primary_action) and _primed != null and is_instance_valid(_primed):
-		if _body.global_position.distance_to(_primed.global_position) <= kill_range:
+		if _body.global_position.distance_to(_primed.global_position) <= maxf(kill_range, counter_stun_range):
 			_play_strike()  # instant local feedback; the host decides the actual outcome
 			request_kill.rpc_id(NetworkManager.HOST_PEER_ID, _primed.get_path())
 
@@ -212,18 +219,24 @@ func request_kill(target_path: NodePath) -> void:
 	if bool(target.get("grace_active")):
 		return
 	var distance := _body.global_position.distance_to(target.global_position)
-	if distance > kill_range:
+	# Beyond even the (larger) counter-stun reach — nothing to resolve.
+	if distance > maxf(kill_range, counter_stun_range):
 		return
 	if not _layers_allow_kill(target):
 		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
 
-	# COUNTER-STUN: you can't assassinate the player hunting YOU — striking them in range STUNS them
-	# instead (worth kill-level points). The host knows the relationship; the prey just acts on the
-	# threat. (NPC marks have no controlling_peer_id, so this never catches them.)
+	# COUNTER-STUN: you can't assassinate the player hunting YOU — striking them STUNS them instead
+	# (worth kill-level points), and from a MORE FORGIVING range than a kill (counter_stun_range >
+	# kill_range — a deliberate skill window). The host knows the relationship; the prey just acts on
+	# the threat. (NPC marks have no controlling_peer_id, so this never catches them.)
 	if stun_only_peer != 0 and int(target.get("controlling_peer_id")) == stun_only_peer:
-		counter_stun_requested.emit(target)
+		if distance <= counter_stun_range:
+			counter_stun_requested.emit(target)
 		return
 
+	# A normal kill or whiff needs the tighter kill_range.
+	if distance > kill_range:
+		return
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		# Pass `controller` so a killed PLAYER gets stamped for kill attribution.
@@ -286,15 +299,18 @@ func _resolve_on(target: Node2D) -> void:
 # `attacker_peer` >= 0 (online host path) stamps who eliminated a PLAYER for kill attribution;
 # -1 (offline) skips the stamp because there's no peer.
 func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
-	_exposure.add_exposure(kill_exposure_spike, "kill")
 	kill_landed.emit()
 	kill_resolved.emit(_body, target, true)  # Phase 9 hook — clean outcome
 	_on_clean_kill(target)  # cosmetic KILL_ANIM (us) + kill_card (victim) — §6
 	if attacker_peer >= 0 and target.is_in_group("player"):
 		target.set("last_attacker_peer", attacker_peer)
 		target.set("last_attacker_method", "blade")  # a melee assassination, for the death screen
+	# die() fires `died` synchronously → the host scores this kill (_award_kill_bonuses) NOW. We apply
+	# the killer's own exposure spike AFTERWARDS so the exposure modifier reflects your APPROACH
+	# exposure (an unseen approach = the full bonus), not the unavoidable post-kill spike.
 	if target.has_method("die"):
 		target.die()
+	_exposure.add_exposure(kill_exposure_spike, "kill")
 
 
 # POISON (host-authoritative): a validated, DELAYED, QUIET kill. The target is committed NOW (pulled
