@@ -1284,7 +1284,7 @@ func _enter_spectate(killer_name: String, method: String) -> void:
 	# A free camera, starting on the spot where we were killed, that we fly with WASD / the stick.
 	_spectate_camera = Camera2D.new()
 	_spectate_camera.name = "SpectateCamera"
-	_spectate_camera.zoom = Vector2(1.1, 1.1)  # match the live camera (zoomed-in view)
+	_spectate_camera.zoom = Vector2(1.4, 1.4)  # match the live camera (zoomed-in view)
 	if _local_player != null and is_instance_valid(_local_player):
 		_spectate_camera.global_position = _local_player.global_position
 	add_child(_spectate_camera)

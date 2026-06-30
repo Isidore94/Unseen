@@ -58,10 +58,10 @@ class_name Player
 ## in; it becomes host-only (owner secret) in 6.1 when NPCs arrive.
 @export var controlling_peer_id: int = 0
 ## (Online) Zoom of YOUR OWN camera. Greater than 1 tightens the view (zoom IN); LOWER pulls the
-## camera back to show MORE of the map. Set to 1.1 for a closer, more zoomed-in view. Only affects
+## camera back to show MORE of the map. Set to 1.4 for a close, zoomed-in view. Only affects
 ## the online local camera — offline play uses its own camera (single_player_game.camera_zoom), so
 ## this leaves offline play unchanged.
-@export var network_camera_zoom: Vector2 = Vector2(1.1, 1.1)
+@export var network_camera_zoom: Vector2 = Vector2(1.4, 1.4)
 ## (Online) Which sprite sheet (0-4) this character wears. The host assigns it; every
 ## peer receives the same value at spawn, so the crowd looks identical on all screens.
 ## Kept for back-compat; the full look now travels as `loadout_payload` (which wins
