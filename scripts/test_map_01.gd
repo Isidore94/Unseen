@@ -238,6 +238,58 @@ func random_edge_walkable_point() -> Vector2:
 	return inner.position + Vector2(randf() * inner.size.x, randf() * inner.size.y)
 
 
+# A PRESET-style EVEN scatter: `count` walkable spawn points spread across the WHOLE map. We lay a
+# target grid (sized ~count, matching the play area's aspect) and snap each target to the nearest
+# UNUSED open cell, so the crowd fills the map corner-to-corner instead of clumping where random picks
+# happen to land. A small per-point jitter keeps it from reading as a rigid lattice. Coverage is
+# deterministic (every cell is used before any repeats), so it's effectively a preset spread.
+func even_spawn_points(count: int) -> Array:
+	var points: Array = []
+	if count <= 0:
+		return points
+	var cells := _open_cells()  # Array[Rect2] of walkable cells
+	if cells.is_empty():
+		return points
+	# A target grid sized ~count, matching the play area's aspect, so points cover X and Y evenly.
+	var aspect: float = play_half_width / maxf(1.0, play_half_height)
+	var gy: int = maxi(1, int(round(sqrt(float(count) / aspect))))
+	var gx: int = maxi(1, int(ceil(float(count) / float(gy))))
+	var used: Dictionary = {}  # cell index -> true, so each cell hosts one NPC until cells run out
+	for iy in gy:
+		for ix in gx:
+			if points.size() >= count:
+				break
+			var tx: float = lerpf(-play_half_width, play_half_width, (float(ix) + 0.5) / float(gx))
+			var ty: float = lerpf(-play_half_height, play_half_height, (float(iy) + 0.5) / float(gy))
+			var idx: int = _nearest_open_cell_index(Vector2(tx, ty), cells, used)
+			used[idx] = true
+			var cell: Rect2 = cells[idx]
+			var inner: Rect2 = cell.grow(-solid_clearance)
+			if inner.size.x > 0.0 and inner.size.y > 0.0:
+				points.append(inner.position + Vector2(randf() * inner.size.x, randf() * inner.size.y))
+			else:
+				points.append(cell.get_center())
+	return points
+
+
+# Index of the open cell whose centre is nearest `target`, preferring cells not yet in `used` (so the
+# even grid lands one NPC per cell); falls back to the nearest of ALL cells once every cell is used.
+func _nearest_open_cell_index(target: Vector2, cells: Array, used: Dictionary) -> int:
+	var best: int = -1
+	var best_d: float = INF
+	var best_any: int = 0
+	var best_any_d: float = INF
+	for i in cells.size():
+		var d: float = ((cells[i] as Rect2).get_center() - target).length_squared()
+		if d < best_any_d:
+			best_any_d = d
+			best_any = i
+		if not used.has(i) and d < best_d:
+			best_d = d
+			best = i
+	return best if best != -1 else best_any
+
+
 # True if a world point lies inside an OPEN cell (inset by the clearance), i.e. a spot
 # an actor can actually stand without clipping a wall.
 func _is_point_walkable(point: Vector2) -> bool:

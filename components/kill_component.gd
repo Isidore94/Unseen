@@ -216,7 +216,9 @@ func request_kill(target_path: NodePath) -> void:
 		return
 	# RESPAWN grace (RESPAWN_MODE_PLAN.md §4C): a freshly-respawned player is briefly immune. The host
 	# owns grace_active, so checking it here blocks BOTH a clean kill and a whiff on a graced target.
-	if bool(target.get("grace_active")):
+	# NOTE: NPC marks have no `grace_active` property, so .get() returns null on them — test it as a
+	# truthy value (null = falsy), NOT bool(null), which crashes with "Nonexistent 'bool' constructor".
+	if target.get("grace_active") == true:
 		return
 	var distance := _body.global_position.distance_to(target.global_position)
 	# Beyond even the (larger) counter-stun reach — nothing to resolve.
@@ -229,7 +231,10 @@ func request_kill(target_path: NodePath) -> void:
 	# (worth kill-level points), and from a MORE FORGIVING range than a kill (counter_stun_range >
 	# kill_range — a deliberate skill window). The host knows the relationship; the prey just acts on
 	# the threat. (NPC marks have no controlling_peer_id, so this never catches them.)
-	if stun_only_peer != 0 and int(target.get("controlling_peer_id")) == stun_only_peer:
+	# NPC marks have no `controlling_peer_id` (.get() returns null on them), so guard before int() —
+	# int(null) would crash the same way bool(null) does. A null target peer can never be our hunter.
+	var target_peer = target.get("controlling_peer_id")
+	if stun_only_peer != 0 and target_peer != null and int(target_peer) == stun_only_peer:
 		if distance <= counter_stun_range:
 			counter_stun_requested.emit(target)
 		return

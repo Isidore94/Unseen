@@ -56,11 +56,13 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	if _level <= 0 and _pulse <= 0.01:
 		return
-	var steady := 0.16 if _level >= 2 else (0.08 if _level == 1 else 0.0)
+	var steady := 0.22 if _level >= 2 else (0.12 if _level == 1 else 0.0)
 	var a := clampf(steady + _pulse * 0.6, 0.0, 1.0) * max_edge_alpha
 	if a <= 0.01:
 		return
-	var size := get_rect().size
+	# Use the VIEWPORT size, not get_rect(): a Control parented directly to a CanvasLayer can report a
+	# zero-size rect, which would draw nothing — the viewport rect is always the real screen.
+	var size := get_viewport_rect().size
 	var bands := 8
 	var step := vignette_band_px / float(bands)
 	# Stack translucent strips in from each edge — brightest at the edge, fading inward (a glow).

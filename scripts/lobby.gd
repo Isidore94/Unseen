@@ -86,54 +86,60 @@ func _build_ui() -> void:
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(center)
 
-	var panel := VBoxContainer.new()
-	panel.add_theme_constant_override("separation", 14)
-	panel.custom_minimum_size = Vector2(420.0, 0.0)
-	center.add_child(panel)
+	# Layout: a centred HEADER, a TWO-COLUMN body, then a FOOTER. Two columns so the whole form fits
+	# on a 1080p screen (it used to run off the bottom as a single tall column). The screen is wide, so
+	# we spend that width instead of height.
+	var outer := VBoxContainer.new()
+	outer.add_theme_constant_override("separation", 10)
+	center.add_child(outer)
 
 	var title := Label.new()
 	title.text = "LOBBY"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 40)
-	panel.add_child(title)
+	title.add_theme_font_size_override("font_size", 36)
+	outer.add_child(title)
 
 	_code_label = Label.new()
 	_code_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_code_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_code_label.custom_minimum_size = Vector2(420.0, 0.0)
-	panel.add_child(_code_label)
+	_code_label.custom_minimum_size = Vector2(820.0, 0.0)
+	outer.add_child(_code_label)
 
 	_roster_label = Label.new()
 	_roster_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_roster_label.add_theme_font_size_override("font_size", 22)
-	panel.add_child(_roster_label)
+	_roster_label.add_theme_font_size_override("font_size", 20)
+	outer.add_child(_roster_label)
 
-	# NICKNAME: shown to everyone on the roster, scoreboard, and death screen — so unlike the assassin
-	# pick (which is private), this name IS public. Prefilled with your Steam name when available, and
-	# stored on NetworkManager so it survives the lobby → match scene change.
-	var name_label := Label.new()
-	name_label.text = "Your nickname"
-	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(name_label)
+	# The two side-by-side columns. LEFT = your identity + tools; RIGHT = perk + map/start (or ready-up).
+	var col_w := 400.0
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 24)
+	columns.alignment = BoxContainer.ALIGNMENT_CENTER
+	outer.add_child(columns)
+	var left := VBoxContainer.new()
+	left.add_theme_constant_override("separation", 8)
+	left.custom_minimum_size = Vector2(col_w, 0.0)
+	columns.add_child(left)
+	var right := VBoxContainer.new()
+	right.add_theme_constant_override("separation", 8)
+	right.custom_minimum_size = Vector2(col_w, 0.0)
+	columns.add_child(right)
+
+	# === LEFT COLUMN — your identity + your two tools ===
+	# NICKNAME: public (shown on roster / scoreboard / death screen), unlike the private assassin pick.
+	left.add_child(_section_label("Your nickname"))
 	var name_field := LineEdit.new()
 	name_field.max_length = 14  # keeps names from overflowing the HUD roster / scoreboard
 	name_field.placeholder_text = "enter a nickname"
-	# Use the name we already have (e.g. from a previous lobby visit), else the Steam persona name.
 	name_field.text = NetworkManager.player_nickname if NetworkManager.player_nickname != "" else NetworkManager.default_nickname()
 	NetworkManager.player_nickname = name_field.text.strip_edges()
 	name_field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_child(name_field)
+	left.add_child(name_field)
 	name_field.text_changed.connect(func(t: String) -> void:
 		NetworkManager.player_nickname = t.strip_edges())
 
-	# EVERY player picks their assassin look. To stop two players wearing the SAME assassin, the host
-	# shares which skins are TAKEN and we grey those out — but only the SET of body ids, never WHO took
-	# them (anonymised). So opponents learn "that skin is in play" (the crowd already clones those looks
-	# anyway), never which figure is you. WHICH assassin you ended on is still submitted privately at spawn.
-	var skin_label := Label.new()
-	skin_label.text = "Your assassin"
-	skin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(skin_label)
+	# ASSASSIN: anonymised dedupe — taken skins grey out (never showing WHO took them).
+	left.add_child(_section_label("Your assassin"))
 	_skin_picker = OptionButton.new()
 	_skin_base_labels.clear()
 	for i in CosmeticRegistry.ASSASSIN_BODY_IDS.size():
@@ -142,15 +148,11 @@ func _build_ui() -> void:
 		_skin_base_labels.append(label)
 		_skin_picker.add_item(label, i)
 	_skin_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_child(_skin_picker)
+	left.add_child(_skin_picker)
 
-	# NPC DISGUISE: if checked, you appear in-match as a regular COMMONER (your picked assassin is
-	# still duplicated as crowd decoys, and so is your commoner look) — so opponents can't track you
-	# by assassin OR commoner sprites. Movement/gameplay are unchanged; reveals still show your real
-	# (commoner) portrait. Committed here at the lobby.
 	var disguise_check := CheckBox.new()
 	disguise_check.text = "NPC disguise (blend in as a commoner)"
-	panel.add_child(disguise_check)
+	left.add_child(disguise_check)
 
 	# Defaults: a random assassin + a random commoner-disguise look, equipped now so a player who
 	# never touches the controls still spawns correctly.
@@ -160,20 +162,13 @@ func _build_ui() -> void:
 	_apply_look_choice()
 	_skin_picker.item_selected.connect(func(i: int) -> void:
 		_on_pick_assassin(CosmeticRegistry.ASSASSIN_BODY_IDS[i]))
-	# Claim our default assassin so the lobby starts deduped. If our random default collided with
-	# someone already here, the host bumps us to a free skin (and tells us via _confirm_assassin).
-	_send_pick(_chosen_assassin)
+	_send_pick(_chosen_assassin)  # claim our default so the lobby starts deduped (host bumps collisions)
 	disguise_check.toggled.connect(func(on: bool) -> void:
 		_npc_disguise = on
 		_apply_look_choice())
 
-	# TOOLS: every player brings TWO tools, picked privately (like the assassin). The OptionButton
-	# index IS the ItemComponent.Tool id (TOOL_NAMES is in enum order), stored on NetworkManager and
-	# sent to the host at spawn (online_match._submit_tools).
-	var tools_label := Label.new()
-	tools_label.text = "Your two tools (private)"
-	tools_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(tools_label)
+	# TOOLS: two private picks; the OptionButton index IS the ItemComponent.Tool id.
+	left.add_child(_section_label("Your two tools (private)"))
 	_tool1_picker = OptionButton.new()
 	_tool2_picker = OptionButton.new()
 	for i in TOOL_NAMES.size():
@@ -183,40 +178,23 @@ func _build_ui() -> void:
 	_tool2_picker.selected = int(NetworkManager.selected_tools[1])
 	_tool1_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_tool2_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_child(_tool1_picker)
-	panel.add_child(_tool2_picker)
+	left.add_child(_tool1_picker)
+	left.add_child(_tool2_picker)
 	_tool1_picker.item_selected.connect(func(_i: int) -> void: _update_tools())
 	_tool2_picker.item_selected.connect(func(_i: int) -> void: _update_tools())
 	_update_tools()
+	left.add_child(_help_label("\n".join(TOOL_DESCRIPTIONS), col_w))
 
-	# A little legend so players know what every tool does before they pick.
-	var tool_help := Label.new()
-	tool_help.text = "\n".join(TOOL_DESCRIPTIONS)
-	tool_help.add_theme_font_size_override("font_size", 12)
-	tool_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	tool_help.custom_minimum_size = Vector2(420.0, 0.0)
-	tool_help.modulate = Color(1, 1, 1, 0.75)
-	panel.add_child(tool_help)
-
-	# PASSIVE PERK — one build-defining modifier, picked like the tools. Index = OnlineMatch perk id.
-	var perk_label := Label.new()
-	perk_label.text = "Your perk (passive)"
-	perk_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	panel.add_child(perk_label)
+	# === RIGHT COLUMN — passive perk + host map/start (or client ready-up) ===
+	right.add_child(_section_label("Your perk (passive)"))
 	var perk_picker := OptionButton.new()
 	for i in PERK_NAMES.size():
 		perk_picker.add_item(PERK_NAMES[i], i)
 	perk_picker.selected = int(NetworkManager.selected_perk)
 	perk_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_child(perk_picker)
+	right.add_child(perk_picker)
 	perk_picker.item_selected.connect(func(i: int) -> void: NetworkManager.selected_perk = i)
-	var perk_help := Label.new()
-	perk_help.text = "\n".join(PERK_DESCRIPTIONS)
-	perk_help.add_theme_font_size_override("font_size", 12)
-	perk_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	perk_help.custom_minimum_size = Vector2(420.0, 0.0)
-	perk_help.modulate = Color(1, 1, 1, 0.75)
-	panel.add_child(perk_help)
+	right.add_child(_help_label("\n".join(PERK_DESCRIPTIONS), col_w))
 
 	if NetworkManager.is_host():
 		# On Steam, give the host a one-click overlay invite plus a copy-the-code button.
@@ -225,52 +203,69 @@ func _build_ui() -> void:
 			invite_button.text = "Invite friends (Steam)"
 			invite_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			invite_button.pressed.connect(func() -> void: NetworkManager.invite_friends())
-			panel.add_child(invite_button)
+			right.add_child(invite_button)
 
 			var copy_button := Button.new()
 			copy_button.text = "Copy join code"
 			copy_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			copy_button.pressed.connect(_on_copy_code_pressed.bind(copy_button))
-			panel.add_child(copy_button)
+			right.add_child(copy_button)
 
-		# Host picks the MAP (Phase 10). Item order MUST match NetworkManager.Map so the
-		# selected index IS the map id we send. The two small maps are lighter to host.
-		var map_label := Label.new()
-		map_label.text = "Map"
-		panel.add_child(map_label)
+		# Host picks the MAP. Each item carries its Map ID (read back via get_selected_id at start), so the
+		# picker can list any SUBSET of maps in any order. For now only Compact + Citadel — Four Zones and
+		# Rome are hidden until they're reworked (the Map enum + their scenes still exist for later).
+		right.add_child(_section_label("Map"))
 		_map_picker = OptionButton.new()
-		_map_picker.add_item("Four Zones (full — rooftops & sewers)", NetworkManager.Map.FOUR_ZONE)
 		_map_picker.add_item("Compact Arena (small)", NetworkManager.Map.COMPACT)
-		_map_picker.add_item("Rome (small — tight streets, no verticality)", NetworkManager.Map.ROME)
 		_map_picker.add_item("Citadel (AC-style — bigger, dense, tight alleys)", NetworkManager.Map.CITADEL)
-		_map_picker.selected = NetworkManager.Map.CITADEL  # the Citadel is our main map now
+		_select_map_id(NetworkManager.Map.CITADEL)  # default to the Citadel
 		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		panel.add_child(_map_picker)
+		right.add_child(_map_picker)
 
 		_start_button = Button.new()
 		_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_start_button.pressed.connect(_on_start_pressed)
-		panel.add_child(_start_button)
+		right.add_child(_start_button)
 	else:
-		# READY-UP: each non-host player tells the host when they're set. The host can't start until
-		# everyone here has ticked this (see _refresh / _all_clients_ready).
+		# READY-UP: each non-host player tells the host when they're set (the host can't start until all are).
 		var ready_check := CheckButton.new()
 		ready_check.text = "Ready up"
 		ready_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		ready_check.toggled.connect(func(on: bool) -> void: _set_ready_local(on))
-		panel.add_child(ready_check)
+		right.add_child(ready_check)
 		_status_label = Label.new()
 		_status_label.text = "Tick 'Ready up' when you're set — the host starts once everyone is ready."
 		_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_status_label.custom_minimum_size = Vector2(420.0, 0.0)
-		panel.add_child(_status_label)
+		_status_label.custom_minimum_size = Vector2(col_w, 0.0)
+		right.add_child(_status_label)
 
+	# === FOOTER — a centred Leave button under both columns ===
 	var leave_button := Button.new()
 	leave_button.text = "Leave"
-	leave_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	leave_button.custom_minimum_size = Vector2(220.0, 0.0)
+	leave_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	leave_button.pressed.connect(_return_to_menu)
-	panel.add_child(leave_button)
+	outer.add_child(leave_button)
+
+
+# A centred section caption used throughout the lobby form.
+func _section_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	return l
+
+
+# A small, dimmed, word-wrapped help block (the tool / perk descriptions) at a fixed column width.
+func _help_label(text: String, width: float) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 12)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(width, 0.0)
+	l.modulate = Color(1, 1, 1, 0.75)
+	return l
 
 
 # Apply the player's private look choice locally. It rides to the match in the loadout the client
@@ -341,11 +336,22 @@ func _on_copy_code_pressed(button: Button) -> void:
 		button.text = "Copied!"
 
 
+# Select the picker row whose Map ID matches `id` (so defaults don't depend on row order).
+func _select_map_id(id: int) -> void:
+	if _map_picker == null:
+		return
+	for i in _map_picker.item_count:
+		if _map_picker.get_item_id(i) == id:
+			_map_picker.selected = i
+			return
+
+
 func _on_start_pressed() -> void:
 	if _player_count() < MIN_PLAYERS_TO_START or not _all_clients_ready():
 		return
-	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice.
-	var map_id := _map_picker.selected if _map_picker != null else NetworkManager.Map.CITADEL
+	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice. Use the
+	# item's ID (not its row index), so the picker can show any subset of maps in any order.
+	var map_id := _map_picker.get_selected_id() if _map_picker != null else NetworkManager.Map.CITADEL
 	_begin_match.rpc(map_id)
 
 

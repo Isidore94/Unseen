@@ -560,12 +560,19 @@ func _spawn_crowd() -> void:
 	var map := _map as TestMap01
 	# Fewer NPCs in the small arenas (lighter for the host to simulate + replicate).
 	var crowd_size := _crowd_size_for_map()
+	# PRESET EVEN spread: one walkable spawn per NPC, spaced across the WHOLE map so the crowd fills it
+	# corner-to-corner instead of clumping. Homebodies anchor to their spawn, so the even spread holds.
+	# Falls back to the old per-NPC random scatter if the map doesn't provide even points.
+	var even_points: Array = []
+	if map != null and map.has_method("even_spawn_points"):
+		even_points = map.even_spawn_points(crowd_size)
 	for _i in crowd_size:
-		# A minority cross the whole map (entering from an edge); most are homebodies
-		# that spawn wherever and potter around there.
+		# A minority cross the whole map; most are homebodies that potter around where they spawned.
 		var is_traveler := randf() < traveler_fraction
 		var spawn_position := Vector2.ZERO
-		if map != null:
+		if _i < even_points.size():
+			spawn_position = even_points[_i]  # evenly spread across the map
+		elif map != null:
 			spawn_position = map.random_edge_walkable_point() if is_traveler else map.random_walkable_point()
 		# The host picks this NPC's whole look ONCE here as a compact loadout payload
 		# (ids only). The spawner replicates spawn_data verbatim to every client, so all
@@ -1284,7 +1291,7 @@ func _enter_spectate(killer_name: String, method: String) -> void:
 	# A free camera, starting on the spot where we were killed, that we fly with WASD / the stick.
 	_spectate_camera = Camera2D.new()
 	_spectate_camera.name = "SpectateCamera"
-	_spectate_camera.zoom = Vector2(1.4, 1.4)  # match the live camera (zoomed-in view)
+	_spectate_camera.zoom = Vector2(1.4, 1.4)  # match the live camera's zoomed-in view
 	if _local_player != null and is_instance_valid(_local_player):
 		_spectate_camera.global_position = _local_player.global_position
 	add_child(_spectate_camera)
@@ -1523,10 +1530,13 @@ func _respawn_rewire_all() -> void:
 			_enter_hunt_phase.rpc_id(hunter)
 		_send_target_to(hunter)
 		_receive_hunted.rpc_id(prey, true)
-		# The prey can't kill their hunter — striking them counter-STUNS instead (set host-side).
+		# COUNTER-STUN: the prey can't kill their hunter — striking them STUNS instead. This only makes
+		# sense with 3+ players, where your hunter is a DIFFERENT person from your target. In a 2-PLAYER
+		# match your hunter IS your target (the ring is just A↔B), so this rule would block EVERY kill —
+		# so we disable it for 2p and let strikes resolve as kills. (0 = no stun-lock.)
 		var prey_kc := (_players_by_peer[prey] as Node).get_node_or_null("KillComponent")
 		if prey_kc != null:
-			prey_kc.set("stun_only_peer", int(hunter))
+			prey_kc.set("stun_only_peer", int(hunter) if _players_by_peer.size() > 2 else 0)
 
 
 # Host: choose a SAFE-BUT-RELEVANT respawn point. Density-weighted when enabled; authored fallback else.
@@ -1765,9 +1775,12 @@ func _tick_danger(delta: float) -> void:
 					elif d <= danger_near_px:
 						level = 1
 		var prev := int(_danger_level_by_peer.get(prey, -1))
-		if prev != level:
-			_danger_level_by_peer[prey] = level
-			_receive_danger.rpc_id(int(prey), level)
+		_danger_level_by_peer[prey] = level
+		# Send EVERY tick (not just on change). It's one int per player per 0.25s — cheap — and it means a
+		# danger overlay that finished building AFTER the level first settled (common in a 2p match where
+		# you engage your hunter immediately and stay close) still gets the current level instead of being
+		# stuck at "safe" forever.
+		_receive_danger.rpc_id(int(prey), level)
 		# ESCAPE: were "very near" (2), now clear (0), still alive, off cooldown → reward shaking them.
 		if prev >= 2 and level == 0 and not bool(_dead_by_peer.get(prey, false)) and _elapsed >= float(_escape_ready_at.get(prey, 0.0)):
 			_escape_ready_at[prey] = _elapsed + escape_cooldown
