@@ -37,6 +37,29 @@ def shade(hex_color: str, factor: float) -> str:
 def gx(c: float) -> float: return MAP_X0 + c * CELL
 def gy(r: float) -> float: return MAP_Y0 + r * CELL
 
+# Map centre (in cells). Overhangs are oriented to face this point — they reach INWARD toward the middle
+# of the map, so even buildings on the outer ring get a roof lip that hangs over the streets, not the wall.
+MAP_CX, MAP_CY = COLS / 2.0, ROWS / 2.0
+
+
+def center_facing_edges(b) -> list[str]:
+    """The 1-2 building edges that face the map centre. Every building gets its dominant inward edge; if
+    it also sits well off the other axis it gets that inward edge too (so most blocks get a corner of
+    overhang aimed at the middle)."""
+    bx = b["c"] + b["w"] / 2.0
+    by = b["r"] + b["h"] / 2.0
+    dx, dy = MAP_CX - bx, MAP_CY - by
+    edges: list[str] = []
+    if abs(dx) >= abs(dy):
+        edges.append("E" if dx > 0 else "W")
+        if abs(dy) > 0.6:
+            edges.append("S" if dy > 0 else "N")
+    else:
+        edges.append("S" if dy > 0 else "N")
+        if abs(dx) > 0.6:
+            edges.append("E" if dx > 0 else "W")
+    return edges
+
 
 # Each building: c,r,w,h (cells); roof index; optional shop label; optional alley 'h'/'v'; overhang edges.
 BUILDINGS = [
@@ -99,8 +122,9 @@ def draw_building(b) -> list[str]:
     # lit top edge
     out.append(f'<line x1="{x+3:.1f}" y1="{y+2:.1f}" x2="{x+w-3:.1f}" y2="{y+2:.1f}" stroke="{shade(roof,1.18)}" stroke-width="1.5"/>')
 
-    # OVERHANG bands (visual cover) — a translucent roof lip reaching 1 cell into the street.
-    for edge in b.get("overhang", []):
+    # OVERHANG bands (visual cover) — a translucent roof lip reaching into the street, oriented toward
+    # the MIDDLE of the map (every building gets one; outer buildings hang inward over the streets).
+    for edge in center_facing_edges(b):
         if edge == "S":
             ox, oy, ow, oh = x, y + h, w, CELL * 0.6
         elif edge == "E":
