@@ -296,6 +296,12 @@ The `test_map_01` grid `LAYOUT` (and the citadel `layout_override` in `maps/test
 Re-author the citadel `layout_override` to place the few alleys, water, bridges and overhang edges, then
 **re-run the flood-fill connectivity check** (`scratchpad/gen_citadel.py`) so the map stays fully traversable.
 
+**STREET-WIDTH RULE (Aaron): every gap between buildings fits ≥ 3 character-widths.** The character
+collision box is **71 px** wide → 3 widths = **213 px**. So the citadel cell size is set to 213 px:
+`maps/test_map_03.tscn` `play_half` is `2880 × 2240` over the 27×21 grid (`2·2880/27 = 213`). That means a
+**1-cell street already holds 3 characters** — so the only layout constraint is *keep every street ≥ 1 cell*
+(no touching blocks). `tools/render_citadel_sketch.py::check_street_gaps()` verifies this on every render.
+
 ### 10.6 Execution order (pilot first — §7)
 1. **Style tile:** generate ONE `dirt_patchy` tile + ONE `roof_terracotta` tile, feel-check vs the palette,
    lock saturation clamp in `tools/ingest_sprite.py`.

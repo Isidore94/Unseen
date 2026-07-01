@@ -3,9 +3,11 @@
 [ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
 
 ; CITADEL — an AC-Rearmed-style dense city, the evolution of the Compact arena. Reuses the WHOLE
-; test_map_01 script; only the grid (layout_override) and the play size change. It is ~33% BIGGER
-; than Compact (play_half 1920x1493 vs 1440x1120) and uses a DENSER 27x21 grid so the 1-cell streets
-; are TIGHTER and there are far MORE buildings (274 vs Compact's ~95) — irregular blocks, L-shapes,
+; test_map_01 script; only the grid (layout_override) and the play size change. It uses a DENSER 27x21
+; grid with far MORE buildings than Compact — irregular blocks, L-shapes,
+; STREET-WIDTH RULE (Aaron): every gap between buildings must fit >= 3 character-widths. The character
+; collision box is 71px wide, so 3 widths = 213px. play_half is sized so ONE grid cell = 213px
+; ((2*2880)/27 = 213.3), i.e. a 1-cell street already holds 3 characters. Keep every street >= 1 cell.
 ; merged superblocks and a big central palazzo, split by winding 1-cell alleys, around a central
 ; piazza with a fountain landmark. Same procedural stylized art as every other map.
 ; STRIPPED FOR A PURE-PvP TEST: no portals (teleporters/trapdoor), no sewer access points, no canal
@@ -13,8 +15,8 @@
 
 [node name="TestMap03" type="Node2D"]
 script = ExtResource("1_map")
-play_half_width = 1920.0
-play_half_height = 1493.0
+play_half_width = 2880.0
+play_half_height = 2240.0
 enable_portals = false
 sewer_entrances_per_pocket = 0
 layout_override = Array[String](["###########################", "#.........................#", "#.###.###.###.###....###..#", "#..##.###..##.###....###..#", "#.###................###..#", "#.##..###.###.###.##.###..#", "#.###..##..##.###..#.##...#", "#.....###............###..#", "#.###.###.#.....#.##......#", "#.###.###.#.....#.##......#", "#.###.###....F............#", "#..##.#####.....#..#.##...#", "#.###.#####.....#.##.###..#", "#.###.####......#.##.###..#", "#....................###..#", "#.###.###.....######.###..#", "#.###.###.#.#.######.###..#", "#.###.###.....######.##...#", "#.........................#", "#.........................#", "###########################"])

@@ -1,7 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1124" height="1158" viewBox="0 0 1124 1158">
 <rect x="0.0" y="0.0" width="1124.0" height="1158.0" fill="#e9e4d6"/>
 <text x="22.0" y="48.0" font-family="Verdana,Segoe UI,sans-serif" font-size="24" fill="#33303a" text-anchor="start" font-weight="bold">CITADEL — proposed map sketch</text>
-<text x="22.0" y="70.0" font-family="Verdana,Segoe UI,sans-serif" font-size="12.5" fill="#5c554a" text-anchor="start" font-weight="normal">AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · 'shadow'-cover overhangs + alleys (hide you, reveal only to you) · living shopfronts</text>
+<text x="22.0" y="70.0" font-family="Verdana,Segoe UI,sans-serif" font-size="12.5" fill="#5c554a" text-anchor="start" font-weight="normal">AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · 'shadow'-cover overhangs + alleys · streets fit ≥ 3 characters · living shopfronts</text>
+<rect x="828.0" y="26.0" width="40.0" height="28.0" fill="#b3a487" rx="2.0" stroke="#4a453d" stroke-width="1.0"/>
+<circle cx="834.7" cy="40.0" r="5.6" fill="#6f6678" stroke="#33303a" stroke-width="0.8"/>
+<circle cx="848.0" cy="40.0" r="5.6" fill="#6f6678" stroke="#33303a" stroke-width="0.8"/>
+<circle cx="861.3" cy="40.0" r="5.6" fill="#6f6678" stroke="#33303a" stroke-width="0.8"/>
+<text x="876.0" y="37.0" font-family="Verdana,Segoe UI,sans-serif" font-size="11" fill="#33303a" text-anchor="start" font-weight="bold">1-cell street = 3 character widths</text>
+<text x="876.0" y="50.0" font-family="Verdana,Segoe UI,sans-serif" font-size="10.5" fill="#5c554a" text-anchor="start" font-weight="normal">(3 × 71px collision = 213px min)</text>
 <rect x="22.0" y="88.0" width="1080.0" height="840.0" fill="#b3a487" stroke="#4a453d" stroke-width="2.0"/>
 <line x1="62.0" y1="88" x2="62.0" y2="928" stroke="#a89a7e" stroke-width="0.5" opacity="0.35"/>
 <line x1="102.0" y1="88" x2="102.0" y2="928" stroke="#a89a7e" stroke-width="0.5" opacity="0.35"/>

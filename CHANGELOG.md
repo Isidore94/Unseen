@@ -29,6 +29,12 @@ Short, session-by-session log so we never lose the thread between sessions.
 - **Design sketch:** `tools/render_citadel_sketch.py` → `assets/tiles/citadel/citadel_map_sketch.svg` — a
   top-down mockup in the locked palette (varied roofs, quiet streets, piazza + fountain, canal + 2 bridges,
   4 roofed alleys w/ cutaway, overhang cover, 6 shop signs). Regenerable; a design to react to, not final geometry.
+- **Concealment zones = 'shadow' cover:** overhangs (every building, facing the map centre) + the few
+  alleys share one rule — a fully opaque roof that HIDES whoever's under it on others' screens and turns
+  translucent only on your own screen while you're actually under it (`scripts/roof_overlay.gd`). Purely visual.
+- **Street-width rule:** every gap between buildings must fit ≥ 3 character-widths (71px collision → 213px).
+  Citadel cell size set to 213px via `test_map_03.tscn` `play_half` 2880×2240 over the 27×21 grid, so a
+  1-cell street holds 3 characters; the sketch generator's `check_street_gaps()` enforces it (currently clean).
 - **Blocked-on:** PixelLab API returns 401 (invalid token) — generation waits on a refreshed token in the
   environment/MCP config (kept out of git). Plan + tooling are ready to execute the moment auth works.
 

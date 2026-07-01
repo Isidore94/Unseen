@@ -92,6 +92,42 @@ FOUNTAIN = (13.5, 10.0)                # cell centre
 CANAL_COL = 20; CANAL_R0, CANAL_R1 = 2, 14
 BRIDGES = [5, 11]                       # rows where a bridge crosses the canal
 
+# STREET-WIDTH RULE (Aaron): every gap between buildings must fit >= 3 character-widths. The character
+# collision box is 71px wide, so 3 widths = 213px. In the real map (maps/test_map_03.tscn) play_half is
+# sized so ONE grid cell = 213px, i.e. any 1-cell street already holds 3 characters. So the design rule
+# is simply: NO two buildings sit less than a full cell apart. check_street_gaps() enforces it below.
+CHAR_W_PX = 71.0
+CHARS_PER_CELL = 3          # 1 grid cell == 3 character-widths (== 213px in the real map)
+
+
+def check_street_gaps() -> list[str]:
+    """Fail loudly if any two building blocks are less than 1 cell apart where they face each other —
+    that would be a street narrower than 3 characters. Returns a list of violations (empty == all good)."""
+    warns: list[str] = []
+    for i, a in enumerate(BUILDINGS):
+        for b in BUILDINGS[i + 1:]:
+            rows_overlap = not (a["r"] + a["h"] <= b["r"] or b["r"] + b["h"] <= a["r"])
+            cols_overlap = not (a["c"] + a["w"] <= b["c"] or b["c"] + b["w"] <= a["c"])
+            if rows_overlap:            # they share rows -> a horizontal street runs between them
+                if a["c"] + a["w"] <= b["c"]:
+                    gap = b["c"] - (a["c"] + a["w"])
+                elif b["c"] + b["w"] <= a["c"]:
+                    gap = a["c"] - (b["c"] + b["w"])
+                else:
+                    gap = 0             # columns overlap too -> blocks touch/overlap
+                if gap < 1:
+                    warns.append(f"{a['c'],a['r']} & {b['c'],b['r']}: horizontal gap {gap} cell(s) < 1")
+            if cols_overlap:            # a vertical street runs between them
+                if a["r"] + a["h"] <= b["r"]:
+                    gap = b["r"] - (a["r"] + a["h"])
+                elif b["r"] + b["h"] <= a["r"]:
+                    gap = a["r"] - (b["r"] + b["h"])
+                else:
+                    gap = 0
+                if gap < 1:
+                    warns.append(f"{a['c'],a['r']} & {b['c'],b['r']}: vertical gap {gap} cell(s) < 1")
+    return warns
+
 
 def svg_rect(x, y, w, h, fill, stroke=None, sw=1.0, rx=0.0, opacity=1.0):
     s = f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" fill="{fill}"'
@@ -171,8 +207,17 @@ def build_svg() -> str:
     p.append(svg_rect(0, 0, CANVAS_W, CANVAS_H, "#e9e4d6"))                       # paper
     # title
     p.append(svg_text(MARGIN, MARGIN + 26, "CITADEL — proposed map sketch", size=24, weight="bold"))
-    p.append(svg_text(MARGIN, MARGIN + 48, "AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · 'shadow'-cover overhangs + alleys (hide you, reveal only to you) · living shopfronts",
+    p.append(svg_text(MARGIN, MARGIN + 48, "AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · 'shadow'-cover overhangs + alleys · streets fit ≥ 3 characters · living shopfronts",
                       size=12.5, fill="#5c554a"))
+    # scale key (top-right of the title band): a 1-cell street with 3 character-widths shown across it
+    kx, ky = CANVAS_W - 296, MARGIN + 4
+    char_w = CELL / CHARS_PER_CELL
+    p.append(svg_rect(kx, ky, CELL, 28, GROUND, stroke=OUTLINE, sw=1.0, rx=2))
+    for i in range(CHARS_PER_CELL):
+        cc = kx + char_w * (i + 0.5)
+        p.append(f'<circle cx="{cc:.1f}" cy="{ky+14:.1f}" r="{char_w*0.42:.1f}" fill="#6f6678" stroke="{INK}" stroke-width="0.8"/>')
+    p.append(svg_text(kx + CELL + 8, ky + 11, "1-cell street = 3 character widths", size=11, weight="bold"))
+    p.append(svg_text(kx + CELL + 8, ky + 24, "(3 × 71px collision = 213px min)", size=10.5, fill="#5c554a"))
     # map ground
     p.append(svg_rect(MAP_X0, MAP_Y0, MAP_W, MAP_H, GROUND, stroke=OUTLINE, sw=2.0))
     # faint street grid (subtle, non-distracting)
@@ -267,6 +312,13 @@ def legend() -> list[str]:
 
 
 def main() -> None:
+    violations = check_street_gaps()
+    if violations:
+        print("STREET-WIDTH RULE VIOLATIONS (streets < 3 characters):")
+        for v in violations:
+            print("  -", v)
+    else:
+        print("street-width check OK — every building gap >= 1 cell (>= 3 character-widths)")
     out_path = "assets/tiles/citadel/citadel_map_sketch.svg"
     with open(out_path, "w") as f:
         f.write(build_svg())
