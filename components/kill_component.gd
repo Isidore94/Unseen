@@ -38,6 +38,12 @@ class_name KillComponent
 ## abilities), one wrong-target kill pushes them over the 100 exposure cliff and lights them up.
 @export var wrong_commit_exposure: float = 40.0
 
+## After you kill an NPC (a crowd member — your NPC MARK, or an innocent you whiff on) you're locked
+## out of BOTH killing and stunning for this long: a forced lay-low window so you can't chain-strike
+## through the crowd. Killing or counter-stunning a real PLAYER (your prey / your hunter) never STARTS
+## this cooldown — only NPC kills do. Host-authoritative. Unit: seconds.
+@export var npc_kill_cooldown_seconds: float = 5.0
+
 ## Input action that locks/commits. Local co-op assigns each player their own.
 @export var action_primary_action: String = "action_primary"
 ## Controller-friendly target lock: tap to switch the soft-lock to the next nearby character.
@@ -91,6 +97,10 @@ var _network_local_control: bool = false
 ## Set by the ItemComponent: true while a smoke grenade is up (you can't attack while
 ## you're hidden — buildplan §7.6). Blocks locking a new suspect.
 var attacks_disabled: bool = false
+
+## Host-side only: wall-clock time (Time.get_ticks_msec) until which this killer is on the NPC-kill
+## cooldown — no kill OR stun resolves before it. 0 = not on cooldown. Set only after killing an NPC.
+var _npc_kill_cooldown_until_msec: int = 0
 
 
 # Called by the player on the machine that controls it, to switch this component into
@@ -211,6 +221,12 @@ func request_kill(target_path: NodePath) -> void:
 	if not can_kill:
 		return
 
+	# NPC-KILL COOLDOWN: after cutting down a crowd member you must lay low — no kill OR counter-stun
+	# resolves until it elapses. (Killing/stunning a real player never STARTS it; see the resolution
+	# below.) Placed above the counter-stun branch so it blocks stuns too, per the rule "no kill/stun".
+	if Time.get_ticks_msec() < _npc_kill_cooldown_until_msec:
+		return
+
 	var target := get_node_or_null(target_path) as Node2D
 	if target == null or target == _body or not is_instance_valid(target):
 		return
@@ -245,9 +261,22 @@ func request_kill(target_path: NodePath) -> void:
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
 		# Pass `controller` so a killed PLAYER gets stamped for kill attribution.
+		# A player prey is in BOTH "player" and "killable_for_N"; an NPC mark is only in the latter —
+		# so is_in_group("player") is what tells a player-kill (no cooldown) from an NPC-mark kill.
+		var victim_is_player := target.is_in_group("player")
 		_apply_clean_kill(target, controller)
+		if not victim_is_player:
+			_begin_npc_kill_cooldown()  # killed an NPC mark → lay low; a player kill does NOT trigger it
 	else:
 		_apply_whiff(target)
+		_begin_npc_kill_cooldown()  # cut down an innocent NPC → same lay-low window
+
+
+# Host-side: start the NPC-kill lay-low window. Called ONLY when the victim was an NPC (a mark or an
+# innocent whiff) — never for killing/stunning a real player. Blocks the next kill AND counter-stun
+# (checked at the top of request_kill) for npc_kill_cooldown_seconds.
+func _begin_npc_kill_cooldown() -> void:
+	_npc_kill_cooldown_until_msec = Time.get_ticks_msec() + int(maxf(0.0, npc_kill_cooldown_seconds) * 1000.0)
 
 
 # Lock the best suspect in front of us (any character — you might be wrong).

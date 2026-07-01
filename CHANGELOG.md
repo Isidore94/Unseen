@@ -11,6 +11,15 @@ Short, session-by-session log so we never lose the thread between sessions.
   the live 1.4 zoom + a reference 1080p viewport (new `view_half_width_px` / `view_half_height_px`
   `@export`s; `danger_near_px` removed). The VERY-NEAR cue (level 2, `danger_close_px`) is unchanged.
   Stays fully host-side — identity-safe, clients still send no view data. (`scripts/online_match.gd`)
+- **Removed the red screen-edge glow (danger vignette).** `DangerOverlay` is now audio-only — the
+  heartbeat carries the tension and the glow was cluttering the view. The host-driven level plumbing
+  (0/1/2) is untouched, so the visual can be restored later if wanted. (`scripts/danger_overlay.gd`)
+- **NPC-kill cooldown: killing a crowd member locks out your next kill AND stun for 5s.** After a clean
+  kill on an NPC mark, or a whiff on an innocent NPC, the host starts a lay-low window on that killer —
+  no kill or counter-stun resolves until it elapses (so you can't chain-strike through the crowd).
+  Killing your player prey or counter-stunning your hunter never STARTS the cooldown (only NPC kills do).
+  New `KillComponent.npc_kill_cooldown_seconds` `@export` (default 5.0); host-authoritative, gated in
+  `request_kill`. (`components/kill_component.gd`)
 
 ## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
 
