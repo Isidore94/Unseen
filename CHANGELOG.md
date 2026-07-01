@@ -2,6 +2,20 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: citadel-map-art — art plan locked (ART_PIPELINE.md §10)
+
+- **Branched `claude/citadel-map-art` off `prayer`** to do the CITADEL map art (`maps/test_map_03.tscn`).
+- **`ART_PIPELINE.md` §10 added** — the authoritative, executable plan to migrate the citadel from
+  procedural `_draw_stylized()` to PixelLab tiles + props, in an "AC Rearmed" medieval-town style:
+  quiet patchy-dirt/road ground, tiled roofs, water + bridges, walkable **roof overhangs** (cover),
+  a few **alleyways through buildings** whose roof goes **translucent** for the local player inside
+  (identity-safe cutaway), and **living shopfronts** (blacksmith/wares/tavern signs + props). All pinned
+  to the locked master palette so hundreds of tiles unify. Includes the render-layer stack, asset
+  manifest, layout-legend changes, and a pilot-first execution order.
+- **Scaffolding:** `assets/tiles/citadel/{raw,finished}/` + README (raw PixelLab vs hand-finished).
+- **Blocked-on:** PixelLab API returns 401 (invalid token) — generation waits on a refreshed token in the
+  environment/MCP config (kept out of git). Plan is ready to execute the moment auth works.
+
 ## Session: heartbeat-stalking-detection — NEAR cue gated to on-screen
 
 - **Hunter heartbeat (level 1) now only fires when your hunter is ON YOUR SCREEN, not by raw distance.**

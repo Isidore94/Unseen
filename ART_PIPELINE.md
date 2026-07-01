@@ -12,6 +12,8 @@ ship quality.
 > `_draw_stylized()` renders the stylized streets/roofs in code from the grid `LAYOUT`. A PixelLab cobblestone/roof
 > **tileset pass was prototyped and then reverted** on this branch — so "SVG → TileMap" below is best read as
 > "procedural `_draw()` → TileMap", a migration still ahead, optional.
+> **→ NOW ACTIVE for the CITADEL map: see the full art plan in §10** (branch `claude/citadel-map-art`). §10 is
+> the authoritative, executable spec for this migration; the strategic sections (§0–§8) still hold underneath it.
 > **(3)** The ingest script **exists** (`tools/ingest_sprite.py`, plus `tools/validate.sh`).
 > **(4)** `assets/sprites/README.txt` is **stale** (claims 128×128/32px and old NPC names) and has been corrected.
 > The §2/§4/§9 checkboxes have been updated to match.
@@ -214,5 +216,96 @@ Lowest-risk, highest-validation first. Validate each step in-engine before the n
 - [x] Ingest script working: `tools/ingest_sprite.py` (raw PixelLab PNG → engine-ready 48px sheet).
 - [ ] One district rendering from a PixelLab `TileSet` — **not done** (map is still procedural `_draw()`; the
       tileset prototype was reverted).
-- [ ] Generation manifest started and being filled per asset — **not found in repo.**
+- [ ] Generation manifest started and being filled per asset — **header exists (`assets/generation_manifest.csv`); fill a row per generated tile from §10 on.**
 - [x] Pixel import defaults set project-wide (`project.godot` → `default_texture_filter=0`).
+
+---
+
+## 10. CITADEL MAP ART PLAN — "AC Rearmed" medieval town (ACTIVE: branch `claude/citadel-map-art`)
+
+The concrete plan to take `maps/test_map_03.tscn` (CITADEL) from procedural `_draw_stylized()` to real
+PixelLab tiles + props. This is the §7 "pilot one map" step, scaled up to the whole citadel. Aaron is
+OK generating **hundreds** of tiles — so the governing rule here is **§10.1: everything unifies.**
+
+### 10.1 Art direction (the ONE rule: unify feel + saturation)
+- **Reference feel:** Assassin's Creed multiplayer ("Rearmed") — a dense, readable-top-down **medieval
+  town**. Patchy dirty ground, town roads, tiled roofs, water + bridges, living shopfronts.
+- **Muted + low-saturation, clean (not chunky/retro).** Every tile & prop is pinned to the **locked
+  master palette** (`assets/style_bible/README.md`) so hundreds of assets read as one place:
+  - stone / paving `#cbc4b2 #c3bca9 #aaa28d #8f8a7e` · clay roof / wood `#b08a5e #a9845a #8f6f48 #6e5436`
+    (highlight `#cda978`) · slate / shadow `#6f6678 #4a525a` · water `#3a7fa8 #4f93bc` · void `#191a1d`.
+  - **Every PixelLab request pins a style-bible reference + this palette** (the §8 style-drift rule). After
+    generation, the ingest script clamps saturation so nothing pops out of the world.
+- **Ground reads QUIET / non-distracting.** The crowd, roofs and props carry the eye — never the floor.
+  Subtle dirt + road, low contrast, gentle noise. (This is a gameplay need: the floor must not compete
+  with reading the crowd — Pillar #1.)
+
+### 10.2 Render layers (bottom → top)
+1. **GROUND** TileMap — patchy dirt (base) + town roads + plaza/piazza stone + water. Auto-tiled, subtle.
+2. **WATER + BRIDGES** — water terrain with shore edges; wooden **bridge** planks over crossings.
+3. **BUILDING BODIES** — wall/facade tiles (stone, plaster, timber-frame), doors, windows, shopfronts, awnings.
+4. **DECOR / PROPS** (ground level, **Y-sorted** so the player passes in front of/behind) — barrels, crates,
+   market stalls, carts, well, lanterns, banners, potted plants, and each building's **hanging shop sign**.
+5. **OVERHEAD ROOFS** — tiled roof textures (terracotta / wood shingle / thatch / slate), varied per
+   building, drawn **above** the player.
+6. **OVERHANGS + ALLEY CUTAWAY** — roof edges that overhang the street (cover), and the few alley roofs
+   that fade **translucent** when the local player is underneath (§10.3).
+
+### 10.3 Signature mechanics (art + code — the meaty part)
+- **A. Walkable roof overhangs (cover).** Along SOME building edges the roof **overhangs the adjacent
+  street cell**: rendered on the overhead layer (above the player), **no collision** underneath — you can
+  walk there. Standing under an overhang **visually conceals** you, breaking an onlooker's clean top-down
+  read of who's underneath (social-stealth cover). *Design hook (flag for `master_plan` §3/§5): whether
+  "under overhang" also lowers exposure / counts as a hiding spot is a gameplay decision — the ART pass
+  delivers the overhang tiles + the walkable-but-roofed cell type regardless.*
+- **B. Alleyways through buildings (a FEW, not all).** A handful of buildings get a **passable 1-cell alley**
+  cut through them (new layout cell type). Their overhead roof is a **cutaway**: an `Area2D` over the alley
+  fades that roof section to translucent **for the LOCAL viewer while their OWN controlled player is inside**,
+  so you can see yourself move through. **Client-side visual only** — fade on the local player's presence,
+  never on other bodies, so it can't be used to track/identify an opponent (identity-safe; §5 server rule).
+- **C. Living shopfronts (every building has a purpose).** Each building gets a **hanging sign + matching
+  props** at its door: blacksmith (anvil + sign), general wares (crates), tavern (barrels + mug sign),
+  bakery (bread), apothecary (herbs), tailor, market stall, etc. Signs are small PixelLab **map-objects**
+  on the decor layer. This is what gives the city life.
+
+### 10.4 Asset manifest (PixelLab — 100s of tiles OK, ALL one palette)
+> Tools: `create_topdown_tileset` (auto-tiling ground/water/roof terrains), `create_map_object` /
+> `create_1_direction_object` (props & signs). Pin the style-bible reference on every call. Log each in
+> `assets/generation_manifest.csv`. Raw → `assets/tiles/citadel/raw/`, hand-finished → `.../finished/`.
+
+- **GROUND tilesets** (top-down Wang, 48px): `dirt_patchy` (quiet base) · `road_cobble` (town streets) ·
+  `plaza_stone` (piazza + central avenue) · `grass_moss` (accents) — plus **Wang transitions** between each
+  (chain via `lower_base_tile_id`/`upper_base_tile_id` so edges blend).
+- **WATER:** `water_still` + shore-edge transitions · `bridge_wood` planks.
+- **ROOFS** (overhead terrains, varied but unified saturation): `roof_terracotta` · `roof_shingle_wood` ·
+  `roof_thatch` · `roof_slate` — plus ridge / edge / **overhang** trim pieces.
+- **WALLS / FACADES:** `wall_stone` · `wall_plaster` · `wall_timberframe` — plus doors, windows, awnings,
+  shopfront trims.
+- **PROPS / map-objects (decor):** signs (`sign_blacksmith`, `sign_general_wares`, `sign_tavern`,
+  `sign_bakery`, `sign_apothecary`, `sign_tailor`, `sign_market`) · barrels · crates · `market_stall` ·
+  cart · well · lantern · banner · hay_bale · potted_plant · `fountain` (central landmark).
+- **DECALS (break repetition on the quiet ground):** `dirt_patch` · `puddle` · `cracks` · `moss_spread`.
+
+### 10.5 Layout / data changes (the grid stays the authority)
+The `test_map_01` grid `LAYOUT` (and the citadel `layout_override` in `maps/test_map_03.tscn`) still decides
+*where* everything goes. Extend the legend beyond `#`/`.`/`F`:
+- `~` water · `=` bridge · `a` alley-through cell · `^` overhang edge (walkable + roofed) · shopfront markers.
+Re-author the citadel `layout_override` to place the few alleys, water, bridges and overhang edges, then
+**re-run the flood-fill connectivity check** (`scratchpad/gen_citadel.py`) so the map stays fully traversable.
+
+### 10.6 Execution order (pilot first — §7)
+1. **Style tile:** generate ONE `dirt_patchy` tile + ONE `roof_terracotta` tile, feel-check vs the palette,
+   lock saturation clamp in `tools/ingest_sprite.py`.
+2. **Pilot ONE building end-to-end** in a scratch scene: ground under it, walls, overhead roof, one sign —
+   prove Y-sort, the overhead layer, the overhang cover cell, and the alley cutaway fade on this one block.
+3. Generate the full **ground + water + bridge** tilesets; migrate the citadel floor `_draw_stylized()` → a
+   GROUND `TileMap`.
+4. Generate **roofs / walls / overhangs**; add the OVERHEAD layer + overhang cover cells.
+5. Generate **props / signs**; decorate every building with a purpose.
+6. Author the **alleys / water / bridges** into the layout; wire the **cutaway** + connectivity check.
+7. **Hand-finish pass** (brother, Aseprite) + log every asset in `assets/generation_manifest.csv`.
+
+### 10.7 Blocked-on
+PixelLab API returns **401 (invalid token)** as of this session — no generation possible until the token is
+refreshed in the **environment / MCP config** (not the repo; keep the key out of git — §8). Everything above
+is the ready-to-execute plan; asset folders + manifest are prepped so step 1 starts the moment auth works.
