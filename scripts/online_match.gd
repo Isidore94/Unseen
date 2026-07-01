@@ -721,6 +721,8 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	if item != null:
 		item.tool_activated.connect(_on_tool_activated.bind(peer_id))
 		item.tool_expired.connect(_on_tool_expired.bind(peer_id))
+		# A regenerated charge (host timer) refreshes the owner's ability HUD so the new count shows.
+		item.charges_regenerated.connect(func(_slot: int) -> void: _push_item_state_to(peer_id))
 		_push_item_state_to(peer_id)
 
 	_update_status()
@@ -1469,8 +1471,11 @@ func _respawn_player(peer: int) -> void:
 		return
 	# Pick the spot while `peer` is still flagged dead, so the exclusion checks skip their own corpse.
 	var pos := _pick_spawn(peer)
-	_revive_player.rpc(String(node.name), pos)  # every machine un-dies + repositions the body
+	_revive_player.rpc(String(node.name), pos)  # every machine un-dies + repositions the body (refills tools)
 	_dead_by_peer[peer] = false
+	# revive() refilled the host-authoritative tool charges; push the fresh numbers so the owner's ability
+	# bar shows them (otherwise it stays stuck at the spent counts and the kit LOOKS like it didn't respawn).
+	_push_item_state_to(peer)
 	node.set("grace_active", true)
 	var grace := respawn_grace_seconds
 	if _perk_for_peer(peer) == PERK_SURVIVOR:

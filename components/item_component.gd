@@ -84,9 +84,16 @@ signal tool_expired(tool: int, slot: int)
 ## (Online) THIS machine's player pressed a slot key but isn't the authority — the Player relays
 ## this slot index to the host as a request (server-authoritative).
 signal item_requested(slot: int)
+## Emitted (host) when a spent charge regenerates, so the match can refresh the owner's ability HUD.
+signal charges_regenerated(slot: int)
+
+## CHARGE REGEN: a spent charge comes back after this many seconds (0 = no regen — the classic
+## consumable kit). One charge regenerates at a time, up to each tool's max. Host-authoritative.
+@export var charge_regen_seconds: float = 60.0
 
 # Per-SLOT live state (index 0 / 1).
 var _charges: Array[int] = [0, 0]
+var _regen_left: Array[float] = [0.0, 0.0]  ## seconds until the next charge regenerates, per slot
 ## PvE LADDER (RESPAWN_MODE_PLAN.md §6): which tool slots are usable THIS life. Base respawn life
 ## unlocks only slot 0 (your first lobby tool); the ladder's TOOL upgrade unlocks slot 1. [true, true]
 ## (the default) = both usable, so classic/elimination play is unchanged.
@@ -112,6 +119,7 @@ func _ready() -> void:
 func _refill_charges() -> void:
 	for slot in 2:
 		_charges[slot] = charges_for_tool(_tool(slot))
+		_regen_left[slot] = charge_regen_seconds  # full now → the regen timer is ready for the next spend
 
 
 func apply_equipped(tools: Array) -> void:
@@ -235,6 +243,17 @@ func _physics_process(delta: float) -> void:
 			_active_left[slot] = maxf(0.0, _active_left[slot] - delta)
 			if _active_left[slot] == 0.0:
 				tool_expired.emit(_tool(slot), slot)
+		# CHARGE REGEN: while below the tool's max, count down and refill ONE charge each interval.
+		if charge_regen_seconds > 0.0:
+			var max_charges := charges_for_tool(_tool(slot))
+			if _charges[slot] < max_charges:
+				_regen_left[slot] -= delta
+				if _regen_left[slot] <= 0.0:
+					_charges[slot] += 1
+					_regen_left[slot] = charge_regen_seconds  # arm the next charge's timer
+					charges_regenerated.emit(slot)            # → host refreshes the owner's HUD
+			else:
+				_regen_left[slot] = charge_regen_seconds  # full → keep the timer ready for the next spend
 
 
 # A press on the controlling machine: act if we're the authority, else relay a request to the host.
