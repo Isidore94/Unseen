@@ -13,8 +13,19 @@ Short, session-by-session log so we never lose the thread between sessions.
   to the locked master palette so hundreds of tiles unify. Includes the render-layer stack, asset
   manifest, layout-legend changes, and a pilot-first execution order.
 - **Scaffolding:** `assets/tiles/citadel/{raw,finished}/` + README (raw PixelLab vs hand-finished).
+- **Plug-and-crank tooling (so generation is mechanical the moment the token works):**
+  - `tools/citadel_assets.json` — the whole work-list as data: 28 PixelLab calls (4 chained ground/water
+    tilesets + roof/wall/bridge `tiles_pro` sets + 6 shop signs + props + decals), each with exact tool,
+    params, palette and style-reference. A session just walks the list.
+  - `tools/generate_citadel.md` — the runbook: lock a `_style_anchor.png` first, then a
+    generate→poll→download→ingest→log→mark-done loop; base-tile chaining + the 48px caveat spelled out.
+  - `tools/ingest_tile.py` — raw tile/prop → trim + **snap to the locked master palette** (the
+    enforcement that unifies saturation across hundreds of assets). Compiles; `--help`/JSON verified.
+  - `scripts/roof_overlay.gd` — the overhead-roof / walkable-**overhang** / **alley-cutaway** component.
+    Works now with placeholder colours (mechanic is testable pre-art) and takes real tile textures later;
+    the alley roof fades translucent for the LOCAL player only (identity-safe).
 - **Blocked-on:** PixelLab API returns 401 (invalid token) — generation waits on a refreshed token in the
-  environment/MCP config (kept out of git). Plan is ready to execute the moment auth works.
+  environment/MCP config (kept out of git). Plan + tooling are ready to execute the moment auth works.
 
 ## Session: heartbeat-stalking-detection — NEAR cue gated to on-screen
 

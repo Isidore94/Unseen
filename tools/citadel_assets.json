@@ -1,0 +1,192 @@
+{
+  "_readme": "UNSEEN — CITADEL asset generation spec (ART_PIPELINE.md §10). The machine-readable work-list a session walks to 'crank out a bunch' of PixelLab assets that all UNIFY. Each entry = one PixelLab MCP call. Runbook: tools/generate_citadel.md. Log every generated asset in assets/generation_manifest.csv. Raw output -> assets/tiles/citadel/raw/, hand-finished -> assets/tiles/citadel/finished/.",
+
+  "palette": {
+    "_note": "LOCKED master palette (assets/style_bible/README.md). Every prompt names these; the ingest step (tools/ingest_tile.py) snaps to them so hundreds of assets share one saturation.",
+    "stone_paving": ["#cbc4b2", "#c3bca9", "#aaa28d", "#8f8a7e"],
+    "clay_roof_wood": ["#b08a5e", "#a9845a", "#8f6f48", "#6e5436"],
+    "clay_highlight": "#cda978",
+    "slate_shadow": ["#6f6678", "#4a525a"],
+    "water": ["#3a7fa8", "#4f93bc"],
+    "void": "#191a1d"
+  },
+
+  "defaults": {
+    "_note": "Applied to every asset unless the entry overrides. 32px native tiles are the practical choice — create_topdown_tileset standard supports only 16/32 (64 needs pro). The §2 '48px lock' is for CHARACTERS; ground/roof tiles render at 32px native and Godot scales them to the map cell size. Bump a hero tile to 64 via create_tiles_pro if it needs more detail.",
+    "view": "high top-down",
+    "tile_size": 32,
+    "saturation": "muted, low saturation, clean not retro",
+    "style_anchor": "assets/tiles/citadel/finished/_style_anchor.png"
+  },
+
+  "assets": [
+    {
+      "id": "td_dirt_road",
+      "category": "ground",
+      "tool": "create_topdown_tileset",
+      "unify_by": "This is the FIRST ground tileset — it seeds the base tile IDs every other ground tileset chains from. Hand-finish ONE tile from it as _style_anchor.png before generating anything else.",
+      "params": {
+        "lower_description": "packed dark medieval dirt, patchy and dirty, muted low saturation",
+        "upper_description": "worn cobblestone town road, muted grey-brown stone, low saturation",
+        "transition_size": 0.25,
+        "transition_description": "loose dirt scattered over the cobble edges",
+        "tile_size": {"width": 32, "height": 32},
+        "view": "high top-down",
+        "outline": "selective outline",
+        "shading": "basic shading",
+        "detail": "low detail"
+      },
+      "chain": null,
+      "out": "raw/td_dirt_road.png",
+      "status": "pending"
+    },
+    {
+      "id": "td_road_plaza",
+      "category": "ground",
+      "tool": "create_topdown_tileset",
+      "unify_by": "Chain: feed td_dirt_road's UPPER (road) base-tile id as lower_base_tile_id so the road matches exactly.",
+      "params": {
+        "lower_description": "worn cobblestone town road, muted grey-brown stone",
+        "upper_description": "large flat flagstone plaza paving, muted warm stone",
+        "transition_size": 0.25,
+        "transition_description": "cobbles giving way to cut flagstones",
+        "tile_size": {"width": 32, "height": 32},
+        "view": "high top-down",
+        "outline": "selective outline",
+        "shading": "basic shading",
+        "detail": "low detail"
+      },
+      "chain": {"lower_base_tile_id": "{td_dirt_road.upper_base_tile_id}"},
+      "out": "raw/td_road_plaza.png",
+      "status": "pending"
+    },
+    {
+      "id": "td_dirt_grass",
+      "category": "ground",
+      "tool": "create_topdown_tileset",
+      "unify_by": "Chain: feed td_dirt_road's LOWER (dirt) base-tile id as lower_base_tile_id.",
+      "params": {
+        "lower_description": "packed dark medieval dirt, patchy and dirty",
+        "upper_description": "patchy dry grass and moss, muted olive, low saturation",
+        "transition_size": 0.25,
+        "transition_description": "sparse grass tufts poking through dirt",
+        "tile_size": {"width": 32, "height": 32},
+        "view": "high top-down",
+        "outline": "selective outline",
+        "shading": "basic shading",
+        "detail": "low detail"
+      },
+      "chain": {"lower_base_tile_id": "{td_dirt_road.lower_base_tile_id}"},
+      "out": "raw/td_dirt_grass.png",
+      "status": "pending"
+    },
+    {
+      "id": "td_water_shore",
+      "category": "water",
+      "tool": "create_topdown_tileset",
+      "unify_by": "Chain: feed td_dirt_road's LOWER (dirt) base-tile id as upper_base_tile_id so the bank matches the ground. Water uses the locked water palette #3a7fa8/#4f93bc.",
+      "params": {
+        "lower_description": "calm shallow canal water, muted teal, gentle ripples",
+        "upper_description": "muddy dirt canal bank",
+        "transition_size": 0.5,
+        "transition_description": "wet muddy shoreline with a thin foam line",
+        "tile_size": {"width": 32, "height": 32},
+        "view": "high top-down",
+        "outline": "selective outline",
+        "shading": "basic shading",
+        "detail": "medium detail"
+      },
+      "chain": {"upper_base_tile_id": "{td_dirt_road.lower_base_tile_id}"},
+      "out": "raw/td_water_shore.png",
+      "status": "pending"
+    },
+
+    {
+      "id": "roof_fills",
+      "category": "roof",
+      "tool": "create_tiles_pro",
+      "unify_by": "Pass _style_anchor.png in style_images (color_palette+outline+shading true) so all four roofs share the world's saturation.",
+      "params": {
+        "description": "1). terracotta clay tile roof 2). weathered wood shingle roof 3). thatch straw roof 4). grey slate tile roof — all muted, low saturation, clean pixel art",
+        "tile_type": "square_topdown",
+        "tile_size": 32,
+        "tile_view": "high top-down",
+        "outline_mode": "segmentation"
+      },
+      "style_ref": "{style_anchor}",
+      "out": "raw/roof_fills.png",
+      "status": "pending"
+    },
+    {
+      "id": "roof_trim",
+      "category": "roof",
+      "tool": "create_tiles_pro",
+      "unify_by": "style_images = roof_fills (so trims match the roof fills exactly).",
+      "params": {
+        "description": "1). terracotta roof ridge cap 2). roof eave OVERHANG edge casting a soft shadow below 3). roof hip corner 4). roof valley gutter — muted, low saturation",
+        "tile_type": "square_topdown",
+        "tile_size": 32,
+        "tile_view": "high top-down",
+        "outline_mode": "segmentation"
+      },
+      "style_ref": "raw/roof_fills.png",
+      "out": "raw/roof_trim.png",
+      "status": "pending"
+    },
+    {
+      "id": "wall_fills",
+      "category": "wall",
+      "tool": "create_tiles_pro",
+      "unify_by": "style_images = _style_anchor.png.",
+      "params": {
+        "description": "1). rough stone block wall 2). cream plaster wall 3). medieval timber-frame tudor wall 4). stone wall with an arched wooden door — muted, low saturation",
+        "tile_type": "square_topdown",
+        "tile_size": 32,
+        "tile_view": "high top-down",
+        "outline_mode": "segmentation"
+      },
+      "style_ref": "{style_anchor}",
+      "out": "raw/wall_fills.png",
+      "status": "pending"
+    },
+    {
+      "id": "bridge_planks",
+      "category": "water",
+      "tool": "create_tiles_pro",
+      "unify_by": "style_images = _style_anchor.png.",
+      "params": {
+        "description": "1). weathered wooden bridge planks (walkable), muted brown 2). bridge plank edge with rope rail",
+        "tile_type": "square_topdown",
+        "tile_size": 32,
+        "tile_view": "high top-down",
+        "outline_mode": "segmentation"
+      },
+      "style_ref": "{style_anchor}",
+      "out": "raw/bridge_planks.png",
+      "status": "pending"
+    },
+
+    { "id": "sign_blacksmith",    "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden shop sign with a blacksmith anvil emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_blacksmith.png", "status": "pending" },
+    { "id": "sign_general_wares", "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden shop sign with a crate-and-barrel wares emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_general_wares.png", "status": "pending" },
+    { "id": "sign_tavern",        "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden tavern sign with a foaming ale mug emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_tavern.png", "status": "pending" },
+    { "id": "sign_bakery",        "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden shop sign with a bread loaf emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_bakery.png", "status": "pending" },
+    { "id": "sign_apothecary",    "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden shop sign with a mortar-and-pestle and herbs emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_apothecary.png", "status": "pending" },
+    { "id": "sign_tailor",        "category": "sign", "tool": "create_map_object", "params": { "description": "hanging wooden shop sign with a needle-and-thread emblem, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail", "outline": "selective outline" }, "style_ref": "{style_anchor}", "out": "raw/sign_tailor.png", "status": "pending" },
+
+    { "id": "prop_barrel",       "category": "prop", "tool": "create_map_object", "params": { "description": "wooden barrel, muted brown", "width": 40, "height": 40, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_barrel.png", "status": "pending" },
+    { "id": "prop_crate_stack",  "category": "prop", "tool": "create_map_object", "params": { "description": "stack of wooden crates, muted", "width": 48, "height": 48, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_crate_stack.png", "status": "pending" },
+    { "id": "prop_market_stall", "category": "prop", "tool": "create_map_object", "params": { "description": "medieval market stall with a striped awning and goods, muted low saturation", "width": 112, "height": 112, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_market_stall.png", "status": "pending" },
+    { "id": "prop_cart",         "category": "prop", "tool": "create_map_object", "params": { "description": "wooden hand cart with a wheel, muted", "width": 80, "height": 64, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_cart.png", "status": "pending" },
+    { "id": "prop_well",         "category": "prop", "tool": "create_map_object", "params": { "description": "round stone town well with a small wooden roof, muted", "width": 72, "height": 72, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_well.png", "status": "pending" },
+    { "id": "prop_lantern",      "category": "prop", "tool": "create_map_object", "params": { "description": "iron street lantern on a post, warm muted glow", "width": 40, "height": 56, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_lantern.png", "status": "pending" },
+    { "id": "prop_banner",       "category": "prop", "tool": "create_map_object", "params": { "description": "hanging cloth banner / pennant, muted faded colors", "width": 40, "height": 64, "view": "high top-down", "detail": "medium detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_banner.png", "status": "pending" },
+    { "id": "prop_hay_bale",     "category": "prop", "tool": "create_map_object", "params": { "description": "round hay bale, muted straw", "width": 48, "height": 48, "view": "high top-down", "detail": "low detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_hay_bale.png", "status": "pending" },
+    { "id": "prop_potted_plant", "category": "prop", "tool": "create_map_object", "params": { "description": "potted shrub in a clay pot, muted green", "width": 40, "height": 40, "view": "high top-down", "detail": "low detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_potted_plant.png", "status": "pending" },
+    { "id": "prop_fountain",     "category": "prop", "tool": "create_map_object", "params": { "description": "round stone piazza fountain with muted teal water, LANDMARK centerpiece", "width": 160, "height": 160, "view": "high top-down", "detail": "high detail" }, "style_ref": "{style_anchor}", "out": "raw/prop_fountain.png", "status": "pending" },
+
+    { "id": "decal_dirt_patch", "category": "decal", "tool": "create_map_object", "params": { "description": "small patch of scuffed dirt, subtle, muted, transparent background", "width": 48, "height": 48, "view": "high top-down", "detail": "low detail", "outline": "lineless" }, "style_ref": "{style_anchor}", "out": "raw/decal_dirt_patch.png", "status": "pending" },
+    { "id": "decal_puddle",     "category": "decal", "tool": "create_map_object", "params": { "description": "small shallow rain puddle, subtle muted reflection", "width": 48, "height": 40, "view": "high top-down", "detail": "low detail", "outline": "lineless" }, "style_ref": "{style_anchor}", "out": "raw/decal_puddle.png", "status": "pending" },
+    { "id": "decal_cracks",     "category": "decal", "tool": "create_map_object", "params": { "description": "subtle cracks in paving, thin, muted, transparent background", "width": 48, "height": 48, "view": "high top-down", "detail": "low detail", "outline": "lineless" }, "style_ref": "{style_anchor}", "out": "raw/decal_cracks.png", "status": "pending" },
+    { "id": "decal_moss",       "category": "decal", "tool": "create_map_object", "params": { "description": "subtle spread of moss between stones, muted olive, transparent background", "width": 48, "height": 48, "view": "high top-down", "detail": "low detail", "outline": "lineless" }, "style_ref": "{style_anchor}", "out": "raw/decal_moss.png", "status": "pending" }
+  ]
+}
