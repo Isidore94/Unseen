@@ -24,6 +24,11 @@ Short, session-by-session log so we never lose the thread between sessions.
   - `scripts/roof_overlay.gd` — the overhead-roof / walkable-**overhang** / **alley-cutaway** component.
     Works now with placeholder colours (mechanic is testable pre-art) and takes real tile textures later;
     the alley roof fades translucent for the LOCAL player only (identity-safe).
+- **Overhang decision locked:** roof overhangs are **purely visual cover — no exposure/detection effect**
+  (Aaron's call). §10.3 updated.
+- **Design sketch:** `tools/render_citadel_sketch.py` → `assets/tiles/citadel/citadel_map_sketch.svg` — a
+  top-down mockup in the locked palette (varied roofs, quiet streets, piazza + fountain, canal + 2 bridges,
+  4 roofed alleys w/ cutaway, overhang cover, 6 shop signs). Regenerable; a design to react to, not final geometry.
 - **Blocked-on:** PixelLab API returns 401 (invalid token) — generation waits on a refreshed token in the
   environment/MCP config (kept out of git). Plan + tooling are ready to execute the moment auth works.
 

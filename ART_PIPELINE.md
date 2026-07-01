@@ -255,9 +255,9 @@ OK generating **hundreds** of tiles — so the governing rule here is **§10.1: 
 - **A. Walkable roof overhangs (cover).** Along SOME building edges the roof **overhangs the adjacent
   street cell**: rendered on the overhead layer (above the player), **no collision** underneath — you can
   walk there. Standing under an overhang **visually conceals** you, breaking an onlooker's clean top-down
-  read of who's underneath (social-stealth cover). *Design hook (flag for `master_plan` §3/§5): whether
-  "under overhang" also lowers exposure / counts as a hiding spot is a gameplay decision — the ART pass
-  delivers the overhang tiles + the walkable-but-roofed cell type regardless.*
+  read of who's underneath (social-stealth cover). **Overhang cover is PURELY VISUAL — no exposure /
+  detection effect (Aaron's call).** Standing under one changes no gameplay stat; it only breaks the
+  onlooker's clean top-down read. The ART pass delivers the overhang tiles + the walkable-but-roofed cell.
 - **B. Alleyways through buildings (a FEW, not all).** A handful of buildings get a **passable 1-cell alley**
   cut through them (new layout cell type). Their overhead roof is a **cutaway**: an `Area2D` over the alley
   fades that roof section to translucent **for the LOCAL viewer while their OWN controlled player is inside**,
