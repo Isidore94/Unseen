@@ -1,48 +1,52 @@
 extends Node2D
 class_name RoofOverlay
 
-# RoofOverlay — UNSEEN, CITADEL map (ART_PIPELINE.md §10.2/§10.3). The layer that draws building ROOFS
-# (and roof OVERHANGS and ALLEY cut-throughs) ABOVE the player, plus the two signature citadel mechanics:
+# RoofOverlay — UNSEEN, CITADEL map (ART_PIPELINE.md §10.2/§10.3). Draws building ROOFS above the player,
+# and owns the citadel's CONCEALMENT ZONES — overhangs and alley cut-throughs — which work like SHADOWS:
 #
-#   • OVERHANG (cover): a roof edge that reaches out over a walkable street cell. It's drawn on top of
-#     the player, with NO collision underneath (collision is the map's job), so you can duck under it and
-#     an onlooker's clean top-down read of who's there is broken. Pure visual cover.
-#   • ALLEY (cutaway): a roof over a passable alley cut through a building. When YOUR OWN player walks in,
-#     that roof fades translucent so you can see yourself move through — like the interior reveals in AC /
-#     top-down stealth games. It fades on the LOCAL player only (never on other bodies), so it can never
-#     be used to spot or identify an opponent — hidden-identity stays intact (the §5 server rule in spirit).
+#   A concealment zone is a roof (an OVERHANG reaching over a street cell, or the roof over an ALLEY cut
+#   through a building) that is drawn ON TOP of the characters and is FULLY OPAQUE. So on everyone ELSE's
+#   screen it completely HIDES whoever is standing under it — you vanish into it like stepping into shadow.
+#   On YOUR OWN screen, the moment your player is actually under it, it fades translucent so you can see
+#   what's going on around you — and it snaps back to opaque the instant you step out.
 #
-# It works TODAY with flat placeholder colours (so you can test the overhang/alley feel before any PixelLab
-# art exists) and takes real tile textures later via the same add_* calls — nothing else changes.
+# WHY THIS IS SAFE (and why the fade is LOCAL-ONLY): each machine runs its own RoofOverlay for its own
+# player. Your zone fades only for YOU (your player is under it); on an opponent's machine that same zone
+# stays opaque, hiding you. So the reveal can never be used to see or track an opponent — it only ever
+# opens your own view of a zone you personally occupy. Purely visual (Aaron: no exposure/detection effect).
 #
-# HOW TO WIRE IT (from the map, e.g. test_map_01.gd): create one RoofOverlay, add it high in the tree,
-# call set_local_player(your_player), then for each building add a roof/overhang/alley section as a world-
-# space Rect2 (the map already knows each cell's rect via _cell_rect). See add_roof / add_overhang / add_alley.
+# It works TODAY with flat placeholder colours (test the hide/reveal feel before any PixelLab art exists)
+# and takes real tile textures later via the same add_* calls — nothing else changes.
+#
+# WIRING (from the map, e.g. test_map_01.gd): make one RoofOverlay high in the tree, set_local_player(you),
+# then add each building's roof + its inward-facing overhang(s) + any alley as world-space Rect2s (the map
+# knows each cell's rect via _cell_rect). Overhangs face the map centre — see the sketch generator.
 
-## Placeholder roof colour used until a real tile texture is supplied (locked clay-roof tone #b08a5e).
+## Placeholder roof colour until a real tile texture is supplied (locked clay-roof tone #b08a5e).
 @export var placeholder_roof_color: Color = Color("b08a5e")
-## Soft shadow an OVERHANG casts onto the ground just past a building edge (sells the "roof reaches out").
-@export var overhang_shadow_color: Color = Color(0.0, 0.0, 0.0, 0.18)
-## Roof opacity when the local player is standing in an ALLEY (the cutaway). Lower = see-through-er.
-@export var alley_faded_alpha: float = 0.16
-## Roof opacity when nobody local is in the alley (normal, solid roof).
-@export var alley_solid_alpha: float = 1.0
-## How fast the alley roof fades in/out (per second, feeds lerp). Higher = snappier reveal.
-@export var alley_fade_speed: float = 8.0
-## Extra world-px margin around an alley rect that still counts as "inside" (so the fade starts as you
-## reach the mouth, not only dead-centre). Tune to the cell size.
-@export var alley_enter_margin: float = 24.0
+## Soft shadow an OVERHANG casts onto the ground just past the building edge — sells the "roof reaches out
+## and shades this spot" read even when nobody is under it.
+@export var overhang_shadow_color: Color = Color(0.0, 0.0, 0.0, 0.22)
+## Roof opacity of a concealment zone while YOUR player is under it (the see-out reveal). Low = see-through.
+@export var cover_revealed_alpha: float = 0.16
+## Roof opacity of a concealment zone when your player is NOT under it — FULLY opaque so it hides others.
+@export var cover_hidden_alpha: float = 1.0
+## How fast a zone fades between hidden/revealed (per second, feeds lerp). Higher = snappier.
+@export var cover_fade_speed: float = 10.0
+## World-px slack around a zone that still counts as "under it". Small on purpose — it should reveal only
+## when you are ACTUALLY under the roof, not merely near the mouth. Tune to the cell size.
+@export var cover_enter_margin: float = 10.0
 
-## The three kinds of overhead section. ROOF = a building top. OVERHANG = a roof edge over walkable
-## street (cover). ALLEY = a roof over a passable cut-through (fades for the local player).
+## ROOF = a building top (nobody stands under it → always opaque). OVERHANG / ALLEY = concealment zones
+## (the "shadow" cover that hides others and reveals to you when you're under it).
 enum Kind { ROOF, OVERHANG, ALLEY }
 
-## The player THIS machine controls. Only their position drives the alley cutaway (identity-safe).
+## The player THIS machine controls. ONLY their position reveals a zone (keeps the reveal local + safe).
 var _local_player: Node2D = null
 
-## Every overhead section we draw. One dictionary per section:
+## Every overhead section. One dictionary per section:
 ##   {rect:Rect2, texture:Texture2D|null, kind:int, alpha:float, target_alpha:float}
-## `alpha` is the live (animated) opacity; `target_alpha` is where it's lerping to (alleys only).
+## `alpha` is the live (animated) opacity; `target_alpha` is where a concealment zone is lerping to.
 var _sections: Array[Dictionary] = []
 
 
@@ -53,25 +57,24 @@ func _ready() -> void:
 	z_index = 500
 
 
-# Tell the overlay which body is the local player — only this one triggers the alley cutaway, so the
-# reveal can never leak where an OPPONENT is. Call once after the local player spawns.
+# Tell the overlay which body is the local player — only this one reveals a concealment zone, so the
+# see-out can never expose where an OPPONENT is. Call once after the local player spawns.
 func set_local_player(player: Node2D) -> void:
 	_local_player = player
 
 
-# Add a plain building ROOF (drawn over the footprint, on top of the player). `texture` null = flat
-# placeholder colour for now; pass a real tile texture later and it renders that instead.
+# Add a plain building ROOF (drawn over the footprint, always opaque). `texture` null = flat placeholder.
 func add_roof(world_rect: Rect2, texture: Texture2D = null) -> void:
 	_add_section(world_rect, texture, Kind.ROOF)
 
 
-# Add a walkable OVERHANG (cover): a roof edge over a street cell. Same drawing as a roof, plus a soft
-# ground shadow. Remember: NO collision here — leave that cell walkable in the map/nav.
+# Add a walkable OVERHANG concealment zone (a roof lip over a street cell). Leave that cell walkable in
+# the map/nav — the roof is visual cover only, no collision underneath.
 func add_overhang(world_rect: Rect2, texture: Texture2D = null) -> void:
 	_add_section(world_rect, texture, Kind.OVERHANG)
 
 
-# Add an ALLEY roof (cutaway): fades translucent while the LOCAL player is inside `world_rect`.
+# Add an ALLEY concealment zone (roof over a passable cut-through). Same shadow behaviour as an overhang.
 func add_alley(world_rect: Rect2, texture: Texture2D = null) -> void:
 	_add_section(world_rect, texture, Kind.ALLEY)
 
@@ -82,14 +85,18 @@ func clear_sections() -> void:
 	queue_redraw()
 
 
+# A concealment zone (hides others / reveals to you). Roofs proper are NOT — they're always opaque.
+func _is_cover(kind: int) -> bool:
+	return kind == Kind.OVERHANG or kind == Kind.ALLEY
+
+
 func _add_section(world_rect: Rect2, texture: Texture2D, kind: int) -> void:
-	var start_alpha := alley_solid_alpha
 	_sections.append({
 		"rect": world_rect,
 		"texture": texture,
 		"kind": kind,
-		"alpha": start_alpha,
-		"target_alpha": start_alpha,
+		"alpha": cover_hidden_alpha,        # everything starts opaque (fully hiding)
+		"target_alpha": cover_hidden_alpha,
 	})
 	queue_redraw()
 
@@ -102,17 +109,17 @@ func _process(delta: float) -> void:
 	if _local_player != null and is_instance_valid(_local_player):
 		player_pos = _local_player.global_position
 	for section in _sections:
-		if int(section["kind"]) != Kind.ALLEY:
-			continue  # only alleys animate; roofs/overhangs are steady
-		# Is the local player inside this alley (with a small entry margin)? If so, aim for see-through.
-		var hit_rect: Rect2 = (section["rect"] as Rect2).grow(alley_enter_margin)
-		var inside := player_pos != Vector2.INF and hit_rect.has_point(player_pos)
-		section["target_alpha"] = alley_faded_alpha if inside else alley_solid_alpha
-		# Ease the current opacity toward the target so the reveal fades smoothly instead of snapping.
+		if not _is_cover(int(section["kind"])):
+			continue  # plain roofs never fade
+		# Reveal ONLY while the local player is actually under this zone (small slack, not "nearby").
+		var hit_rect: Rect2 = (section["rect"] as Rect2).grow(cover_enter_margin)
+		var under := player_pos != Vector2.INF and hit_rect.has_point(player_pos)
+		section["target_alpha"] = cover_revealed_alpha if under else cover_hidden_alpha
+		# Ease current opacity toward the target so the reveal fades smoothly instead of snapping.
 		var current := float(section["alpha"])
 		var goal := float(section["target_alpha"])
 		if not is_equal_approx(current, goal):
-			section["alpha"] = lerpf(current, goal, clampf(alley_fade_speed * delta, 0.0, 1.0))
+			section["alpha"] = lerpf(current, goal, clampf(cover_fade_speed * delta, 0.0, 1.0))
 			needs_redraw = true
 	if needs_redraw:
 		queue_redraw()
@@ -123,13 +130,12 @@ func _draw() -> void:
 		var rect: Rect2 = section["rect"]
 		var kind: int = int(section["kind"])
 		var alpha: float = float(section["alpha"])
-		# OVERHANG: a soft shadow first, so the roof reads as reaching out over the ground below it.
+		# OVERHANG: a soft cast shadow first, so the spot reads as shaded cover even at full opacity.
 		if kind == Kind.OVERHANG:
-			var shadow := Rect2(rect.position + Vector2(3, 4), rect.size)
-			draw_rect(shadow, overhang_shadow_color, true)
+			draw_rect(Rect2(rect.position + Vector2(3, 4), rect.size), overhang_shadow_color, true)
 		var texture: Texture2D = section["texture"]
 		if texture != null:
-			# Real tile art: tint carries the animated alpha (alley fade); tiled to fill the footprint.
+			# Real tile art: tint carries the animated opacity (the reveal); tiled to fill the footprint.
 			draw_texture_rect(texture, rect, true, Color(1, 1, 1, alpha))
 		else:
 			# Placeholder until PixelLab tiles land — flat clay colour at the section's opacity.

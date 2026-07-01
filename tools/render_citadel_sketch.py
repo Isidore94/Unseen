@@ -133,8 +133,11 @@ def draw_building(b) -> list[str]:
             ox, oy, ow, oh = x, y - CELL * 0.6, w, CELL * 0.6
         else:  # W
             ox, oy, ow, oh = x - CELL * 0.6, y, CELL * 0.6, h
-        out.append(svg_rect(ox, oy, ow, oh, roof, opacity=0.5, rx=3))
-        out.append(svg_rect(ox, oy, ow, oh, "none", stroke=shade(roof, 0.7), sw=1.0, rx=3))
+        # Cast shadow on the ground + a shaded, OPAQUE roof lip: the zone fully hides whoever's under it
+        # (it only turns see-through on that player's own screen while they stand under it — can't show
+        # that in a still, so it's drawn here in its default "hiding" state).
+        out.append(svg_rect(ox + 2, oy + 3, ow, oh, "rgba(0,0,0,0.20)", rx=3))
+        out.append(svg_rect(ox, oy, ow, oh, shade(roof, 0.82), stroke=shade(roof, 0.62), sw=1.0, rx=3))
 
     # ALLEY cut-through — a walkable slot; drawn as ground with a translucent 'cutaway' overlay.
     if b.get("alley") == "v":
@@ -168,7 +171,7 @@ def build_svg() -> str:
     p.append(svg_rect(0, 0, CANVAS_W, CANVAS_H, "#e9e4d6"))                       # paper
     # title
     p.append(svg_text(MARGIN, MARGIN + 26, "CITADEL — proposed map sketch", size=24, weight="bold"))
-    p.append(svg_text(MARGIN, MARGIN + 48, "AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · a few roofed alleys that fade for you · living shopfronts",
+    p.append(svg_text(MARGIN, MARGIN + 48, "AC-Rearmed medieval town · top-down · muted palette · quiet ground · tiled roofs · canal + bridges · 'shadow'-cover overhangs + alleys (hide you, reveal only to you) · living shopfronts",
                       size=12.5, fill="#5c554a"))
     # map ground
     p.append(svg_rect(MAP_X0, MAP_Y0, MAP_W, MAP_H, GROUND, stroke=OUTLINE, sw=2.0))
@@ -213,9 +216,11 @@ def build_svg() -> str:
     p.append(f'<circle cx="{fx:.1f}" cy="{fy:.1f}" r="4" fill="{RIPPLE}"/>')
     p.append(svg_text(fx, fy + 44, "fountain", size=11, fill="#7a7263", anchor="middle"))
 
-    # a couple of callouts so the two signature mechanics are obvious
-    p.append(callout(gx(8.5) + 4, gy(7), "alley — roof fades\nfor you inside"))
-    p.append(callout(gx(19.4), gy(10.5), "overhang —\nvisual cover"))
+    # callouts so the "shadow cover" behaviour is obvious (can't animate a still image)
+    p.append(callout(gx(1.4), gy(19.2),
+                     "ALLEYS &amp; OVERHANGS = 'shadow' cover:\nopaque to everyone else (they FULLY HIDE\nwhoever's under them)…", width=300))
+    p.append(callout(gx(13.2), gy(19.2),
+                     "…and turn see-through only on YOUR\nscreen, only while you're actually\nunder them.", width=272))
 
     # legend
     p.extend(legend())
@@ -223,10 +228,10 @@ def build_svg() -> str:
     return "\n".join(p)
 
 
-def callout(x, y, txt) -> str:
+def callout(x, y, txt, width=112) -> str:
     lines = txt.split("\n")
     tspans = "".join(f'<tspan x="{x:.1f}" dy="{0 if i==0 else 12}">{ln}</tspan>' for i, ln in enumerate(lines))
-    return (f'<g><rect x="{x-3:.1f}" y="{y-12:.1f}" width="112" height="{12*len(lines)+8}" fill="#ffffff" opacity="0.82" rx="3"/>'
+    return (f'<g><rect x="{x-3:.1f}" y="{y-12:.1f}" width="{width}" height="{12*len(lines)+8}" fill="#ffffff" opacity="0.86" rx="3"/>'
             f'<text font-family="Verdana,sans-serif" font-size="10.5" fill="{INK}" y="{y:.1f}">{tspans}</text></g>')
 
 
@@ -239,8 +244,8 @@ def legend() -> list[str]:
         (PIAZZA, "Piazza flagstone"),
         (WATER, "Canal water"),
         (BRIDGE, "Wooden bridge (walkable)"),
-        ("alley", "Alley through building — roof goes translucent for YOUR player inside (cutaway)"),
-        ("overhang", "Roof overhang — walkable, PURELY VISUAL cover (hides who's under it)"),
+        ("overhang", "Overhang — 'shadow' cover facing the middle: opaque to others (fully hides you)"),
+        ("alley", "Alley cut-through — same 'shadow' cover; both go see-through only for you when under"),
         (SIGN_BOARD, "Shop sign — every building gets a purpose (blacksmith, tavern, bakery…)"),
     ]
     row_h = 20
@@ -253,8 +258,8 @@ def legend() -> list[str]:
             out.append(svg_rect(lx, ly - 11, 22, 14, "#ffffff", opacity=0.14))
             out.append(f'<rect x="{lx:.1f}" y="{ly-11:.1f}" width="22" height="14" fill="none" stroke="{OUTLINE}" stroke-width="1" stroke-dasharray="3 2"/>')
         elif swatch == "overhang":
-            out.append(svg_rect(lx, ly - 11, 22, 14, ROOFS[0], opacity=0.5, rx=2))
-            out.append(svg_rect(lx, ly - 11, 22, 14, "none", stroke=shade(ROOFS[0], 0.7), sw=1))
+            out.append(svg_rect(lx + 2, ly - 9, 22, 14, "rgba(0,0,0,0.20)", rx=2))
+            out.append(svg_rect(lx, ly - 11, 22, 14, shade(ROOFS[0], 0.82), stroke=shade(ROOFS[0], 0.62), sw=1, rx=2))
         else:
             out.append(svg_rect(lx, ly - 11, 22, 14, swatch, stroke=OUTLINE, sw=1, rx=2))
         out.append(svg_text(lx + 30, ly, label, size=12))

@@ -252,17 +252,20 @@ OK generating **hundreds** of tiles — so the governing rule here is **§10.1: 
    that fade **translucent** when the local player is underneath (§10.3).
 
 ### 10.3 Signature mechanics (art + code — the meaty part)
-- **A. Walkable roof overhangs (cover).** Along SOME building edges the roof **overhangs the adjacent
-  street cell**: rendered on the overhead layer (above the player), **no collision** underneath — you can
-  walk there. Standing under an overhang **visually conceals** you, breaking an onlooker's clean top-down
-  read of who's underneath (social-stealth cover). **Overhang cover is PURELY VISUAL — no exposure /
-  detection effect (Aaron's call).** Standing under one changes no gameplay stat; it only breaks the
-  onlooker's clean top-down read. The ART pass delivers the overhang tiles + the walkable-but-roofed cell.
-- **B. Alleyways through buildings (a FEW, not all).** A handful of buildings get a **passable 1-cell alley**
-  cut through them (new layout cell type). Their overhead roof is a **cutaway**: an `Area2D` over the alley
-  fades that roof section to translucent **for the LOCAL viewer while their OWN controlled player is inside**,
-  so you can see yourself move through. **Client-side visual only** — fade on the local player's presence,
-  never on other bodies, so it can't be used to track/identify an opponent (identity-safe; §5 server rule).
+- **CONCEALMENT ZONES work like SHADOWS (overhangs + alleys, one shared rule).** A concealment zone is a
+  roof drawn ON TOP of the characters and **fully OPAQUE**, so on everyone ELSE's screen it **completely
+  hides** whoever stands under it — you vanish into it like stepping into shadow. On **YOUR OWN screen**,
+  the instant your player is **actually under it** the roof fades **translucent** so you can see out, and
+  it snaps back to opaque the moment you step out. **Per-viewer + LOCAL-player-only:** your machine fades
+  only the zone your own player occupies; on an opponent's machine that zone stays opaque (hiding you), so
+  the reveal can never expose or track an opponent (identity-safe; §5 in spirit). **Purely visual — no
+  exposure/detection effect (Aaron's call).** Implemented in `scripts/roof_overlay.gd` (`add_overhang` /
+  `add_alley`, `set_local_player`); works with placeholder colours today, real tiles later.
+  - **A. Overhangs (EVERY building).** A roof lip reaching over an adjacent **street** cell — **walkable,
+    no collision underneath**. Oriented to face the **map centre**, so even outer-ring buildings hang their
+    cover **inward over the streets** (see `tools/render_citadel_sketch.py`). This is the main cover web.
+  - **B. Alleys (a FEW buildings).** A passable 1-cell cut-through a building (new layout cell type); its
+    roof is the same shadow-cover zone, so you can slip through and only you see out while inside.
 - **C. Living shopfronts (every building has a purpose).** Each building gets a **hanging sign + matching
   props** at its door: blacksmith (anvil + sign), general wares (crates), tavern (barrels + mug sign),
   bakery (bread), apothecary (herbs), tailor, market stall, etc. Signs are small PixelLab **map-objects**
