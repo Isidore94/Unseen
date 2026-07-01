@@ -83,6 +83,7 @@ func _build_match(map: TestMap01) -> void:
 	_player.appearance_index = 11
 	add_child(_player)
 	_player.global_position = _first_spawn(map)
+	map.setup_roof_overlay(_player)  # build the overhead overhang cover, revealed only under our own player
 
 	var camera := _player.get_node_or_null("Camera2D") as Camera2D
 	if camera != null:

@@ -110,6 +110,16 @@ enum Zone { NW, NE, SW, SE, HUB }
 ## spawns (if enable_portals is on). Citadel sets this false — no magic top↔bottom jump, but the
 ## short trapdoor hop stays. Only matters when enable_portals is true.
 @export var enable_teleporters: bool = true
+## OVERHANG concealment (master_plan §8 cover; the "shadow" cover we had on the Citadel): when true,
+## every building casts a walkable ROOF OVERHANG over the adjacent street toward the map centre. That
+## overhang (a RoofOverlay zone) is drawn OPAQUE above players, so it HIDES whoever's under it on OTHER
+## screens, and turns translucent only on your OWN screen while you personally stand under it. Purely
+## visual (no exposure effect); the street underneath stays walkable. Off by default — maps opt in.
+@export var enable_overhangs: bool = false
+## Buildings within this many cells of the map BORDER cast NO overhang — less cover at the edges, more
+## toward the busy centre. Set 0 to give EVERY building an overhang (the original all-buildings web).
+@export var overhang_border_margin: int = 3
+var _roof_overlay: RoofOverlay = null  ## overhead concealment overlay (built once, on this machine)
 
 # ===== colours =====
 ## Out-of-bounds border behind everything.
@@ -352,6 +362,11 @@ func _is_water(col: int, row: int) -> bool:
 # A BRIDGE cell — walkable (NOT solid), drawn as planks where it crosses the canal.
 func _is_bridge(col: int, row: int) -> bool:
 	return (_layout()[row] as String)[col] == "B"
+
+# An ALLEY cell — a WALKABLE secret cut-through a building (marked 'a' in the layout) that is still
+# ROOFED, so it acts as a concealment zone. Layouts without any 'a' simply have no alleys (returns false).
+func _is_alley(col: int, row: int) -> bool:
+	return (_layout()[row] as String)[col] == "a"
 
 # Anything an actor cannot walk through: a building, the fountain, OR canal water.
 func _is_solid(col: int, row: int) -> bool:
@@ -919,6 +934,87 @@ func _draw_fountain() -> void:
 	draw_circle(c, fountain_radius * 0.72, fountain_water_color)
 	draw_arc(c, fountain_radius, 0.0, TAU, 48, Color(1, 1, 1, 0.25), 4.0)
 	draw_circle(c, fountain_radius * 0.18, fountain_stone_color)
+
+
+# === OVERHANG concealment (master_plan §8 cover) ==========================
+# Build (once) the overhead concealment overlay and point it at the LOCAL player. Safe to call the
+# moment the local player is known (online) or right after they spawn (offline). No-op unless
+# enable_overhangs. The overlay draws above players (z 500) with flat placeholder roof colours.
+func setup_roof_overlay(local_player: Node2D) -> void:
+	if not enable_overhangs:
+		return
+	if _roof_overlay == null:
+		_roof_overlay = RoofOverlay.new()
+		_roof_overlay.name = "RoofOverlay"
+		add_child(_roof_overlay)
+		for r in overhang_rects():
+			_roof_overlay.add_overhang(r)  # no texture → flat placeholder clay roof
+		for r in alley_rects():
+			_roof_overlay.add_alley(r)      # roofed secret passages (same shadow-cover behaviour)
+	if local_player != null:
+		_roof_overlay.set_local_player(local_player)
+
+
+# The overhang cover zones: for every BUILDING cell, a roof lip reaching over the adjacent WALKABLE
+# street cell on the side facing the MAP CENTRE (so cover hangs inward over the streets). Each zone is
+# the near strip of that street cell, right against the building.
+func overhang_rects() -> Array:
+	var rects: Array = []
+	if not enable_overhangs:
+		return rects
+	var cc := _center_col()
+	var cr := _center_row()
+	var depth := 0.5  # how far the overhang reaches into the street (fraction of a cell)
+	for row in _rows():
+		for col in _cols():
+			if not _is_building(col, row):
+				continue
+			# Thin out overhangs near the map border — less cover at the edges, more toward the centre.
+			if mini(mini(col, _cols() - 1 - col), mini(row, _rows() - 1 - row)) < overhang_border_margin:
+				continue
+			var dx := signi(cc - col)  # horizontal step toward the centre
+			var dy := signi(cr - row)  # vertical step toward the centre
+			if dx != 0 and _is_walkable_cell(col + dx, row):
+				rects.append(_overhang_strip(col + dx, row, -dx, 0, depth))
+			if dy != 0 and _is_walkable_cell(col, row + dy):
+				rects.append(_overhang_strip(col, row + dy, 0, -dy, depth))
+	return rects
+
+
+# The roofed ALLEY cut-through cells (secret passages carved through buildings) as world-space rects.
+func alley_rects() -> Array:
+	var rects: Array = []
+	for row in _rows():
+		for col in _cols():
+			if _is_alley(col, row):
+				rects.append(_cell_rect(col, row))
+	return rects
+
+
+# In-bounds AND not solid — a walkable cell an actor can stand in (and thus under an overhang).
+func _is_walkable_cell(col: int, row: int) -> bool:
+	if col < 0 or col >= _cols() or row < 0 or row >= _rows():
+		return false
+	return not _is_solid(col, row)
+
+
+# The near strip of a street cell against the building. (bdx/bdy point FROM the street TO the building;
+# `depth` = fraction of the cell the overhang covers.) Returns the world-space Rect2.
+func _overhang_strip(street_col: int, street_row: int, bdx: int, bdy: int, depth: float) -> Rect2:
+	var cell := _cell_rect(street_col, street_row)
+	var pos := cell.position
+	var size := cell.size
+	if bdx > 0:
+		pos.x = cell.position.x + cell.size.x * (1.0 - depth)
+		size.x = cell.size.x * depth
+	elif bdx < 0:
+		size.x = cell.size.x * depth
+	if bdy > 0:
+		pos.y = cell.position.y + cell.size.y * (1.0 - depth)
+		size.y = cell.size.y * depth
+	elif bdy < 0:
+		size.y = cell.size.y * depth
+	return Rect2(pos, size)
 
 
 # Spawn an AccessPoint node at each rooftop-stair / sewer-entrance location. They draw

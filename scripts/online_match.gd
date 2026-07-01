@@ -2424,6 +2424,8 @@ func _update_local_view() -> void:
 		_local_player = _find_local_player()
 		if _local_player != null:
 			_build_player_hud()
+			if _map is TestMap01:
+				(_map as TestMap01).setup_roof_overlay(_local_player)  # our-player-only overhang reveal
 
 	# Resolve any of our marks that have now replicated to us, highlight each (only THIS
 	# screen does, so there's no leak online), and keep the mini-map pointed at one.
