@@ -202,8 +202,16 @@ var _my_arrow_tier: int = 0
 var _my_ladder_pending: int = 0
 
 # === HUNTER-DANGER CUES (AC Rearmed-style pursuer warning) =========================================
-## Distance (px) under which your assigned hunter triggers the NEAR cue (level 1: glow + slow heartbeat).
-@export var danger_near_px: float = 900.0
+# The NEAR cue (level 1) only fires when your hunter is actually ON YOUR SCREEN — not by raw distance.
+# A pure distance radar let you stand still and triangulate which figure was your hunter (heartbeat
+# speeding up as someone off-screen approached = a tell). Gating level 1 to "on screen" means the
+# heartbeat only confirms your hunter is somewhere in the crowd you can already see — the crowd still
+# hides WHICH figure. The host approximates the visible area from the live camera zoom (1.4) and a
+# reference 1080p viewport, so it stays fully host-side (identity-safe, clients send no view data).
+## Half-WIDTH (world px) of the on-screen box used to decide the NEAR cue. ~ (1920 / 1.4) / 2 at 1080p.
+@export var view_half_width_px: float = 685.0
+## Half-HEIGHT (world px) of the on-screen box used to decide the NEAR cue. ~ (1080 / 1.4) / 2 at 1080p.
+@export var view_half_height_px: float = 385.0
 ## Distance (px) under which your hunter triggers the VERY-NEAR cue (level 2: brighter + fast heartbeat).
 @export var danger_close_px: float = 460.0
 ## How often (seconds) the host re-evaluates everyone's danger level.
@@ -1816,8 +1824,13 @@ func _tick_danger(delta: float) -> void:
 					var d := prey_node.global_position.distance_to(hunter_node.global_position)
 					if d <= danger_close_px:
 						level = 2
-					elif d <= danger_near_px:
-						level = 1
+					else:
+						# NEAR cue (level 1) only when the hunter is actually on the prey's screen — i.e. inside
+						# the camera's visible box (centred on the prey). Off-screen hunters stay silent so the
+						# heartbeat can't be used as a radar to triangulate them through walls / off-camera.
+						var offset := hunter_node.global_position - prey_node.global_position
+						if absf(offset.x) <= view_half_width_px and absf(offset.y) <= view_half_height_px:
+							level = 1
 		var prev := int(_danger_level_by_peer.get(prey, -1))
 		_danger_level_by_peer[prey] = level
 		# Send EVERY tick (not just on change). It's one int per player per 0.25s — cheap — and it means a
@@ -1988,12 +2001,12 @@ var _kill_lockout_display: float = 0.0
 var _kill_lockout_label: Label = null
 
 
-# Owner-only: the host locked our blade (we cut down an innocent). Start the visible countdown.
+# Owner-only: the host locked our blade after an NPC kill. Start the visible countdown.
 @rpc("authority", "call_local", "reliable")
 func _receive_kill_lockout(seconds: float) -> void:
 	_kill_lockout_display = seconds
 	if _mhud != null:
-		_mhud.add_log("You cut down an innocent — blade locked for %ds." % int(round(seconds)))
+		_mhud.add_log("Blade locked — lay low for %ds after a crowd kill." % int(round(seconds)))
 	_update_kill_lockout_banner()
 
 

@@ -88,14 +88,18 @@ sightline lengths all measured before/after).
   `_target_portrait_subject_by_hunter`, and refreshed to "?"/real on the target's disguise
   start/end. Classic mode unchanged (the plate stays an earned marks-first reveal). This is a
   deliberate reveal of a LOOK, never of which body is human — identity rule #5 holds.
-- **BLADE LOCKOUT: killing an innocent locks your kills for 10s (playtest request)** — a wrong
-  kill (any NPC that isn't your mark) now sets `wrong_kill_lockout_seconds` (10s, exported on
-  KillComponent) during which you can't kill ANYONE — melee and poison both rejected on the
-  authority (relayed client requests included); counter-stunning your hunter deliberately stays
-  legal (defence, not a kill). Stored as a timestamp (no per-frame ticking). The owner sees a red
-  "BLADE LOCKED — Ns" countdown banner bottom-centre (above the ability bar) plus log lines on
-  start/end; offline harness logs it too. Verified headless: whiff locks, locked kill rejected,
-  post-lockout kill lands.
+- **BLADE LOCKOUT: killing ANY NPC locks your kills for 10s (playtest request)** — killing a crowd
+  member — your NPC mark, an innocent you whiff on, or a poisoned civilian — sets
+  `npc_kill_cooldown_seconds` (10s, exported on KillComponent) during which you can't kill ANYONE.
+  Melee and poison both rejected on the authority (relayed client requests included); killing your
+  player PREY never starts it, and counter-stunning your hunter stays legal even during it (defence,
+  not a kill — losing it after every objective kill would be brutal). Stored as a timestamp (no
+  per-frame ticking). The owner sees a red "BLADE LOCKED — Ns" countdown banner bottom-centre (above
+  the ability bar) plus log lines on start/end; offline harness logs it too. Verified headless:
+  NPC kill locks, locked kill rejected, post-lockout kill lands.
+  *(Reconciled with a parallel cloud-agent commit that added a 5s version firing on the same NPC
+  kills but also blocking counter-stun — merged into this single 10s system: any NPC kill, HUD
+  countdown, counter-stun kept legal.)*
 - **Stunned players can no longer fire tools (playtest bug)** — being stunned (smoke cloud /
   firecracker / counter-stun) blocked movement and kills but NOT abilities, so a stunned player
   could smoke their way out of the punish window. All three stun sources already funnel through
@@ -111,8 +115,16 @@ sightline lengths all measured before/after).
   60s ≈ forever in a 5-min round. Now: `charge_regen_seconds` 60→**30**, the regen countdown ships
   in the item-state push (5th slot field) and the ability slot shows **"+Ns"** while recharging —
   online and offline both.
-- **Not yet verified**: a 2-instance online playtest of the new maps/crowd (same standing caveat as
-  the rest of `prayer`).
+- **Hunter heartbeat (level 1) gated to on-screen** (merged from a parallel session) — the NEAR cue
+  used to trigger inside a 900px radius, so an off-screen hunter sped up your heartbeat as they
+  approached, letting you stand still and triangulate them. The host now grades level 1 by whether
+  the hunter sits inside the prey's visible camera box (new `view_half_width_px` /
+  `view_half_height_px` exports; `danger_near_px` removed). Level 2 (`danger_close_px`) unchanged.
+- **Removed the red screen-edge danger vignette** (merged from a parallel session) — `DangerOverlay`
+  is audio-only now; the heartbeat carries the tension. The host level plumbing (0/1/2) is untouched
+  so the glow can be restored later.
+- **Not yet verified**: a 2-instance online playtest of the new maps/crowd + the reconciled cooldown
+  (same standing caveat as the rest of `prayer`).
 
 ## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
 

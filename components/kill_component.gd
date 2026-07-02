@@ -37,11 +37,13 @@ class_name KillComponent
 ## for your player target). Big on purpose: from a player's normal contract floor (~2 marks + 2
 ## abilities), one wrong-target kill pushes them over the 100 exposure cliff and lights them up.
 @export var wrong_commit_exposure: float = 40.0
-## After killing an INNOCENT civilian, your blade is LOCKED for this long (seconds): you can't
-## kill ANYONE (counter-stunning your hunter still works — it's defence, not a kill). Makes
-## crowd-reading matter: swinging at the wrong person costs you the next ten seconds of offence,
-## not just exposure. Enforced on the authority, so relayed client requests are rejected too.
-@export var wrong_kill_lockout_seconds: float = 10.0
+## After you kill any NPC — a crowd member: your NPC MARK, an innocent you whiff on, or a poisoned
+## civilian — your blade is LOCKED for this long: you can't KILL anyone (a forced lay-low window so
+## you can't chain-strike through the crowd). Killing a real PLAYER (your prey) never starts it, and
+## COUNTER-STUNNING your hunter stays legal even during it — that's defence, not a kill, and losing it
+## after every objective kill would be brutal. Host-authoritative (relayed client requests rejected
+## too); the owner sees a "BLADE LOCKED — Ns" countdown at the bottom of the screen. Unit: seconds.
+@export var npc_kill_cooldown_seconds: float = 10.0
 
 ## Input action that locks/commits. Local co-op assigns each player their own.
 @export var action_primary_action: String = "action_primary"
@@ -55,7 +57,7 @@ class_name KillComponent
 ## Emitted each time a real kill lands (used by scoring).
 signal kill_landed
 
-## Emitted (authority) when a wrong kill LOCKS this player's blade, with the lockout length —
+## Emitted (authority) when an NPC kill LOCKS this player's blade, with the lockout length —
 ## the match relays it to the owner so their HUD can show the countdown.
 signal kill_lockout_started(seconds: float)
 
@@ -67,6 +69,15 @@ var _kill_lockout_until_msec: int = 0
 # Seconds of blade lockout remaining (0 = free to kill). HUDs read this for the countdown.
 func kill_lockout_left() -> float:
 	return maxf(0.0, float(_kill_lockout_until_msec - Time.get_ticks_msec()) / 1000.0)
+
+
+# Start the blade lockout after an NPC kill. Sets the timestamp and announces it so the match can
+# relay a countdown to the owner's HUD. One place, called by every NPC-kill path (melee + poison).
+func _begin_kill_lockout() -> void:
+	if npc_kill_cooldown_seconds <= 0.0:
+		return
+	_kill_lockout_until_msec = Time.get_ticks_msec() + int(npc_kill_cooldown_seconds * 1000.0)
+	kill_lockout_started.emit(npc_kill_cooldown_seconds)
 
 ## Emitted when a suspect lock is gained/lost, so the HUD can show "LOCKED".
 signal lock_changed(is_locked: bool)
@@ -257,8 +268,8 @@ func request_kill(target_path: NodePath) -> void:
 			counter_stun_requested.emit(target)
 		return
 
-	# BLADE LOCKOUT: after killing an innocent you can't kill anyone for a while. Checked AFTER
-	# the counter-stun branch on purpose — stunning the hunter closing on you stays legal.
+	# BLADE LOCKOUT: after an NPC kill you can't kill anyone for a while. Checked AFTER the
+	# counter-stun branch on purpose — stunning the hunter closing on you stays legal.
 	if kill_lockout_left() > 0.0:
 		return
 
@@ -267,7 +278,8 @@ func request_kill(target_path: NodePath) -> void:
 		return
 	if target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller):
 		# A real player (always fair game) or your designated NPC mark — a clean kill.
-		# Pass `controller` so a killed PLAYER gets stamped for kill attribution.
+		# Pass `controller` so a killed PLAYER gets stamped for kill attribution. The lockout is
+		# started inside _apply_clean_kill, only when the victim was an NPC (never a player kill).
 		_apply_clean_kill(target, controller)
 	else:
 		_apply_whiff(target)
@@ -335,12 +347,18 @@ func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
 	if attacker_peer >= 0 and target.is_in_group("player"):
 		target.set("last_attacker_peer", attacker_peer)
 		target.set("last_attacker_method", "blade")  # a melee assassination, for the death screen
+	# An NPC MARK kill starts the blade lockout (a player prey kill never does). A player is in
+	# BOTH "player" and "killable_for_N"; an NPC mark is only in the latter — so is_in_group("player")
+	# is what separates a player kill from an NPC-mark kill. Done before die() frees the target.
+	var victim_is_player := target.is_in_group("player")
 	# die() fires `died` synchronously → the host scores this kill (_award_kill_bonuses) NOW. We apply
 	# the killer's own exposure spike AFTERWARDS so the exposure modifier reflects your APPROACH
 	# exposure (an unseen approach = the full bonus), not the unavoidable post-kill spike.
 	if target.has_method("die"):
 		target.die()
 	_exposure.add_exposure(kill_exposure_spike, "kill")
+	if not victim_is_player:
+		_begin_kill_lockout()  # killed an NPC mark → lay low (the crowd-kill cooldown)
 
 
 # POISON (host-authoritative): a validated, DELAYED, QUIET kill. The target is committed NOW (pulled
@@ -362,6 +380,8 @@ func host_poison(target: Node2D, delay: float) -> bool:
 	if target.get("is_poisoned") != null:
 		target.set("is_poisoned", true)  # crowd-reaction skips a poisoned death
 	_strip_killable(target)  # committed — no second kill, and they keep walking until they drop
+	if not target.is_in_group("player"):
+		_begin_kill_lockout()  # poisoning an NPC is an NPC kill → same lay-low window
 	var tree := get_tree()
 	tree.create_timer(maxf(0.05, delay)).timeout.connect(func() -> void:
 		if not is_instance_valid(target):
@@ -388,13 +408,11 @@ func _strip_killable(target: Node) -> void:
 
 # A whiff: you committed to the WRONG person. They still die, but you take a HEAVY exposure
 # hit (softened only if Phase 9's 9A experiment lowered exposure_penalty_multiplier; it's 1.0
-# by default) AND your blade LOCKS for wrong_kill_lockout_seconds — no kills on anyone until
-# it lifts. Cutting down an innocent in the crowd is a glaring tell with a real price.
+# by default) AND your blade LOCKS (npc_kill_cooldown_seconds) — no kills on anyone until it
+# lifts. Cutting down an innocent in the crowd is a glaring tell with a real price.
 func _apply_whiff(target: Node2D) -> void:
 	_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
-	if wrong_kill_lockout_seconds > 0.0:
-		_kill_lockout_until_msec = Time.get_ticks_msec() + int(wrong_kill_lockout_seconds * 1000.0)
-		kill_lockout_started.emit(wrong_kill_lockout_seconds)
+	_begin_kill_lockout()  # cut down an innocent NPC → same lay-low window as a mark kill
 	kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
 	if target.has_method("die"):
 		target.die()
