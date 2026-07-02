@@ -36,15 +36,16 @@ var _taken_assassins: Array = []
 ## Host-only: which body id each peer has claimed (body_id String -> peer int). Never broadcast as a map.
 var _assassin_claims: Dictionary = {}
 ## Tool names in ItemComponent.Tool order, so an OptionButton's selected index IS the tool id.
-const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison", "Firecracker"]
+const TOOL_NAMES := ["Smoke", "Disguise", "Morph", "Decoy", "Poison", "Firecracker", "Clones"]
 ## One-line "what does it do" for each tool, shown in the lobby so players can choose informed.
 const TOOL_DESCRIPTIONS := [
 	"Smoke — drop a cloud at your feet; anyone caught inside (a chasing hunter included) is stunned and can't kill for a few seconds.",
-	"Disguise — aim at a civilian and look like them for 30s, breaking a pursuer's lock (you still see yourself normally).",
+	"Disguise — aim at a civilian and look like them for 14s, breaking a pursuer's lock. RUNNING breaks it — walk calmly to keep the cover.",
 	"Morph — turn nearby civilians into copies of YOU for a few seconds, so a hunter can't tell which one is real.",
 	"Decoy — spook the civilian you're aiming at into bolting, baiting a hunter into a wrong kill.",
 	"Poison — a delayed, silent kill: your target drops a few seconds later with no crowd panic, so you walk away clean.",
 	"Firecracker — throw a flashbang: every player caught in the burst is briefly stunned (can't move or kill). A panic button to break a chase or interrupt a hunter closing in.",
+	"Clones — turn the two nearest civilians into moving copies of YOU that scatter off in their own directions at your pace, so a hunter sees three of you walking apart and has to pick one.",
 ]
 ## Passive PERKS, in OnlineMatch's perk-id order (the picker index IS the perk id). One per match.
 const PERK_NAMES := ["None", "Ghost", "Blender", "Swift", "Survivor"]

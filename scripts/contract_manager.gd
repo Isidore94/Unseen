@@ -98,9 +98,11 @@ func _setup() -> void:
 func _designate_mark(npc: Npc) -> void:
 	npc.add_to_group(valid_target_group_name)
 	npc.add_to_group("mark")
-	# Pin the mark LOCAL (buildplan note 13): from now it loiters as a homebody around
-	# where it stands, so you can learn its patch instead of chasing it across the map.
+	# Pin the mark LOCAL (buildplan note 13): stay_local switches it off the errand system
+	# onto short trips around where it stands, so you can learn its patch instead of
+	# chasing it across the map.
 	npc.is_traveler = false
+	npc.stay_local = true
 	npc.home_position = npc.global_position
 	npc.wander_radius = mark_wander_radius
 	npc.died.connect(_on_mark_killed)

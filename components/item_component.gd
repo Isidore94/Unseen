@@ -22,7 +22,7 @@ class_name ItemComponent
 # Authority: offline this copy acts directly. Online the controlling client only READS its keys and
 # sends a request; the HOST owns charges + effects and applies them (server-authoritative).
 
-enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON, FIRECRACKER }
+enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON, FIRECRACKER, CLONES }
 
 ## The TWO tools this player brought, by slot (0 = item_primary key, 1 = item_secondary key).
 ## Set from the lobby pick (online: stamped into spawn data; offline: left at this default).
@@ -32,6 +32,12 @@ enum Tool { SMOKE, DISGUISE, MORPH, DECOY, POISON, FIRECRACKER }
 ## keys and can't activate a tool — but the authority's timers keep ticking so any tool that was
 ## already active still expires/reverts cleanly.
 var owner_dead: bool = false
+
+## True while this player is STUNNED (smoke cloud / firecracker / counter-stun). Set by the host on
+## its authoritative copy (OnlineMatch._set_player_stunned), so a stunned player can't fire tools —
+## stunned means can't move, can't kill, AND can't tool your way out (no smoke-inside-a-smoke).
+## The client's own copy never learns it; the host rejecting the relayed request is what counts.
+var owner_stunned: bool = false
 
 # === per-tool tunables (charges / cooldown / effect, all editable — Principle #6) ============
 ## SMOKE
@@ -44,10 +50,17 @@ var owner_dead: bool = false
 ## person stays stunned (can't move, can't kill).
 @export var smoke_cloud_seconds: float = 4.5
 @export var smoke_stun_seconds: float = 3.0
-## DISGUISE — look like a random commoner to others for this long.
+## DISGUISE — look like the targeted civilian to others for this long. Was 30s: at half a
+## minute (with charge regen) a player could be visually anonymous ~40% of a 5-minute round,
+## which hard-countered the reveal/faceplate system — the hunter's only ID tool. 14s turns it
+## into a "walk calmly past your hunter" window instead of a passive identity eraser.
 @export var disguise_charges: int = 1
 @export var disguise_cooldown_seconds: float = 0.0
-@export var disguise_seconds: float = 30.0
+@export var disguise_seconds: float = 14.0
+## Moving faster than this (px/s) BREAKS an active disguise — running blows your cover, the
+## classic AC rule. Sits between the walk speed (90) and run speed (220), so blend-walking
+## keeps the disguise and sprinting sheds it. Enforced by the authority (host online).
+@export var disguise_break_speed: float = 140.0
 ## MORPH — re-skin this many nearby NPCs to your look, for this long.
 @export var morph_charges: int = 1
 @export var morph_cooldown_seconds: float = 0.0
@@ -67,6 +80,25 @@ var owner_dead: bool = false
 ## live on OnlineMatch since the effect is applied there).
 @export var firecracker_charges: int = 1
 @export var firecracker_cooldown_seconds: float = 12.0
+## CLONES — turn the nearest crowd NPCs into moving copies of YOU that mirror your heading for a few
+## seconds, so a hunter sees several identical bodies and can't tell which is real. The spawn + the
+## per-frame "drive them in your direction" effect are applied by the authority's match script; this
+## component just owns the charge/cooldown bookkeeping (Principle #1/#3).
+@export var clones_charges: int = 1
+@export var clones_cooldown_seconds: float = 20.0
+## How long the clones keep mirroring you before they revert to ordinary crowd (seconds).
+@export var clones_seconds: float = 6.0
+## How many copies to make (the two the design calls for).
+@export var clones_count: int = 2
+## Only crowd NPCs within this many world px of you can be converted into a clone.
+@export var clones_radius: float = 300.0
+## Safety cap on a clone's speed, as a multiple of an NPC's normal walk speed, so a sprinting caster's
+## clones can keep pace without teleporting. 1.0 = NPC walk speed.
+@export var clones_max_speed_scale: float = 3.0
+## How far (px) each clone's DIVERGING walk target sits from the caster. Clones now fan out on
+## their own navigation paths (left/right/behind your heading) at your pace, instead of mirroring
+## your heading in lockstep — a synchronized trio was itself a tell that marked the whole group.
+@export var clones_scatter_distance_px: float = 420.0
 
 ## Exposure (0-100) ADDED to the user each time an ability is used — a FLAT spike for every tool, so
 ## any ability use reads the same on your hunter's arrow. It then decays over ~a minute
@@ -89,7 +121,9 @@ signal charges_regenerated(slot: int)
 
 ## CHARGE REGEN: a spent charge comes back after this many seconds (0 = no regen — the classic
 ## consumable kit). One charge regenerates at a time, up to each tool's max. Host-authoritative.
-@export var charge_regen_seconds: float = 60.0
+## 30s (was 60): in a 5-minute round a minute-long recharge read as "my tool is gone forever" —
+## half that keeps tools in rotation while still making each use a real decision.
+@export var charge_regen_seconds: float = 30.0
 
 # Per-SLOT live state (index 0 / 1).
 var _charges: Array[int] = [0, 0]
@@ -156,6 +190,7 @@ func charges_for_tool(tool: int) -> int:
 		Tool.DECOY: return decoy_charges
 		Tool.POISON: return poison_charges
 		Tool.FIRECRACKER: return firecracker_charges
+		Tool.CLONES: return clones_charges
 	return 1
 
 func exposure_for_tool(tool: int) -> float:
@@ -173,6 +208,7 @@ func cooldown_for_tool(tool: int) -> float:
 		Tool.DECOY: return decoy_cooldown_seconds
 		Tool.POISON: return poison_cooldown_seconds
 		Tool.FIRECRACKER: return firecracker_cooldown_seconds
+		Tool.CLONES: return clones_cooldown_seconds
 	return 0.0
 
 # Duration of the slot's "active" readout (0 for instant tools). Smoke counts the cloud's life.
@@ -181,6 +217,7 @@ func duration_for_tool(tool: int) -> float:
 		Tool.SMOKE: return smoke_cloud_seconds
 		Tool.DISGUISE: return disguise_seconds
 		Tool.MORPH: return morph_seconds
+		Tool.CLONES: return clones_seconds
 	return 0.0
 
 static func tool_name(tool: int) -> String:
@@ -191,6 +228,7 @@ static func tool_name(tool: int) -> String:
 		Tool.DECOY: return "DECOY"
 		Tool.POISON: return "POISON"
 		Tool.FIRECRACKER: return "FIRECRACKER"
+		Tool.CLONES: return "CLONES"
 	return "—"
 
 # A MatchHud icon id for each tool (we reuse the existing PixelLab UI icons).
@@ -202,6 +240,7 @@ static func tool_icon(tool: int) -> String:
 		Tool.DECOY: return "ui_flag"
 		Tool.POISON: return "ui_target"
 		Tool.FIRECRACKER: return "ui_flag"
+		Tool.CLONES: return "ui_intel"
 	return "ui_coin"
 
 
@@ -221,6 +260,13 @@ func cooldown_left_slot(slot: int) -> float:
 func active_left_slot(slot: int) -> float:
 	return _active_left[slot]
 
+# Seconds until this slot's next charge regenerates, or 0 when it's already full (so the HUD
+# only shows a recharge countdown while one is actually pending).
+func regen_left_slot(slot: int) -> float:
+	if charge_regen_seconds <= 0.0 or _charges[slot] >= charges_for_tool(_tool(slot)):
+		return 0.0
+	return maxf(0.0, _regen_left[slot])
+
 func is_active_slot(slot: int) -> bool:
 	return _active_left[slot] > 0.0
 
@@ -239,6 +285,15 @@ func _physics_process(delta: float) -> void:
 	for slot in 2:
 		if _cooldown_left[slot] > 0.0:
 			_cooldown_left[slot] = maxf(0.0, _cooldown_left[slot] - delta)
+		# DISGUISE breaks on RUNNING (the classic AC rule): the authority watches the owner's
+		# actual body speed, so a sprint sheds the disguise immediately. Checked before the
+		# normal countdown so the expiry fires this same frame (and only once — the countdown
+		# below skips a slot already at 0).
+		if _active_left[slot] > 0.0 and _tool(slot) == Tool.DISGUISE:
+			var body := get_parent() as CharacterBody2D
+			if body != null and body.velocity.length() > disguise_break_speed:
+				_active_left[slot] = 0.0
+				tool_expired.emit(Tool.DISGUISE, slot)
 		if _active_left[slot] > 0.0:
 			_active_left[slot] = maxf(0.0, _active_left[slot] - delta)
 			if _active_left[slot] == 0.0:
@@ -288,6 +343,12 @@ func _activate(slot: int) -> void:
 		return
 	if owner_dead:
 		return  # server-authoritative guard: a dead player can't fire a tool (covers the relayed request too)
+	if owner_stunned:
+		return  # stunned = frozen: no kills, no movement, and no tools (covers the relayed request too)
+	# NOTE: compared with `== true` (not bool()) because a parent without the property returns
+	# null, and bool(null) crashes — same trap documented in KillComponent.request_kill.
+	if get_parent().get("_net_frozen") == true:
+		return  # round-start countdown: kills are blocked (KillComponent checks this) — tools are too
 	if not slot_unlocked[slot]:
 		return  # PvE ladder: slot not unlocked this life (host-authoritative — rejects the relayed request too)
 	if _charges[slot] <= 0 or _cooldown_left[slot] > 0.0 or _active_left[slot] > 0.0:

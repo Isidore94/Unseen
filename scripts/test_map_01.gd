@@ -232,11 +232,13 @@ func random_walkable_point_near(center: Vector2, radius: float) -> Vector2:
 
 
 # A random walkable point in one of the EDGE cells — where map-crossing NPCs enter from.
+# "Edge" means the perimeter RING (row/col 1 from each side): the true border rows are all
+# wall in every layout, so the old row-0 test never matched and this always fell back.
 func random_edge_walkable_point() -> Vector2:
 	var edge_cells: Array = []
 	for row in _rows():
 		for col in _cols():
-			var on_edge: bool = row == 0 or row == _rows() - 1 or col == 0 or col == _cols() - 1
+			var on_edge: bool = row <= 1 or row >= _rows() - 2 or col <= 1 or col >= _cols() - 2
 			if on_edge and not _is_solid(col, row):
 				edge_cells.append(_cell_rect(col, row))
 	if edge_cells.is_empty():
@@ -280,6 +282,207 @@ func even_spawn_points(count: int) -> Array:
 			else:
 				points.append(cell.get_center())
 	return points
+
+
+# === errand destinations (the "walking with intent" crowd) =================
+# Instead of wandering to random points, crowd NPCs walk ERRANDS between POINTS OF INTEREST.
+# The map is split into a 3x3 grid of NINE errand districts (finer than the four gameplay
+# zones — quadrants proved too coarse: a quadrant looked "full" while all its NPCs hugged
+# the centre side, and the corners drained empty). Each district keeps its own POI list and
+# its own live population; most errands are LOCAL (inside the district), and the crossings
+# are weighted toward UNDER-populated + NEARBY districts — so empty corners actively pull
+# walkers in, while long hauls through the central plaza stay rare.
+#
+# POIs are "doorway" points — spots at the EDGE of a street cell, against a building —
+# plus landmarks (fountain plaza, bridges, roofed alleys, sewer entrances). So a lingering
+# NPC stands where a person would stand (a doorway, an awning, the fountain rim), never in
+# the middle of the road.
+
+## How many errand POIs to keep per 3x3 district (spread via farthest-first selection).
+## Keep this generous: with too few shared magnets, several NPCs pile onto the same spot.
+@export var errand_pois_per_region: int = 12
+## Random scatter (px) added around every errand destination, so ten NPCs "at the fountain"
+## stand in a loose cluster instead of stacking on one exact point. Must comfortably exceed
+## an NPC's avoidance radius (40) or arrivals at a shared spot deadlock into jostling.
+@export var errand_arrival_jitter_px: float = 70.0
+## How often (seconds, at most) the per-district NPC population is recounted for the
+## under-population weighting. Counting is cheap but happens on every errand pick, so a
+## short cache keeps a 100-NPC crowd from re-counting itself dozens of times a second.
+@export var errand_population_cache_seconds: float = 0.5
+## Weight multiplier for crossing to a FAR district (2+ steps away on the 3x3 grid, e.g.
+## corner to opposite corner) versus an adjacent one. Far crossings are the legs that cut
+## through the central plaza — keep them rare and the middle stops being a commuter river.
+@export_range(0.0, 1.0, 0.05) var errand_far_crossing_weight: float = 0.4
+## A LOCAL errand tries to land at least this far away (px), so it reads as a purposeful
+## trip down the street — not the old shuffle-in-place.
+@export var errand_local_min_distance_px: float = 200.0
+## When a district holds MORE than this multiple of the average district population, NPCs
+## there always CROSS away instead of staying local — people disperse from a packed square.
+## This is the safety valve that stops any one spot (the fountain plaza) becoming a sink.
+@export var errand_overcrowd_ratio: float = 1.35
+
+var _errand_pois_by_region: Dictionary = {}  ## district int (0-8) -> Array[Vector2], built lazily once
+var _region_population_cache: Dictionary = {}
+var _region_population_cached_at: float = -1000.0
+
+
+# Which 3x3 errand district a world point falls in: 0..8, row-major (0 = NW corner,
+# 4 = centre, 8 = SE corner). Independent of the gameplay Zone quadrants on purpose.
+func _errand_region_of(point: Vector2) -> int:
+	var col3 := clampi(int((point.x + play_half_width) / (2.0 * play_half_width / 3.0)), 0, 2)
+	var row3 := clampi(int((point.y + play_half_height) / (2.0 * play_half_height / 3.0)), 0, 2)
+	return row3 * 3 + col3
+
+
+# How many steps apart two districts sit on the 3x3 grid (Chebyshev distance: adjacent
+# and diagonal-adjacent are both 1; corner to opposite corner is 2).
+func _errand_region_distance(a: int, b: int) -> int:
+	return maxi(absi(a % 3 - b % 3), absi(a / 3 - b / 3))
+
+
+# A purposeful destination for a crowd NPC standing at `from_pos`. With `prefer_local`
+# true, a LOCAL errand in the current district (the NPC does a few of those per visit —
+# its "neighbourhood business" — which is what keeps districts populated instead of the
+# whole crowd being permanently mid-commute); otherwise a CROSSING weighted toward
+# under-populated + nearby districts. The NPC controls that cadence (npc.gd,
+# local_legs_between_crossings). Called each time an errand leg ends (host/offline only).
+func errand_destination(from_pos: Vector2, prefer_local: bool = false) -> Vector2:
+	_build_errand_pois()
+	var current_region := _errand_region_of(from_pos)
+	var populations := _region_populations()
+	# OVERCROWD exodus: if this district is packed well past the average, always leave —
+	# people disperse from a crammed square. Without this, popular spots became sinks.
+	var total_population := 0
+	for value in populations.values():
+		total_population += int(value)
+	var average_population := float(total_population) / 9.0
+	var overcrowded: bool = average_population > 0.0 \
+		and float(populations.get(current_region, 0)) > errand_overcrowd_ratio * average_population
+	if prefer_local and not overcrowded:
+		var local: Array = _errand_pois_by_region.get(current_region, [])
+		if not local.is_empty():
+			# Try for a spot a proper walk away, so it reads as a trip, not a shuffle.
+			for _attempt in 4:
+				var poi: Vector2 = local[randi() % local.size()]
+				if poi.distance_to(from_pos) >= errand_local_min_distance_px:
+					return _jittered_poi(poi)
+			return _jittered_poi(local[randi() % local.size()])
+	# CROSSING: weight each other district by 1/(1+population) — empty districts pull
+	# hardest, so drained corners refill — damped for FAR districts (long hauls through
+	# the middle stay the exception).
+	var regions: Array = []
+	var weights: Array = []
+	var total_weight := 0.0
+	for region in _errand_pois_by_region:
+		if region == current_region or (_errand_pois_by_region[region] as Array).is_empty():
+			continue
+		var weight: float = 1.0 / (1.0 + float(populations.get(region, 0)))
+		if _errand_region_distance(current_region, int(region)) >= 2:
+			weight *= errand_far_crossing_weight
+		regions.append(region)
+		weights.append(weight)
+		total_weight += weight
+	if regions.is_empty():
+		return random_walkable_point()
+	var pick := randf() * total_weight
+	var chosen: int = regions[0]
+	for i in regions.size():
+		if pick < float(weights[i]):
+			chosen = regions[i]
+			break
+		pick -= float(weights[i])
+	var pois: Array = _errand_pois_by_region[chosen]
+	return _jittered_poi(pois[randi() % pois.size()])
+
+
+# The POI plus a random scatter, so simultaneous visitors to one spot spread into a loose
+# cluster (see errand_arrival_jitter_px). If the scattered point lands in a wall we keep the
+# raw POI — the navigation system clamps any target onto the walkable mesh regardless.
+func _jittered_poi(poi: Vector2) -> Vector2:
+	var offset := Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * errand_arrival_jitter_px
+	var candidate := poi + offset
+	return candidate if _is_point_walkable(candidate) else poi
+
+
+# Build the per-district POI lists once: doorway points on every street cell that touches a
+# building, plus landmark points (fountain ring, bridges, alleys, sewer pockets), then keep
+# a spread-out subset per district so errands cover each district evenly.
+func _build_errand_pois() -> void:
+	if not _errand_pois_by_region.is_empty():
+		return
+	var candidates_by_region: Dictionary = {}
+	for row in _rows():
+		for col in _cols():
+			if _is_solid(col, row):
+				continue
+			var poi := _doorway_point(col, row)
+			if poi == Vector2.INF:
+				# No adjacent building (an open plaza cell) — alleys/bridges still count as POIs.
+				if not (_is_alley(col, row) or _is_bridge(col, row)):
+					continue
+				poi = _cell_center(col, row)
+			var region := _errand_region_of(poi)
+			if not candidates_by_region.has(region):
+				candidates_by_region[region] = [] as Array[Vector2]
+			(candidates_by_region[region] as Array[Vector2]).append(poi)
+	# Landmarks: a ring of points around the fountain plaza (people gravitate to the centre).
+	if _has_fountain():
+		var centre := _fountain_center()
+		for i in 8:
+			var angle := TAU * float(i) / 8.0
+			var point := centre + Vector2(cos(angle), sin(angle)) * (fountain_radius + 110.0)
+			if _is_point_walkable(point):
+				var region2 := _errand_region_of(point)
+				if not candidates_by_region.has(region2):
+					candidates_by_region[region2] = [] as Array[Vector2]
+				(candidates_by_region[region2] as Array[Vector2]).append(point)
+	# Sewer pockets give the corners a destination too.
+	for entrance in _sewer_entrances:
+		var region3 := _errand_region_of(entrance)
+		if not candidates_by_region.has(region3):
+			candidates_by_region[region3] = [] as Array[Vector2]
+		(candidates_by_region[region3] as Array[Vector2]).append(entrance)
+	# Keep a spread-out subset per district so POIs don't clump on one street.
+	for region in candidates_by_region:
+		var typed: Array[Vector2] = []
+		typed.assign(candidates_by_region[region])
+		_errand_pois_by_region[region] = _pick_spread_points(typed, errand_pois_per_region)
+
+
+# The "stand in the doorway" point of a street cell: its centre nudged toward one adjacent
+# building, as far as the walkable inset allows. Returns Vector2.INF if no building touches
+# this cell (a mid-plaza cell — not a natural place to stand around).
+func _doorway_point(col: int, row: int) -> Vector2:
+	var directions: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	var toward_building := Vector2i.ZERO
+	var options: Array[Vector2i] = []
+	for offset in directions:
+		if _building_at(col + offset.x, row + offset.y):
+			options.append(offset)
+	if options.is_empty():
+		return Vector2.INF
+	toward_building = options[(col * 31 + row * 17) % options.size()]  # stable pick per cell
+	var cell := _cell_rect(col, row)
+	var max_nudge_x := maxf(0.0, cell.size.x * 0.5 - solid_clearance - 6.0)
+	var max_nudge_y := maxf(0.0, cell.size.y * 0.5 - solid_clearance - 6.0)
+	return cell.get_center() + Vector2(toward_building.x * max_nudge_x, toward_building.y * max_nudge_y)
+
+
+# NPCs per 3x3 district, cached briefly (see errand_population_cache_seconds). Uses the
+# live "npc" group so dead/despawned NPCs fall out automatically.
+func _region_populations() -> Dictionary:
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	if now - _region_population_cached_at < errand_population_cache_seconds:
+		return _region_population_cache
+	_region_population_cached_at = now
+	_region_population_cache = {}
+	for node in get_tree().get_nodes_in_group("npc"):
+		var body := node as Node2D
+		if body == null:
+			continue
+		var region := _errand_region_of(body.global_position)
+		_region_population_cache[region] = int(_region_population_cache.get(region, 0)) + 1
+	return _region_population_cache
 
 
 # Index of the open cell whose centre is nearest `target`, preferring cells not yet in `used` (so the
@@ -469,13 +672,12 @@ func _open_centers_in_zone(zone: Zone) -> Array[Vector2]:
 # === feature placement =====================================================
 func _define_features() -> void:
 	# Spawns: the four near-corner ring junctions — maximally far apart so no two
-	# players ever start adjacent (note 12, the spawn-spacing intent).
-	_player_spawns = [
-		_cell_center(1, 1),
-		_cell_center(_cols() - 2, 1),
-		_cell_center(1, _rows() - 2),
-		_cell_center(_cols() - 2, _rows() - 2),
-	]
+	# players ever start adjacent (note 12, the spawn-spacing intent). Each corner is
+	# SNAPPED to the nearest open cell, so a layout that builds over a corner (e.g. the
+	# Citadel's filled south row) can never spawn a player inside a wall.
+	_player_spawns = []
+	for corner: Vector2i in [Vector2i(1, 1), Vector2i(_cols() - 2, 1), Vector2i(1, _rows() - 2), Vector2i(_cols() - 2, _rows() - 2)]:
+		_player_spawns.append(_nearest_open_cell_center(corner))
 
 	# Marks: four well-separated spots, one per quarter, chosen farthest-first so any
 	# two picked for a contract are at least a couple of screens apart (note 13).
@@ -552,6 +754,37 @@ func _corner_pocket_points(zone: Zone, count: int) -> Array[Vector2]:
 	for i in mini(count, centers.size()):
 		pocket.append(centers[i])
 	return pocket
+
+
+# The centre of the OPEN cell nearest to `target` (grid coords). Used to keep hardcoded
+# feature spots (like the corner spawns) safe on ANY layout: if the target cell is solid,
+# we simply slide to the closest walkable cell instead of placing something inside a wall.
+func _nearest_open_cell_center(target: Vector2i) -> Vector2:
+	if target.x >= 0 and target.x < _cols() and target.y >= 0 and target.y < _rows() \
+			and not _is_solid(target.x, target.y):
+		return _cell_center(target.x, target.y)
+	var best := Vector2i(1, 1)
+	var best_distance := INF
+	for row in _rows():
+		for col in _cols():
+			if _is_solid(col, row):
+				continue
+			var d := float((Vector2i(col, row) - target).length_squared())
+			if d < best_distance:
+				best_distance = d
+				best = Vector2i(col, row)
+	return _cell_center(best.x, best.y)
+
+
+# How many walkable cells this layout has. The crowd spawners read this to size the crowd
+# to the map (NPCs per open cell), so density stays consistent across maps of any size.
+func open_cell_count() -> int:
+	var count := 0
+	for row in _rows():
+		for col in _cols():
+			if not _is_solid(col, row):
+				count += 1
+	return count
 
 
 # The world position of a zone's OUTER corner (the corner of the map nearest that quarter).
@@ -731,6 +964,16 @@ func _verify_connectivity() -> void:
 ]
 ## Colour of the plank BRIDGES that cross the canal (the canal itself is grid 'W'/'B' cells now).
 @export var bridge_color: Color = Color(0.55, 0.42, 0.27)
+## QUADRANT IDENTITY (orientation aid): each quarter tints its street floor very slightly with its
+## zone colour so you can tell at a glance which district you're in ("my mark lives in the rust
+## quarter"). This is the alpha of that tint — keep it LOW so characters stay readable (Pillar #6).
+@export_range(0.0, 0.3, 0.005) var zone_ground_tint_alpha: float = 0.06
+## …and each quarter biases its roofs toward ONE palette colour (NW terracotta, NE slate, SW ochre,
+## SE weathered grey) with this probability; the rest stay hash-random so no quarter is uniform.
+@export_range(0.0, 1.0, 0.05) var zone_roof_bias: float = 0.65
+## Floor colour of a roofed ALLEY cut-through ('a' cells) — darker paving, so when the roof fades
+## for you (you're inside), the passage floor reads as a distinct covered walkway.
+@export var alley_floor_color: Color = Color(0.42, 0.38, 0.30)
 
 var _noise_tex: ImageTexture = null
 ## Cached per-cell building style {Vector2i(col,row) -> {"roof","side","height"}}. Cells of one
@@ -771,6 +1014,20 @@ func _draw_stylized() -> void:
 	var play := Rect2(Vector2(-play_half_width, -play_half_height),
 		Vector2(2 * play_half_width, 2 * play_half_height))
 	draw_texture_rect(_stylized_ground(), play, false)
+	# QUADRANT tint: a faint wash of each zone's colour over its open cells, so the four
+	# districts read apart at a glance (orientation is a skill — callouts like "the rust
+	# quarter" need the quarters to actually look different).
+	if zone_ground_tint_alpha > 0.0:
+		for row in _rows():
+			for col in _cols():
+				if _is_solid(col, row):
+					continue
+				var zone := _cell_zone(col, row)
+				if zone == Zone.HUB:
+					continue  # the hub keeps the plain sand — it's the neutral centre
+				var tint := _zone_floor_color(zone)
+				tint.a = zone_ground_tint_alpha
+				draw_rect(_cell_rect(col, row), tint, true)
 	# Central plaza decal — a lighter paved circle to anchor the eye.
 	var centre := _fountain_center() if _has_fountain() else Vector2.ZERO
 	draw_circle(centre, 360.0, Color(sand_light.r, sand_light.g, sand_light.b, 0.55))
@@ -783,6 +1040,14 @@ func _draw_stylized() -> void:
 	draw_rect(Rect2(Vector2(-play_half_width, avenue.position.y), Vector2(2 * play_half_width, avenue.size.y)), pave, true)
 	# The canal feeding the fountain (drawn on the ground, under the buildings/fountain).
 	_draw_canal_and_bridges()
+	# ALLEY floors: darker paving under each roofed cut-through, so the passage reads as a
+	# covered walkway when its roof fades for the player standing inside it.
+	for row in _rows():
+		for col in _cols():
+			if _is_alley(col, row):
+				var alley_rect := _cell_rect(col, row)
+				draw_rect(alley_rect, alley_floor_color, true)
+				draw_rect(alley_rect, alley_floor_color.darkened(0.25), false, 2.0)
 	# Buildings as solid extruded blocks with PER-BUILDING colour + height (see _building_styles).
 	# Drawn in passes so adjacent cells of one building merge cleanly: shadows, side faces, roofs,
 	# then per-building roof detail (lit top edge + an overhang shadow on the front edge).
@@ -882,14 +1147,35 @@ func _building_styles() -> Dictionary:
 						continue
 					visited[nb] = true
 					stack.append(nb)
-			# Stable per-building style from a hash of its anchor cell.
+			# Stable per-building style from a hash of its anchor cell. QUADRANT BIAS: most
+			# buildings in a quarter take that quarter's signature roof colour (NW terracotta,
+			# NE slate, SW ochre, SE grey); the rest stay hash-random so no quarter is uniform.
 			var anchor: Vector2i = group[0]
-			var roof: Color = _roof_palette_color(_hash01(anchor.x * 31 + anchor.y * 17 + 7))
+			var roof: Color
+			if _hash01(anchor.x * 7 + anchor.y * 23 + 11) < zone_roof_bias:
+				roof = _zone_roof_color(_cell_zone(anchor.x, anchor.y))
+			else:
+				roof = _roof_palette_color(_hash01(anchor.x * 31 + anchor.y * 17 + 7))
 			var height: float = block_height * lerpf(0.7, 1.5, _hash01(anchor.x * 13 + anchor.y * 29 + 3))
 			var style := {"roof": roof, "side": roof.darkened(0.42), "height": height}
 			for cell in group:
 				_building_style_cache[cell] = style
 	return _building_style_cache
+
+
+# Each quarter's signature roof colour, picked from the palette by index (safe on any
+# palette size). NW=terracotta(1), NE=slate(3), SW=ochre(4), SE=weathered grey(2), HUB=tan(0).
+func _zone_roof_color(zone: Zone) -> Color:
+	if roof_palette.is_empty():
+		return block_roof
+	var index := 0
+	match zone:
+		Zone.NW: index = 1
+		Zone.NE: index = 3
+		Zone.SW: index = 4
+		Zone.SE: index = 2
+		_: index = 0
+	return roof_palette[index % roof_palette.size()]
 
 
 # Pick a roof colour from the palette by a 0..1 hash (falls back to block_roof if the palette is empty).

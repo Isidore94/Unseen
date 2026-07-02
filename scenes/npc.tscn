@@ -19,11 +19,11 @@ position = Vector2(-2.5, -10.75)
 shape = SubResource("RectangleShape2D_npc")
 
 [node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
-path_desired_distance = 16.0
-target_desired_distance = 24.0
+path_desired_distance = 28.0
+target_desired_distance = 52.0
 avoidance_enabled = true
-radius = 40.0
+radius = 24.0
 neighbor_distance = 170.0
-max_neighbors = 8
-time_horizon_agents = 1.0
-max_speed = 90.0
+max_neighbors = 5
+time_horizon_agents = 0.4
+max_speed = 110.0

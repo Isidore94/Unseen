@@ -37,6 +37,11 @@ class_name KillComponent
 ## for your player target). Big on purpose: from a player's normal contract floor (~2 marks + 2
 ## abilities), one wrong-target kill pushes them over the 100 exposure cliff and lights them up.
 @export var wrong_commit_exposure: float = 40.0
+## After killing an INNOCENT civilian, your blade is LOCKED for this long (seconds): you can't
+## kill ANYONE (counter-stunning your hunter still works — it's defence, not a kill). Makes
+## crowd-reading matter: swinging at the wrong person costs you the next ten seconds of offence,
+## not just exposure. Enforced on the authority, so relayed client requests are rejected too.
+@export var wrong_kill_lockout_seconds: float = 10.0
 
 ## Input action that locks/commits. Local co-op assigns each player their own.
 @export var action_primary_action: String = "action_primary"
@@ -49,6 +54,19 @@ class_name KillComponent
 
 ## Emitted each time a real kill lands (used by scoring).
 signal kill_landed
+
+## Emitted (authority) when a wrong kill LOCKS this player's blade, with the lockout length —
+## the match relays it to the owner so their HUD can show the countdown.
+signal kill_lockout_started(seconds: float)
+
+## When the current blade lockout ends (engine milliseconds). A TIMESTAMP instead of a ticking
+## timer, so no per-frame work is needed and every copy that asks gets the same answer.
+var _kill_lockout_until_msec: int = 0
+
+
+# Seconds of blade lockout remaining (0 = free to kill). HUDs read this for the countdown.
+func kill_lockout_left() -> float:
+	return maxf(0.0, float(_kill_lockout_until_msec - Time.get_ticks_msec()) / 1000.0)
 
 ## Emitted when a suspect lock is gained/lost, so the HUD can show "LOCKED".
 signal lock_changed(is_locked: bool)
@@ -239,6 +257,11 @@ func request_kill(target_path: NodePath) -> void:
 			counter_stun_requested.emit(target)
 		return
 
+	# BLADE LOCKOUT: after killing an innocent you can't kill anyone for a while. Checked AFTER
+	# the counter-stun branch on purpose — stunning the hunter closing on you stays legal.
+	if kill_lockout_left() > 0.0:
+		return
+
 	# A normal kill or whiff needs the tighter kill_range.
 	if distance > kill_range:
 		return
@@ -288,6 +311,8 @@ func _resolve_on(target: Node2D) -> void:
 		return  # different plane, or you're in the no-kill sewer (buildplan §7.2c)
 	if not can_kill:
 		return  # Phase 9 (9A) gate — disarmed during a whiff recovery window. Default = no effect.
+	if kill_lockout_left() > 0.0:
+		return  # blade locked after killing an innocent (offline resolve path)
 	_play_strike()
 	if target.is_in_group("player") or target.is_in_group(valid_target_group_name):
 		# A real player (always fair game) or your mark — clean kill (full permanent
@@ -326,6 +351,8 @@ func _apply_clean_kill(target: Node2D, attacker_peer: int) -> void:
 func host_poison(target: Node2D, delay: float) -> bool:
 	if target == null or target == _body or not is_instance_valid(target):
 		return false
+	if kill_lockout_left() > 0.0:
+		return false  # blade locked — poison is a kill too (the tool charge gets refunded)
 	var controller := int(_body.get("controlling_peer_id"))
 	var is_valid: bool = target.is_in_group("player") or target.is_in_group("killable_for_%d" % controller)
 	# NO strike animation: poison is a totally silent, deniable kill. The poisoner gets text feedback
@@ -361,9 +388,13 @@ func _strip_killable(target: Node) -> void:
 
 # A whiff: you committed to the WRONG person. They still die, but you take a HEAVY exposure
 # hit (softened only if Phase 9's 9A experiment lowered exposure_penalty_multiplier; it's 1.0
-# by default). Cutting down an innocent in the crowd is a glaring tell.
+# by default) AND your blade LOCKS for wrong_kill_lockout_seconds — no kills on anyone until
+# it lifts. Cutting down an innocent in the crowd is a glaring tell with a real price.
 func _apply_whiff(target: Node2D) -> void:
 	_exposure.add_exposure(wrong_commit_exposure * exposure_penalty_multiplier, "innocent_kill")
+	if wrong_kill_lockout_seconds > 0.0:
+		_kill_lockout_until_msec = Time.get_ticks_msec() + int(wrong_kill_lockout_seconds * 1000.0)
+		kill_lockout_started.emit(wrong_kill_lockout_seconds)
 	kill_resolved.emit(_body, target, false)  # Phase 9 hook — whiff outcome
 	if target.has_method("die"):
 		target.die()

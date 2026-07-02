@@ -18,8 +18,17 @@ class_name CrowdManager
 ## The NPC scene to spawn copies of. Set in the Inspector to npc.tscn.
 @export var npc_scene: PackedScene
 
-## How many civilians to spawn. One knob to make the crowd denser or sparser.
+## Fallback crowd size, used only when the map can't report its walkable area.
 @export var npc_count: int = 25
+
+## Crowd DENSITY: NPCs per open street cell, when the map reports its size
+## (TestMap01.open_cell_count). Sizing by density instead of a fixed count keeps the
+## "haystack" equally thick on every map — a bigger map automatically gets a bigger crowd.
+## 0 = always use npc_count.
+@export var npcs_per_open_cell: float = 0.45
+## Bounds on the derived crowd (readability floor / simulation-cost ceiling).
+@export var crowd_size_min: int = 30
+@export var crowd_size_max: int = 110
 
 
 func _ready() -> void:
@@ -36,36 +45,33 @@ func _spawn_crowd() -> void:
 	# Let the navigation mesh finish registering (it's set up this same frame).
 	await get_tree().physics_frame
 
-	# Prefer the map's EVEN spawn spread (scatters the crowd across the whole map);
-	# fall back to a navigation random point if the map doesn't provide one.
 	var map := get_tree().get_first_node_in_group("map")
-	var use_map_spread: bool = map != null and map.has_method("random_walkable_point")
 	var navigation_map: RID = get_world_2d().navigation_map
 
-	for i in npc_count:
+	# Size the crowd to the map's walkable area when it can tell us (density model —
+	# matches how the online match sizes its crowd, so offline feel mirrors online).
+	var crowd_size := npc_count
+	if map != null and npcs_per_open_cell > 0.0 and map.has_method("open_cell_count"):
+		crowd_size = clampi(int(round(float(map.call("open_cell_count")) * npcs_per_open_cell)), crowd_size_min, crowd_size_max)
+
+	# EVEN spread: one spawn per NPC spaced across the whole map, so the crowd starts
+	# corner-to-corner. From there the errand system keeps them flowing (npc.gd).
+	var even_points: Array = []
+	if map != null and map.has_method("even_spawn_points"):
+		even_points = map.call("even_spawn_points", crowd_size)
+
+	for i in crowd_size:
 		var npc: Node2D = npc_scene.instantiate()
-		# Choose the spawn spot FIRST, then set it BEFORE add_child. The NPC's _ready()
-		# captures its "home" from its position the moment it enters the tree, so if we add
-		# first and position after, every homebody anchors to (0,0) — the map centre — and
-		# the whole crowd walks into the middle and bunches up. (CrowdManager sits at the
-		# origin, so the local `position` we set here equals the world position.)
+		# Choose the spawn spot FIRST, then set it BEFORE add_child, so the NPC's _ready()
+		# captures the right home/anchor position the moment it enters the tree.
 		var spawn_point: Vector2
-		if use_map_spread:
+		if i < even_points.size():
+			spawn_point = even_points[i]
+		elif map != null and map.has_method("random_walkable_point"):
 			spawn_point = map.call("random_walkable_point")
 		else:
 			spawn_point = NavigationServer2D.map_get_random_point(navigation_map, 1, true)
 		npc.position = spawn_point
-		# Movement variety so the crowd doesn't all roam the same: ~45% LOITERERS who barely leave
-		# a small patch, ~40% local wanderers, ~15% travellers who cross the map.
-		var roll := randf()
-		if roll < 0.45:
-			npc.is_traveler = false
-			npc.wander_radius = 70.0    # stays within a small area (the "standing around" feel)
-		elif roll < 0.85:
-			npc.is_traveler = false
-			npc.wander_radius = 320.0   # mills around its own patch
-		else:
-			npc.is_traveler = true      # crosses the map
 		add_child(npc)
 
 

@@ -46,20 +46,68 @@ class_name Npc
 @export var loadout_payload: Dictionary = {}
 
 # === wander behaviour ======================================================
-## When true this NPC CROSSES the map (long paths, spawns at an edge); when false it's
-## a "homebody" that makes short trips around home_position. Set by the spawner.
+## LEGACY flag (kept so old spawn data still loads): errand NPCs ignore it. Only
+## walk_off_to still flips it, purely as a marker that this NPC is leaving the map.
 @export var is_traveler: bool = false
-## A homebody's anchor (usually its spawn spot) and how far it strays from it (pixels).
+## A PINNED NPC's anchor (usually where it was tagged) and how far it strays (pixels).
+## Only used when stay_local is true — i.e. by contract MARKS.
 @export var home_position: Vector2 = Vector2.ZERO
 @export var wander_radius: float = 350.0
+
+# === errand behaviour (the "walking with intent" crowd) =====================
+## When true this NPC is PINNED to a small patch around home_position. Contract MARKS use
+## this so their patch stays learnable ("my mark lives by the SW well"). Everyone else
+## walks ERRANDS: purposeful legs to points of interest in OTHER districts (the map picks
+## them — see TestMap01.errand_destination), so the crowd flows through the whole map,
+## corners included, instead of milling in place.
+@export var stay_local: bool = false
+## Chance (0-1) that the NPC stops to LINGER when an errand leg ends. The rest of the time
+## it chains straight into the next leg. Lingerers stand at spread-out doorway POIs, so a
+## bigger linger share also spreads the crowd (fewer bodies mid-transit at any instant).
+@export var linger_chance: float = 0.45
+## How long a linger lasts (seconds). Errand POIs are doorway/wall points, so lingerers
+## stand at the street edge like a person would — never in the middle of the road.
+@export var linger_min_seconds: float = 3.0
+@export var linger_max_seconds: float = 8.0
+## Tiny beat (seconds) between two CHAINED errand legs, so direction changes read as a
+## person deciding where to go next instead of a robot snapping to a new heading.
+@export var errand_beat_min_seconds: float = 0.1
+@export var errand_beat_max_seconds: float = 0.5
+## How many LOCAL legs (neighbourhood business in the current district) this NPC does
+## between two CROSSINGS to another district. Dwell is what keeps districts populated:
+## if every leg were a crossing, most of the crowd would be mid-commute at any moment and
+## the walking routes (which all pass the middle) would hold everyone.
+@export var local_legs_between_crossings_min: int = 2
+@export var local_legs_between_crossings_max: int = 4
+## Per-NPC walk-speed variation (fraction, applied once at spawn). ±7% makes the crowd read
+## as individuals, while the band still BRACKETS the player's exact walk speed (90 px/s) —
+## so a calmly-walking player sits inside the crowd's speed range and the disguise holds.
+@export var walk_speed_jitter: float = 0.07
+
+# === panic / flee (nav-driven, so NPCs never grind into walls) ==============
+## How far (px) a panicking NPC tries to get from a kill. The flee target is fed to
+## NAVIGATION (not a raw direction), so panickers run around corners like people —
+## an NPC between a kill and the outer wall no longer piles straight into the wall.
+@export var panic_flee_distance_px: float = 420.0
+## How close to the arena edge (px) a flee/errand target may be clamped. Keeps panic
+## targets off the outer wall so the path never even aims at it.
+@export var flee_edge_margin_px: float = 80.0
 
 # === anti-stuck (so NPCs never grind into a wall) ===========================
 ## If, while trying to travel, the NPC moves LESS than this many pixels in one physics frame, that
 ## frame counts as "made no progress" (it's jammed against a wall/corner or stuck in a crowd pinch).
 @export var stuck_min_progress_px: float = 0.6
-## After this many seconds of no progress, give up on the current path and pick a NEW destination —
-## which turns the NPC away from the obstacle. Kept short so it never grinds a wall for long.
+## After this many seconds of no progress, the NPC reacts: it WAITS a moment and continues the
+## SAME trip (a crowd jam clears), and only after several consecutive stalls abandons the trip.
+## (It used to re-roll its destination on the FIRST stall — in a crowded plaza that re-roll was
+## usually a local spot, so jammed NPCs randomized in place forever and the plaza became a
+## population sink that swallowed the whole crowd.)
 @export var stuck_seconds_before_repath: float = 0.25
+## How many consecutive stalls before the NPC gives up on this destination and picks a new one.
+@export var stalls_before_reroute: int = 3
+## How long (seconds) a stalled NPC stands and lets the jam clear before resuming its trip.
+@export var stall_wait_min_seconds: float = 0.2
+@export var stall_wait_max_seconds: float = 0.6
 
 # === network smoothing (Phase 6.2 perf pass) ===============================
 ## (Online) Seconds between the host shipping this NPC's position to clients. Bigger =
@@ -84,17 +132,26 @@ signal died
 ## Counts DOWN while the NPC is standing still at a spot. 0 or below = walking.
 var _pause_timer: float = 0.0
 
-## Anti-stuck bookkeeping: our position last physics frame, and how long we've been making no
-## headway. When _stuck_time crosses stuck_seconds_before_repath we repath (see _physics_process).
+## Anti-stuck bookkeeping: our position last physics frame, how long we've been making no
+## headway, and how many stalls in a row this trip has hit (see _physics_process CASE 3).
 var _last_position: Vector2 = Vector2.ZERO
 var _stuck_time: float = 0.0
+var _stall_count: int = 0
+## True while a pause should RESUME the current trip when it ends (a stall wait), instead of
+## picking a new destination (a normal arrival pause).
+var _resume_current_leg: bool = false
+## Errand cadence: local legs left before the next district crossing (see the exports above).
+## Starts randomized per NPC so the crowd's crossings aren't synchronized.
+var _legs_until_crossing: int = -1
 
-## Phase 9 (9E) — a temporary "react to a nearby kill" state. While _react_timer > 0 the NPC
-## drives in _react_direction instead of wandering, then returns to normal. Driven entirely by the
-## crowd_reaction experiment calling react_to_kill(); zero effect if nothing ever calls it.
+## Phase 9 (9E) — a temporary "react" state (panic flee / decoy bolt / clone drive). While
+## _react_timer > 0 the NPC overrides its errand. Two modes: _react_use_nav true = follow a
+## NAVIGATION path to a flee target at _react_speed_scale (panic/decoy/clone paths — routes
+## around walls); false = drive raw _react_direction (the legacy clone-mirror fallback).
 var _react_timer: float = 0.0
 var _react_direction: Vector2 = Vector2.ZERO
 var _react_speed_scale: float = 1.0
+var _react_use_nav: bool = false
 
 ## Set once killed, so we stop behaving and can't be killed twice.
 var _dead: bool = false
@@ -117,10 +174,15 @@ func _ready() -> void:
 	# with. This is what stops the crowd clumping into a single blob.
 	navigation_agent.velocity_computed.connect(_on_velocity_computed)
 
-	# A homebody anchors to wherever it spawned. Online sets this explicitly; offline
+	# A pinned NPC anchors to wherever it spawned. Online sets this explicitly; offline
 	# NPCs leave it at zero, so default it to our spawn position here.
 	if home_position == Vector2.ZERO:
 		home_position = global_position
+
+	# Individual gait: nudge this NPC's walk speed once, so the crowd isn't a lockstep
+	# 90 px/s parade. The band brackets the player's walk speed, so blending still works.
+	if walk_speed_jitter > 0.0:
+		move_speed *= randf_range(1.0 - walk_speed_jitter, 1.0 + walk_speed_jitter)
 
 	# Online: only the host runs AI; clients display a replicated puppet.
 	if network_controlled:
@@ -215,32 +277,82 @@ func is_dead() -> bool:
 	return _dead
 
 
-# Phase 9 (9E) HOOK — the crowd_reaction experiment asks this NPC to flinch in response to a
-# nearby kill. The NPC doesn't know WHY (direction experiment → core, §1.2); it just performs the
-# brief move. `away` true = flee outward (scatter); false = bolt toward (cluster). Host-only in
-# practice: the host owns NPC motion and the move replicates to clients as ordinary position updates.
+# Phase 9 (9E) HOOK — this NPC flinches in response to a nearby kill. The NPC doesn't know WHY
+# (direction experiment → core, §1.2); it just performs the brief move. `away` true = flee outward
+# (scatter); false = bolt toward (cluster). The flee now goes through NAVIGATION: we pick a target
+# point away from the kill and PATH there fast, so panickers run around corners instead of grinding
+# into walls (the old raw-direction bolt piled NPCs into the outer wall for the whole panic).
+# Host-only in practice: the host owns NPC motion and the move replicates as position updates.
 func react_to_kill(kill_position: Vector2, away: bool, duration_seconds: float, speed_scale: float) -> void:
 	if _dead:
 		return
 	var to_kill := global_position - kill_position
 	if to_kill.length() < 1.0:
 		to_kill = Vector2.RIGHT.rotated(randf() * TAU)  # right on top of it: pick any direction
-	_react_direction = to_kill.normalized() * (1.0 if away else -1.0)
-	_react_speed_scale = speed_scale
-	_react_timer = duration_seconds
+	var direction := to_kill.normalized() * (1.0 if away else -1.0)
+	_start_nav_react(direction, duration_seconds, speed_scale, panic_flee_distance_px)
 
 
 # DECOY HOOK — bolt in `direction` (the way the NPC is already heading) for a moment. Used by the
 # decoy tool: the spooked civilian just breaks into a run, drawing a hunter's eye. If it was standing
-# still (no heading), pick a random direction so it always visibly reacts.
+# still (no heading), pick a random direction so it always visibly reacts. Nav-driven like panic.
 func flee_run(direction: Vector2, duration_seconds: float, speed_scale: float) -> void:
 	if _dead:
 		return
 	if direction.length() < 1.0:
 		direction = Vector2.RIGHT.rotated(randf() * TAU)
-	_react_direction = direction.normalized()
+	# Bolt roughly as far as this dash could carry us, capped so the target stays believable.
+	var distance := minf(move_speed * speed_scale * duration_seconds, 600.0)
+	_start_nav_react(direction.normalized(), duration_seconds, speed_scale, distance)
+
+
+# Shared entry for every nav-driven reaction: aim at a point `distance_px` away in `direction`,
+# clamped inside the arena (so the path never points at the outer wall), and run there via the
+# navigation agent. Falls back to the old raw-direction bolt if there's no map/agent to path with.
+func _start_nav_react(direction: Vector2, duration_seconds: float, speed_scale: float, distance_px: float) -> void:
 	_react_speed_scale = speed_scale
 	_react_timer = duration_seconds
+	_react_use_nav = false
+	_stuck_time = 0.0
+	var map := _map_node()
+	if navigation_agent != null and map != null:
+		var target := global_position + direction * distance_px
+		var half_w := float(map.get("play_half_width")) - flee_edge_margin_px
+		var half_h := float(map.get("play_half_height")) - flee_edge_margin_px
+		if half_w > 0.0 and half_h > 0.0:
+			target.x = clampf(target.x, -half_w, half_w)
+			target.y = clampf(target.y, -half_h, half_h)
+		navigation_agent.target_position = target  # navigation clamps this onto the walkable mesh
+		_react_use_nav = true
+	else:
+		_react_direction = direction  # no map to path on — the old straight bolt is better than nothing
+
+
+# CLONES HOOK (legacy mirror mode) — drive this NPC as a movement clone. A ZERO `direction` means
+# STAND STILL (not bolt randomly), so the clone can mirror a caster who has stopped. Re-issued every
+# frame with a short `hold_seconds`; when the caller stops re-issuing, the NPC rejoins the crowd.
+func drive_clone(direction: Vector2, speed_scale: float, hold_seconds: float) -> void:
+	if _dead:
+		return
+	_react_use_nav = false
+	_react_direction = direction.normalized() if direction.length() >= 0.001 else Vector2.ZERO
+	_react_speed_scale = speed_scale
+	_react_timer = hold_seconds
+
+
+# CLONES HOOK (diverging-path mode) — walk toward `target` along NAVIGATION at `speed_scale`, for
+# up to `hold_seconds`. The match gives each clone its OWN target fanned away from the caster, so
+# the copies scatter like ordinary pedestrians instead of moving in lockstep (lockstep was a tell).
+# Re-issued each frame with the caster's live pace; the target only re-paths when it actually moves.
+func drive_clone_path(target: Vector2, speed_scale: float, hold_seconds: float) -> void:
+	if _dead:
+		return
+	_react_speed_scale = speed_scale
+	_react_timer = hold_seconds
+	if navigation_agent != null:
+		if navigation_agent.target_position.distance_to(target) > 8.0:
+			navigation_agent.target_position = target
+		_react_use_nav = true
 
 
 # Phase 9 (9B) HOOK — head to `point` as a one-way traveler (crowd_thinning uses this to send a
@@ -249,6 +361,7 @@ func flee_run(direction: Vector2, duration_seconds: float, speed_scale: float) -
 func walk_off_to(point: Vector2) -> void:
 	is_traveler = true
 	can_wander = true
+	stay_local = false  # even a pinned NPC actually leaves when asked to retire
 	home_position = point
 	if navigation_agent != null:
 		navigation_agent.target_position = point
@@ -277,14 +390,36 @@ func _physics_process(delta: float) -> void:
 	var moved_since_last: float = global_position.distance_to(_last_position)
 	_last_position = global_position
 
-	# Phase 9 (9E) / DECOY — reacting (flee/bolt) for a moment, then resume normal. Checked before
-	# the mark/wander logic so even a standing mark visibly bolts. We move DIRECTLY here (bypassing
-	# the navigation avoidance) so a panicking/decoyed NPC always breaks into a run — avoidance would
-	# cancel its velocity in a dense crowd, which is exactly where decoy is used (it "did nothing").
+	# Phase 9 (9E) / DECOY / CLONES — reacting for a moment, then resume normal. Checked before
+	# the mark/wander logic so even a standing mark visibly bolts. We move DIRECTLY (bypassing the
+	# navigation AVOIDANCE) so a panicking NPC always breaks into a run — avoidance would cancel its
+	# velocity in a dense crowd. But in nav mode the run FOLLOWS the navigation PATH, so the sprint
+	# still routes around buildings and never grinds the outer wall.
 	if _react_timer > 0.0:
 		_react_timer -= delta
-		velocity = _react_direction * move_speed * _react_speed_scale
-		move_and_slide()
+		if _react_use_nav:
+			if navigation_agent.is_navigation_finished():
+				# Reached "safety" — end the reaction early and let the wander logic resume.
+				_react_timer = 0.0
+				_react_use_nav = false
+				velocity = Vector2.ZERO
+			else:
+				# Anti-stuck still applies while fleeing (pinched in a fleeing crowd): give up
+				# on the panic run instead of shoving the same spot for its whole duration.
+				if moved_since_last < stuck_min_progress_px:
+					_stuck_time += delta
+					if _stuck_time >= stuck_seconds_before_repath * 2.0:
+						_stuck_time = 0.0
+						_react_timer = 0.0
+						_react_use_nav = false
+				else:
+					_stuck_time = 0.0
+				var flee_point: Vector2 = navigation_agent.get_next_path_position()
+				velocity = global_position.direction_to(flee_point) * move_speed * _react_speed_scale
+				move_and_slide()
+		else:
+			velocity = _react_direction * move_speed * _react_speed_scale
+			move_and_slide()
 		return
 
 	# A non-wandering NPC (a mark) just stands at its spot.
@@ -292,35 +427,53 @@ func _physics_process(delta: float) -> void:
 		_drive(Vector2.ZERO)
 		return
 
-	# CASE 1 — we're pausing at a spot: count down, stand still, and when the
-	# timer runs out, choose somewhere new to go.
+	# CASE 1 — we're pausing: count down, stand still. When the timer runs out, either
+	# RESUME the trip we stalled on (a jam wait — the agent still holds the destination)
+	# or choose somewhere new to go (a normal arrival pause).
 	if _pause_timer > 0.0:
 		_pause_timer -= delta
 		_stuck_time = 0.0  # not travelling → a fresh trip starts with a clean stuck timer
 		_drive(Vector2.ZERO)
-		if _pause_timer <= 0.0:
+		if _pause_timer <= 0.0 and not _resume_current_leg:
 			_pick_new_destination()
+		_resume_current_leg = _resume_current_leg and _pause_timer > 0.0
 		return
 
-	# CASE 2 — we've arrived at our destination: stop and begin a pause.
+	# CASE 2 — we've arrived at our destination: stop, then either LINGER (a proper stop at
+	# a doorway/landmark, the minority) or take a tiny beat and chain into the next errand.
+	# Pinned NPCs (marks) keep the old short randomized pause so their patch feel is unchanged.
 	if navigation_agent.is_navigation_finished():
-		_pause_timer = randf_range(min_pause_seconds, max_pause_seconds)
+		if stay_local:
+			_pause_timer = randf_range(min_pause_seconds, max_pause_seconds)
+		elif randf() < linger_chance:
+			_pause_timer = randf_range(linger_min_seconds, linger_max_seconds)
+		else:
+			_pause_timer = randf_range(errand_beat_min_seconds, errand_beat_max_seconds)
 		_stuck_time = 0.0
 		_drive(Vector2.ZERO)
 		return
 
-	# CASE 3 — still travelling: walk toward the next point along the path. ANTI-STUCK: if we wanted
-	# to travel but barely moved this frame, we're jammed against a wall/corner (or pinched in a
-	# crowd). Count that time; once it exceeds the threshold, abandon this path and pick a NEW
-	# destination — which steers us away instead of grinding the wall for more than a few frames.
+	# CASE 3 — still travelling: walk toward the next point along the path. ANTI-STUCK: if we
+	# wanted to travel but barely moved, we're pinched (usually a crowd jam, sometimes a corner).
+	# First stalls: STAND for a beat and continue the SAME trip once the jam clears. Only after
+	# several stalls in a row do we abandon the trip for a new destination. (Re-rolling on the
+	# first stall made crowded plazas absorb the whole crowd — see stuck_seconds_before_repath.)
 	if moved_since_last < stuck_min_progress_px:
 		_stuck_time += delta
 		if _stuck_time >= stuck_seconds_before_repath:
 			_stuck_time = 0.0
-			_pick_new_destination()
+			_stall_count += 1
+			if _stall_count >= stalls_before_reroute:
+				_stall_count = 0
+				_pick_new_destination()
+			else:
+				_pause_timer = randf_range(stall_wait_min_seconds, stall_wait_max_seconds)
+				_resume_current_leg = true
+				_drive(Vector2.ZERO)
 			return
 	else:
 		_stuck_time = 0.0
+		_stall_count = 0
 	var next_point: Vector2 = navigation_agent.get_next_path_position()
 	_drive(global_position.direction_to(next_point) * move_speed)
 
@@ -348,12 +501,13 @@ func _follow_net(delta: float) -> void:
 	velocity = _net_velocity
 
 
-# Picks a random destination spread EVENLY across the whole map and routes there.
-#
-# WHY NOT the navigation server's map_get_random_point: it can bias toward the map
-# origin (and returns the origin outright if the nav map isn't fully synced yet), which
-# made the entire crowd drift into the middle. The map's own random_walkable_point()
-# samples every open cell evenly, so the crowd actually fills the streets.
+# Picks the next destination:
+#   - a PINNED NPC (a mark) takes a short trip near home, so its patch stays learnable;
+#   - everyone else asks the map for an ERRAND — a point of interest in a different,
+#     under-populated district (TestMap01.errand_destination) — so the crowd flows with
+#     intent through the whole map, corners included, instead of milling randomly.
+# Fallbacks keep old maps working: even random_walkable_point() beats the navigation
+# server's map_get_random_point, which biases toward the origin and bunched the crowd.
 func _pick_new_destination() -> void:
 	var map := _map_node()
 	if map == null:
@@ -363,12 +517,21 @@ func _pick_new_destination() -> void:
 		)
 		return
 
-	if is_traveler:
-		# Crosses the map: a destination anywhere on it.
-		navigation_agent.target_position = map.random_walkable_point()
-	elif map.has_method("random_walkable_point_near"):
-		# Homebody: a short trip near home, so it stays in its own patch.
+	if stay_local and map.has_method("random_walkable_point_near"):
+		# Pinned (a mark): a short trip near home, so it stays in its own patch.
 		navigation_agent.target_position = map.random_walkable_point_near(home_position, wander_radius)
+	elif map.has_method("errand_destination"):
+		# Errand walker: a few LOCAL legs of neighbourhood business, then one CROSSING to
+		# another district, repeat. The map may override a local with an exodus when the
+		# district is overcrowded (see TestMap01.errand_overcrowd_ratio).
+		if _legs_until_crossing < 0:
+			_legs_until_crossing = randi_range(0, local_legs_between_crossings_max)  # desync at spawn
+		if _legs_until_crossing > 0:
+			_legs_until_crossing -= 1
+			navigation_agent.target_position = map.errand_destination(global_position, true)
+		else:
+			_legs_until_crossing = randi_range(local_legs_between_crossings_min, local_legs_between_crossings_max)
+			navigation_agent.target_position = map.errand_destination(global_position, false)
 	else:
 		navigation_agent.target_position = map.random_walkable_point()
 

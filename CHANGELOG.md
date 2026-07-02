@@ -2,6 +2,118 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — map layout v2 (both arenas), errand crowd, ability balance
+
+Full implementation of the map/NPC/ability review. Both layouts were regenerated and
+flood-fill-verified (`scratchpad gen_maps_v2.py` — dead ends, articulation chokepoints and
+sightline lengths all measured before/after).
+
+- **COMPACT v2 (`maps/test_map_02.tscn`, 2-3p)** — the double west/east boulevards and the long
+  row-5/row-11 avenues are broken with building jogs: **interior sightlines dropped from 12-15
+  cells to ≤9** (a fleeing player now reaches a corner within ~half a screen). Two roofed **ALLEY
+  cut-throughs** ('a' cells): through the west block via its courtyard, and through the NE block
+  (L-shaped exit). One **covered alcove** by the canal's west bank (1-deep hide pocket under an
+  overhang). **Overhangs are now ON for Compact** (`enable_overhangs=true, margin 2`) so the
+  concealment game matches the Citadel. The perimeter ring keeps its long sightlines on purpose —
+  it's the exposed "run at your peril" track.
+- **CITADEL v2 (`maps/test_map_03.tscn`, 3-4p)** — the wasted **double south boulevard** (two fully
+  open rows, the map's biggest empty field) is reclaimed: the second row is built over and jogs
+  break both ring straights + the interior avenues (**uncovered sightlines: 25 cells → ≤11**).
+  **Eight roofed alleys**: the five old dead-end nooks are punched THROUGH their buildings into the
+  next street (they were uncovered death traps; now enter one mouth, exit another), a 4-cell covered
+  passage crosses the long west-centre wall (row 13), a 3-cell passage cuts the SE superblock
+  (col 17), and a covered **arch** spans the col-5/row-14 crossroads. Two deliberate **covered
+  alcoves** at (17,9)/(20,16). **Sewer corner pockets are back** (NE+SW, 3 entrances each — corners
+  have a purpose again); teleporters stay removed.
+- **Map script (`test_map_01.gd`)** — player spawns now **snap to the nearest open cell** (safe on
+  any layout — the Citadel's filled south row was about to put two spawns inside walls); new
+  `open_cell_count()`; `random_edge_walkable_point` fixed (its edge test could never match — the
+  border rows are all wall; it now uses the perimeter ring). **Quadrant identity pass** in the
+  stylized renderer: each quarter faintly tints its floor with its zone colour and biases its roofs
+  toward a signature palette colour (NW terracotta / NE slate / SW ochre / SE grey) so districts
+  read at a glance; alley cells draw a darker paved floor.
+- **ERRAND CROWD (`npc.gd` + `TestMap01.errand_destination`)** — NPCs no longer wander randomly or
+  loiter anchored. Every civilian walks **errands**: purposeful legs to points of interest (doorway
+  points against buildings, the fountain ring, bridges, alleys, sewer pockets) in a **different,
+  under-populated district** — so the crowd flows through the whole map with intent, corners
+  included, and coverage self-balances (empty regions attract walkers). On arrival: ~35% linger
+  3-8s at the street edge (doorways/awnings, never mid-road), the rest chain into the next leg
+  after a small beat — the constant stop-start jitter is gone. **±7% per-NPC walk-speed jitter**
+  (the band still brackets the player's 90 so blending holds). Contract marks are **pinned** via a
+  new `stay_local` flag (short trips around their tag point — their patch stays learnable).
+- **NAV-DRIVEN PANIC (`npc.gd`)** — `react_to_kill`/`flee_run` (panic scatter + decoy) now pick a
+  flee **destination** (clamped inside the arena) and sprint the **navigation path** to it, instead
+  of driving a raw direction into geometry: panicking NPCs run around corners like people and never
+  grind into the outer wall (the old bolt pinned wall-adjacent NPCs against it for the whole panic).
+- **Crowd size by DENSITY** — both spawners (online `_crowd_size_for_map`, offline `CrowdManager`)
+  now derive the crowd from `open_cell_count × npcs_per_open_cell` (0.45, min/max capped): Compact
+  ~54, Citadel fills to the 110 cap (its haystack was 30% thinner than Compact's). Offline spawning
+  now also uses the even corner-to-corner spread, matching online.
+- **DISGUISE rebalance (`item_component.gd`)** — 30s → **14s**, and **running breaks it**
+  (`disguise_break_speed` 140 px/s, authority-enforced): a "walk calmly past your hunter" nerve
+  test instead of a passive identity eraser that hard-countered the reveal system. Offline harness
+  restores the body immediately on the break.
+- **CLONES rework** — clones no longer mirror the caster's heading in lockstep (a synchronized trio
+  marked the whole group). Each clone now walks its **own diverging navigation path** (fanned
+  left/right/behind, `clones_scatter_distance_px`) at the caster's live pace — stop and they stop.
+  Same behaviour online (`online_match`) and offline (`single_player_game`).
+- **Errand dispersion pass (playtest feedback: "NPCs all in the middle")** — measured with a
+  headless 150-game-second crowd sim (110 NPCs on the Citadel, snapshots of district populations).
+  Root causes found and fixed, in order: (1) every errand was a cross-town leg, so most of the
+  crowd was mid-commute at any instant and all routes funnel through the centre; (2) the anti-stuck
+  logic re-rolled the destination on the FIRST stall, so the crowded plaza became a SINK — jammed
+  NPCs re-rolled local spots forever (centre district grew 18→41 of 110 in 2.5 min); (3) district
+  balancing by quadrant was too coarse (a quadrant looked full while its corner drained). Fixes:
+  errand balancing now runs on a **3×3 grid of nine districts** (corners are first-class
+  destinations with their own under-population pull; far crossings damped ×0.4); stalled NPCs
+  **wait and resume the same trip** (only re-route after 3 consecutive stalls); an **overcrowd
+  exodus** (>1.35× average district population → always leave); and a **dwell cadence** — each NPC
+  does 2-4 local "neighbourhood business" legs per district visit between crossings. Measured
+  result: corners 3%→17% of the crowd, centre-500px share 29%→7% (proportional to its area),
+  centre district stable at the per-district average instead of monotonic growth.
+- **"Running in place" fix (playtest feedback)** — NPCs visibly walking but going nowhere. Measured
+  with a strict headless metric (walk animation ≥ 2.5s of a 3s window, net displacement < 25px):
+  9-23% of the crowd per window. Two causes: (1) destination CONTENTION — arrival needed 24px but
+  every NPC repels others within its 40px avoidance radius, so an occupied POI was geometrically
+  unreachable (fixed: `target_desired_distance` 24→52, every errand destination gets ±70px scatter
+  via `errand_arrival_jitter_px`, POIs per district 8→12); (2) RVO avoidance DITHER — 40px radius +
+  1.0s look-ahead made crossing NPCs veer/counter-veer at full walk speed with zero net progress
+  (fixed in `npc.tscn`: avoidance radius 40→24, `time_horizon_agents` 1.0→0.4, `max_neighbors`
+  8→5, `path_desired_distance` 16→28; `max_speed` 90→110 so the gait jitter isn't clamped).
+  A/B-measured: running-in-place 9-23% → **3-6%**, with corner dispersion improved (steady 15-16%).
+- **Always-on TARGET portrait in respawn-mode MP (playtest feedback: "hard to know who I'm
+  hunting")** — every hunter now permanently sees their current target's look as the red TARGET
+  plate (the AC model: you know the face, you find it among its crowd look-alikes). Sent on every
+  (re)assignment via `_send_target_to` (match start, respawns, retargets), tracked per hunter in
+  `_target_portrait_subject_by_hunter`, and refreshed to "?"/real on the target's disguise
+  start/end. Classic mode unchanged (the plate stays an earned marks-first reveal). This is a
+  deliberate reveal of a LOOK, never of which body is human — identity rule #5 holds.
+- **BLADE LOCKOUT: killing an innocent locks your kills for 10s (playtest request)** — a wrong
+  kill (any NPC that isn't your mark) now sets `wrong_kill_lockout_seconds` (10s, exported on
+  KillComponent) during which you can't kill ANYONE — melee and poison both rejected on the
+  authority (relayed client requests included); counter-stunning your hunter deliberately stays
+  legal (defence, not a kill). Stored as a timestamp (no per-frame ticking). The owner sees a red
+  "BLADE LOCKED — Ns" countdown banner bottom-centre (above the ability bar) plus log lines on
+  start/end; offline harness logs it too. Verified headless: whiff locks, locked kill rejected,
+  post-lockout kill lands.
+- **Stunned players can no longer fire tools (playtest bug)** — being stunned (smoke cloud /
+  firecracker / counter-stun) blocked movement and kills but NOT abilities, so a stunned player
+  could smoke their way out of the punish window. All three stun sources already funnel through
+  `_set_player_stunned` (host-authoritative), which now also flips a new `owner_stunned` flag on
+  the kit; `ItemComponent._activate` rejects while stunned — covering the host's own input AND
+  every relayed client request. Same pass also blocks tools during the round-start freeze
+  (`_net_frozen` — kills were already blocked there, tools weren't). Verified headless: stunned
+  fire rejected, frozen fire rejected, normal fire lands.
+- **Tool recharge made visible + faster (playtest feedback: "cooldowns never come back")** — the
+  authoritative kit was verified working end-to-end with a headless sim (cooldowns tick, charges
+  regen, tools re-fire); the real problems were UX: the 60s charge regen was invisible (after the
+  cooldown readout finished, the slot froze at a grey "x0" with no hint a charge was coming) and
+  60s ≈ forever in a 5-min round. Now: `charge_regen_seconds` 60→**30**, the regen countdown ships
+  in the item-state push (5th slot field) and the ability slot shows **"+Ns"** while recharging —
+  online and offline both.
+- **Not yet verified**: a 2-instance online playtest of the new maps/crowd (same standing caveat as
+  the rest of `prayer`).
+
 ## Session: prayer — Citadel map (AC-Rearmed-style) + wider camera
 
 - **Camera zoom** kept at `1.1` (a closer, zoomed-in view) across `network_camera_zoom` /

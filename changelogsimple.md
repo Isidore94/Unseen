@@ -1,5 +1,22 @@
 # UNSEEN — Devlog (brief)
 
+## Map Overhaul + A Smarter Crowd
+
+**Both maps rebuilt for better chases:**
+- Streets tightened everywhere — no more giant open fields; a fleeing player always has a corner nearby, so breaking line of sight is a real move now.
+- **Roofed alleys** cut straight through buildings (2 on Compact, 8 on the Citadel) — slip in one mouth, come out another; pursuers have to guess. Plus a few shadowed alcoves to duck into.
+- Each quarter of the city now has its own look (roof colours + floor tint) so you always know where you are — "my mark lives in the rust quarter."
+- Citadel got its wasted southern boulevard rebuilt into city blocks, and its **sewer corner pockets are back**.
+
+**The crowd finally acts human:**
+- Civilians now run **errands** — they walk with purpose from district to district, pause in doorways and under awnings (not mid-street), and spread themselves across the whole map all match long.
+- Panicking civilians **run around corners** to flee a kill instead of piling into walls.
+- Everyone walks at their own slight pace, so the crowd doesn't move like a parade.
+
+**Ability balance:**
+- **Disguise**: 30s → 14s, and **running breaks it** — walk calmly or lose the cover.
+- **Clones**: your copies now scatter in different directions at your pace, instead of moving in a dead-giveaway lockstep.
+
 ## Big Art + Crowd Update
 
 **Art (all PixelLab pixel art):**

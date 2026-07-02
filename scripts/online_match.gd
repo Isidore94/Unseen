@@ -23,14 +23,21 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 ## Reloaded on a rematch (re-runs the whole start handshake with everyone still connected).
 const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 
-## Crowd size for the COMPACT/Rome arenas (the lobby's small maps use this instead of npc_count).
-## Tighter crowd (Phase 9 decision): a smaller, readable haystack. At clone_crowd_fraction = 0.25
-## this is ~10 clones + ~30 filler. Raise it (or the fraction) if hiding feels too easy.
+## FALLBACK crowd size for the COMPACT/Rome arenas — only used if the map can't report its
+## walkable area (open_cell_count). Normally the crowd is sized by DENSITY instead (below).
 @export var compact_npc_count: int = 55
 
-## Crowd size for the CITADEL map. It's ~33% bigger than Compact (≈1.8× the open area), so it needs
-## a bigger crowd than compact_npc_count or the haystack feels thin. Tune for host load + readability.
+## FALLBACK crowd size for the CITADEL map (same caveat as compact_npc_count).
 @export var citadel_npc_count: int = 85
+
+## Crowd DENSITY for the small arenas: NPCs per open street cell. Sizing by density (not a
+## per-map constant) keeps the haystack equally thick on every map: Compact (~119 open cells)
+## gets ~54, the Citadel (~266) fills to the cap. Raise for a thicker crowd, at host CPU cost.
+@export var crowd_npcs_per_open_cell: float = 0.45
+## Bounds on the derived crowd: a readability floor, and a ceiling protecting the host's
+## simulation + replication budget (every NPC is host-simulated and streamed to clients).
+@export var crowd_size_min: int = 35
+@export var crowd_size_max: int = 110
 
 ## How many sprite sheets exist (assets/sprites). Keep in sync with CharacterVisual's sheet list.
 const NUM_SHEETS := 15
@@ -45,8 +52,9 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 ## smaller, readable crowd; at clone_crowd_fraction = 0.25 that's ~15 clones + ~45 filler.
 @export var npc_count: int = 78
 
-## Fraction of the crowd that CROSSES the map (spawn at an edge, long paths). The rest
-## are "homebodies" that mill around their spawn spot with short trips.
+## LEGACY (unused since the errand crowd): fraction of the crowd that crossed the map.
+## Every NPC now walks errands between districts (npc.gd), so there is no traveler/homebody
+## split any more. Kept only so old scene files that set it still load without a warning.
 @export var traveler_fraction: float = 0.25
 
 ## How many NPC marks each player must kill before the human opponent becomes a valid
@@ -369,6 +377,9 @@ var _stun_left_by_peer: Dictionary = {}
 ## body on transition), and the active MORPH overrides we'll revert ([{visual, restore_index, left}]).
 var _disguise_shown: Dictionary = {}
 var _morph_active: Array = []
+## HOST-only: crowd NPCs currently acting as movement clones — [{npc, player, left, max_scale}]. Each
+## frame the host drives them in their caster's live heading; their LOOK is reverted via _morph_active.
+var _clones_active: Array = []
 ## Our own body index (for restoring the HUD portrait after a disguise/morph "?" period).
 var _my_appearance_index: int = 0
 
@@ -378,6 +389,12 @@ var _pending_target_face: int = -1
 var _pending_exposed_faces: Array = []
 ## Host-only: who has already earned a reveal, so each fires once.
 var _target_reveal_awarded: bool = false
+## RESPAWN MODE (host-only): which peer each hunter's TARGET plate currently shows
+## (hunter peer -> subject peer). In respawn mode every player permanently sees their
+## current target's look as a red portrait plate (the AC way — you hunt a FACE and must
+## find it among the crowd's look-alikes); this map lets a retarget or a disguise
+## start/end refresh exactly the right hunters' plates. Empty in classic mode.
+var _target_portrait_subject_by_hunter: Dictionary = {}
 ## Who received the one-time TARGET reveal, and about whom — so that red plate can be refreshed if
 ## its subject later disguises / un-disguises (0 = none yet).
 var _target_reveal_to: int = 0
@@ -551,6 +568,11 @@ func _tick_round_countdown(delta: float) -> void:
 func _crowd_size_for_map() -> int:
 	if not NetworkManager.small_arena:
 		return npc_count
+	# DENSITY model: size the crowd to the map's walkable area, so the haystack is equally
+	# thick on Compact and the Citadel. Falls back to the per-map constants on older maps.
+	var map := _map as TestMap01
+	if map != null and map.has_method("open_cell_count") and crowd_npcs_per_open_cell > 0.0:
+		return clampi(int(round(float(map.open_cell_count()) * crowd_npcs_per_open_cell)), crowd_size_min, crowd_size_max)
 	if NetworkManager.selected_map == NetworkManager.Map.CITADEL:
 		return citadel_npc_count
 	return compact_npc_count
@@ -558,22 +580,20 @@ func _crowd_size_for_map() -> int:
 
 func _spawn_crowd() -> void:
 	var map := _map as TestMap01
-	# Fewer NPCs in the small arenas (lighter for the host to simulate + replicate).
 	var crowd_size := _crowd_size_for_map()
-	# PRESET EVEN spread: one walkable spawn per NPC, spaced across the WHOLE map so the crowd fills it
-	# corner-to-corner instead of clumping. Homebodies anchor to their spawn, so the even spread holds.
-	# Falls back to the old per-NPC random scatter if the map doesn't provide even points.
+	# PRESET EVEN spread: one walkable spawn per NPC, spaced across the WHOLE map so the crowd
+	# fills it corner-to-corner from second one. From there the ERRAND system (npc.gd +
+	# TestMap01.errand_destination) keeps them flowing through every district with intent —
+	# under-populated regions attract walkers, so coverage self-balances all match.
 	var even_points: Array = []
 	if map != null and map.has_method("even_spawn_points"):
 		even_points = map.even_spawn_points(crowd_size)
 	for _i in crowd_size:
-		# A minority cross the whole map; most are homebodies that potter around where they spawned.
-		var is_traveler := randf() < traveler_fraction
 		var spawn_position := Vector2.ZERO
 		if _i < even_points.size():
 			spawn_position = even_points[_i]  # evenly spread across the map
 		elif map != null:
-			spawn_position = map.random_edge_walkable_point() if is_traveler else map.random_walkable_point()
+			spawn_position = map.random_walkable_point()
 		# The host picks this NPC's whole look ONCE here as a compact loadout payload
 		# (ids only). The spawner replicates spawn_data verbatim to every client, so all
 		# peers rebuild the identical NPC with near-zero ongoing bandwidth (§5).
@@ -583,8 +603,10 @@ func _spawn_crowd() -> void:
 			# appearance kept as a fallback for older paths; loadout below is authoritative.
 			"appearance": _body_index_from_payload(loadout_payload),
 			"loadout": loadout_payload,
-			"traveler": is_traveler,
-			"wander_radius": randf_range(250.0, 500.0),
+			# Legacy keys, kept so _create_networked_npc's schema is unchanged: errand NPCs
+			# ignore both (only pinned MARKS use a wander radius now).
+			"traveler": false,
+			"wander_radius": 350.0,
 		}
 		_crowd_spawner.spawn(spawn_data)
 
@@ -645,6 +667,14 @@ func _send_target_to(peer_id: int) -> void:
 	if target == null or not is_instance_valid(target):
 		return
 	_receive_target.rpc_id(peer_id, String(target.name))
+	# RESPAWN MODE: always show the hunter their target's LOOK as the red TARGET plate (the AC
+	# way — you know the face, you must find it among its crowd look-alikes). A disguised target
+	# shows as "?" (_revealed_look). Classic mode keeps this as an EARNED reveal instead
+	# (first player to clear their marks — see _begin_target_phase).
+	if _respawn_mode():
+		var is_new_target: bool = int(_target_portrait_subject_by_hunter.get(peer_id, 0)) != target_peer
+		_target_portrait_subject_by_hunter[peer_id] = target_peer
+		_receive_target_reveal.rpc_id(peer_id, _revealed_look(target), is_new_target)
 
 
 # Owner-only: our assigned target's node name. The first arrives at match start; a later one
@@ -714,6 +744,9 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		kill.kill_resolved.connect(_relay_kill_resolved)
 		# Striking your hunter is a counter-STUN (not a kill) — the host freezes them + scores it.
 		kill.counter_stun_requested.connect(_on_counter_stun.bind(peer_id))
+		# Killing an innocent LOCKS the blade (host-side) — tell the owner so their HUD counts it down.
+		kill.kill_lockout_started.connect(func(seconds: float) -> void:
+			_receive_kill_lockout.rpc_id(peer_id, seconds))
 
 	# Host owns this player's tool kit: apply each tool's world effect when used + push the
 	# charges/cooldown readout to the owner whenever it changes.
@@ -1087,9 +1120,11 @@ func _assign_mark_for_peer(peer_id: int) -> void:
 	for mark in chosen:
 		mark.add_to_group("killable_for_%d" % peer_id)  # the host-validated kill check uses this
 		mark.add_to_group("mark")
-		# Force the mark to stay LOCAL (note 13): a homebody milling around where it was
-		# tagged. The NPC's wander logic reads these live, so changing them now is enough.
+		# PIN the mark (note 13): stay_local switches it off the errand system onto short
+		# trips around where it was tagged, so its patch stays learnable ("my mark lives by
+		# the SW well"). The NPC's wander logic reads these live — changing them now is enough.
 		mark.is_traveler = false
+		mark.stay_local = true
 		mark.home_position = mark.global_position
 		mark.wander_radius = mark_wander_radius
 		# Tell the owner privately when this mark dies (the host emits "died" on the kill).
@@ -1666,6 +1701,10 @@ func _assign_ladder_marks(peer: int) -> void:
 			break
 		npc.add_to_group("mark")
 		npc.add_to_group("killable_for_%d" % peer)
+		# Pin ladder marks the same way classic marks are pinned, so they stay findable.
+		npc.stay_local = true
+		npc.home_position = npc.global_position
+		npc.wander_radius = mark_wander_radius
 		if not npc.is_in_group("ladder_wired"):
 			npc.add_to_group("ladder_wired")
 			npc.died.connect(_on_ladder_mark_died.bind(npc))
@@ -1940,6 +1979,53 @@ func _receive_kill_bonus(label: String, points: int) -> void:
 	if _mhud != null:
 		_mhud.add_log(text)
 	_flash_bonus_label(text)
+
+
+# === BLADE LOCKOUT banner (bottom of screen) ===============================
+## Owner-side countdown of our own blade lockout (killed an innocent), and the red banner
+## label that shows it just above the bottom ability bar. 0 = no lockout, banner hidden.
+var _kill_lockout_display: float = 0.0
+var _kill_lockout_label: Label = null
+
+
+# Owner-only: the host locked our blade (we cut down an innocent). Start the visible countdown.
+@rpc("authority", "call_local", "reliable")
+func _receive_kill_lockout(seconds: float) -> void:
+	_kill_lockout_display = seconds
+	if _mhud != null:
+		_mhud.add_log("You cut down an innocent — blade locked for %ds." % int(round(seconds)))
+	_update_kill_lockout_banner()
+
+
+# Tick the lockout countdown down each frame and keep the bottom banner's text in sync.
+func _tick_kill_lockout(delta: float) -> void:
+	if _kill_lockout_display <= 0.0:
+		return
+	_kill_lockout_display = maxf(0.0, _kill_lockout_display - delta)
+	_update_kill_lockout_banner()
+	if _kill_lockout_display == 0.0 and _mhud != null:
+		_mhud.add_log("Blade ready.")
+
+
+func _update_kill_lockout_banner() -> void:
+	if _player_hud_layer == null:
+		return
+	if _kill_lockout_label == null or not is_instance_valid(_kill_lockout_label):
+		_kill_lockout_label = Label.new()
+		_kill_lockout_label.add_theme_font_size_override("font_size", 24)
+		_kill_lockout_label.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3))
+		_kill_lockout_label.add_theme_constant_override("outline_size", 6)
+		_kill_lockout_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
+		_kill_lockout_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		# Bottom-centre, sitting just above the ability bar — the "reflected in the bottom" spot.
+		_kill_lockout_label.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+		_kill_lockout_label.offset_top = -170.0
+		_kill_lockout_label.offset_bottom = -140.0
+		_kill_lockout_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_player_hud_layer.add_child(_kill_lockout_label)
+	_kill_lockout_label.visible = _kill_lockout_display > 0.0
+	if _kill_lockout_display > 0.0:
+		_kill_lockout_label.text = "BLADE LOCKED — %ds" % int(ceil(_kill_lockout_display))
 
 
 func _flash_bonus_label(text: String) -> void:
@@ -2284,6 +2370,7 @@ func _process(delta: float) -> void:
 		_tick_danger(delta)  # AC-style "hunter closing in" cue (host decides the level; identity-safe)
 		_tick_drop_watch(delta)  # watch rooftop->ground drops, for the DROP kill bonus
 		_tick_blend(delta)  # active blending: standing still in a hide-spot bleeds exposure fast
+		_tick_clones(delta)  # CLONES: drive each active clone in its caster's live heading (host owns motion)
 	_tick_round_countdown(delta)  # start-of-round freeze + "3/2/1/GO!" overlay
 	_retry_spawn_if_needed(delta)
 	_update_local_view()
@@ -2292,6 +2379,7 @@ func _process(delta: float) -> void:
 	_tick_morphs(delta)  # revert finished morphs (every machine; morph is applied locally)
 	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
+	_tick_kill_lockout(delta)
 	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
 	_update_lock_reticle()  # private target-lock reticle follows our soft-locked character
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
@@ -2373,6 +2461,9 @@ func _tick_item_countdown(delta: float) -> void:
 			changed = true
 		if float(s[3]) > 0.0:  # active effect
 			s[3] = maxf(0.0, float(s[3]) - delta)
+			changed = true
+		if s.size() >= 5 and float(s[4]) > 0.0:  # charge-regen countdown (shown while at 0 charges)
+			s[4] = maxf(0.0, float(s[4]) - delta)
 			changed = true
 	if changed:
 		_refresh_item_label()
@@ -2845,6 +2936,7 @@ func _refresh_item_label() -> void:
 		var charges := int(s[1])
 		var cooldown := float(s[2])
 		var active := float(s[3])
+		var regen := float(s[4]) if s.size() >= 5 else 0.0
 		var key := "slot%d" % slot
 		_mhud.set_ability_tool(key, ItemComponent.tool_name(tool), ItemComponent.tool_icon(tool))
 		var sub := "x%d" % charges
@@ -2852,6 +2944,10 @@ func _refresh_item_label() -> void:
 			sub = "ON %ds" % int(ceil(active))
 		elif cooldown > 0.0:
 			sub = "%ds" % int(ceil(cooldown))
+		elif charges <= 0 and regen > 0.0:
+			# Out of charges but RECHARGING — show the incoming charge's countdown so the slot
+			# reads as "coming back in Ns", never as dead (it used to sit at a frozen "x0").
+			sub = "+%ds" % int(ceil(regen))
 		var usable := (charges > 0 and cooldown <= 0.0 and active <= 0.0) or active > 0.0
 		_mhud.set_ability(key, sub, usable)
 	_mhud.set_ability("emote", "[V]", true)
@@ -2894,6 +2990,8 @@ func _on_tool_activated(tool: int, slot: int, peer_id: int) -> void:
 				ok = _apply_poison(character, peer_id)
 			ItemComponent.Tool.FIRECRACKER:
 				_deploy_firecracker(character, peer_id)
+			ItemComponent.Tool.CLONES:
+				ok = _deploy_clones(character)
 			_:
 				_announce_panic_unimplemented(tool)  # placeholder until its slice lands
 		# A target-needing tool (disguise/decoy/poison) fired with nothing in the ring — refund + tell.
@@ -3085,7 +3183,13 @@ func _refresh_reveals_for(peer_id: int) -> void:
 			if other_peer != peer_id and not bool(_dead_by_peer.get(other_peer, false)):
 				_receive_exposure_reveal.rpc_id(other_peer, peer_id, look)
 	if _target_reveal_subject == peer_id and _target_reveal_to != 0:
-		_receive_target_reveal.rpc_id(_target_reveal_to, look)
+		_receive_target_reveal.rpc_id(_target_reveal_to, look, false)
+	# RESPAWN MODE: every hunter whose TARGET plate shows this player gets the refreshed look
+	# ("?" while disguised, the real sprite once it ends). Silent — the plate just updates.
+	for hunter in _target_portrait_subject_by_hunter:
+		if int(_target_portrait_subject_by_hunter[hunter]) == peer_id \
+				and not bool(_dead_by_peer.get(int(hunter), false)):
+			_receive_target_reveal.rpc_id(int(hunter), look, false)
 
 
 func _random_commoner_index() -> int:
@@ -3170,6 +3274,94 @@ func _tick_morphs(delta: float) -> void:
 			_morph_active.remove_at(i)
 
 
+# HOST: CLONES — convert the nearest crowd NPCs into moving copies of the caster. Their LOOK is set on
+# every machine (so all peers see the copies); their MOVEMENT is host-driven each frame in the caster's
+# live heading (_tick_clones). Returns false (→ refund) if there's no crowd nearby to convert.
+func _deploy_clones(character: Player) -> bool:
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item == null:
+		return false
+	var npcs := _nearest_npcs_local(character.global_position, item.clones_count, item.clones_radius)
+	if npcs.is_empty():
+		return false
+	var names: Array = []
+	for npc in npcs:
+		names.append(String((npc as Node).name))
+	_spawn_clones.rpc(String(character.name), names, item.clones_seconds)  # everyone: re-skin them to the caster
+	# DIVERGING paths: each clone gets its own walk target fanned off the caster's heading
+	# (roughly left / right / behind), so the copies scatter like separate pedestrians. A
+	# lockstep group that mirrored your heading marked itself out — now the hunter sees the
+	# same body walking off in several believable directions and must pick one.
+	var heading := character.velocity.normalized() if character.velocity.length() > 5.0 \
+			else Vector2.RIGHT.rotated(randf() * TAU)
+	var fan_angles: Array[float] = [deg_to_rad(-60.0), deg_to_rad(60.0), deg_to_rad(180.0), deg_to_rad(0.0)]
+	for i in npcs.size():
+		var direction: Vector2 = heading.rotated(fan_angles[i % fan_angles.size()] + randf_range(-0.3, 0.3))
+		var target: Vector2 = character.global_position + direction * item.clones_scatter_distance_px
+		_clones_active.append({"npc": npcs[i], "player": character, "left": item.clones_seconds,
+			"max_scale": item.clones_max_speed_scale, "target": target})
+	return true
+
+
+# Everyone: set each named NPC's look to the caster's, and register the revert in _morph_active so the
+# shared _tick_morphs restores it after `duration` on every machine (identity-safe: it's just a re-skin).
+@rpc("authority", "call_local", "reliable")
+func _spawn_clones(player_name: String, npc_names: Array, duration: float) -> void:
+	if _players_parent == null or _crowd_parent == null:
+		return
+	var player := _players_parent.get_node_or_null(player_name) as Node2D
+	if player == null:
+		return
+	var src := player.get_node_or_null("CharacterVisual")
+	if src == null or not src.has_method("get_appearance"):
+		return
+	var look := int(src.call("get_appearance"))
+	for n in npc_names:
+		var npc := _crowd_parent.get_node_or_null(String(n))
+		if npc == null:
+			continue
+		var visual: Node = npc.get_node_or_null("CharacterVisual")
+		if visual == null or not visual.has_method("set_appearance"):
+			continue
+		_morph_active.append({"visual": visual, "restore": int(visual.call("get_appearance")), "left": duration})
+		visual.call("set_appearance", look)
+
+
+# HOST, per frame: keep each clone walking its OWN diverging path, at the caster's CURRENT pace
+# (walk stays walk, sprint stays sprint, stop stays stop — pace is the tell that must match).
+# Drop a clone when its time is up or its caster/NPC is gone — the NPC's react timer then runs
+# out and it rejoins the crowd; _tick_morphs reverts its look everywhere.
+func _tick_clones(delta: float) -> void:
+	for i in range(_clones_active.size() - 1, -1, -1):
+		var e: Dictionary = _clones_active[i]
+		e["left"] = float(e["left"]) - delta
+		var npc = e["npc"]
+		var player = e["player"]
+		var gone := npc == null or not is_instance_valid(npc) or player == null or not is_instance_valid(player)
+		if not gone and npc.has_method("is_dead") and npc.is_dead():
+			gone = true
+		if gone or float(e["left"]) <= 0.0:
+			_clones_active.remove_at(i)
+			continue
+		_drive_clone_toward(npc, e.get("target", npc.global_position), player.velocity, float(e["max_scale"]))
+
+
+# One clone, one frame: match the caster's pace, but walk toward the clone's OWN fanned-out
+# target along navigation (drive_clone_path). A ~stationary caster freezes the clones too —
+# copies that keep strolling while "you" stand still would give the real body away instantly.
+func _drive_clone_toward(npc: Node, target: Vector2, owner_velocity: Vector2, max_scale: float) -> void:
+	var speed := owner_velocity.length()
+	if speed < 5.0:
+		npc.call("drive_clone", Vector2.ZERO, 0.0, 0.3)  # caster stopped → clone stands (legacy raw mode)
+		return
+	var ms := float(npc.get("move_speed"))
+	var scale := (clampf(speed / ms, 0.0, max_scale)) if ms > 1.0 else 1.0
+	if npc.has_method("drive_clone_path"):
+		npc.call("drive_clone_path", target, scale, 0.3)
+	else:
+		npc.call("drive_clone", owner_velocity.normalized(), scale, 0.3)
+
+
 # HOST-only, per frame: stun any (non-owner) player standing in a smoke cloud, for the cloud's
 # stun_seconds; tick the stun down and lift it (unfreeze + re-enable kills) when it ends.
 func _update_smoke_stuns(delta: float) -> void:
@@ -3202,6 +3394,11 @@ func _set_player_stunned(character: Player, on: bool) -> void:
 	var kill := character.get_node_or_null("KillComponent")
 	if kill != null:
 		kill.set("attacks_disabled", on)
+	# Tools are blocked too: this runs on the HOST's authoritative copy, so both the host's own
+	# input and every relayed client request get rejected in ItemComponent._activate.
+	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if item != null:
+		item.owner_stunned = on
 
 
 # HOST: send a player their authoritative tool state (owner-only): per slot [tool, charges,
@@ -3217,7 +3414,8 @@ func _push_item_state_to(peer_id: int) -> void:
 		return
 	var slots: Array = []
 	for slot in 2:
-		slots.append([item.tool_in_slot(slot), item.charges_left_slot(slot), item.cooldown_left_slot(slot), item.active_left_slot(slot)])
+		slots.append([item.tool_in_slot(slot), item.charges_left_slot(slot), item.cooldown_left_slot(slot),
+			item.active_left_slot(slot), item.regen_left_slot(slot)])
 	_receive_item_state.rpc_id(peer_id, slots)
 
 
@@ -3246,12 +3444,15 @@ func _build_faceplate_row() -> void:
 		_mhud.add_exposed_reveal(int(pair[0]), int(pair[1]))
 
 
-# Owner-only: we finished our marks first — here's our target's look (red plate).
+# Owner-only: here's your target's look (red TARGET plate). Classic mode sends it once (the
+# earned marks-first reveal); respawn mode sends it on every (re)assignment AND on the target's
+# disguise changes. `is_new_target` false = a silent plate refresh (no log spam on disguise flips).
 @rpc("authority", "call_local", "reliable")
-func _receive_target_reveal(appearance_index: int) -> void:
+func _receive_target_reveal(appearance_index: int, is_new_target: bool = true) -> void:
 	if _mhud != null:
 		_mhud.set_target_reveal(appearance_index)
-		_mhud.add_log("Marks down — your target is revealed.")
+		if is_new_target:
+			_mhud.add_log("New target — their look is on your red TARGET plate.")
 	else:
 		_pending_target_face = appearance_index
 

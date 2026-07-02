@@ -56,6 +56,7 @@ var _hunter_stunned: bool = false
 var _disguise_left: float = 0.0
 var _disguise_real_index: int = -1
 var _offline_morphs: Array = []  # [{visual, restore, left}]
+var _offline_clones: Array = []  # CLONES: NPCs mirroring the player's heading — [{npc, left, max_scale}]
 
 
 func _ready() -> void:
@@ -222,11 +223,26 @@ func _build_hud(map: TestMap01) -> Label:
 	if kill_component != null:
 		kill_component.lock_changed.connect(func(is_locked: bool) -> void:
 			if is_locked: _mhud.add_log("Suspect locked."))
+		# Blade lockout after killing an innocent (mirrors online; the component enforces it).
+		kill_component.kill_lockout_started.connect(func(seconds: float) -> void:
+			_mhud.add_log("You cut down an innocent — blade locked for %ds." % int(round(seconds))))
 
 	_item = _player.get_node_or_null("ItemComponent") as ItemComponent
+	# The offline harness honours the lobby's tool pick, so you can test ANY tool here (e.g. open a
+	# lobby, set a slot to "Clones", back out, then launch single-player). Defaults to Smoke+Decoy.
+	if _item != null and NetworkManager.selected_tools is Array and NetworkManager.selected_tools.size() >= 2:
+		_item.apply_equipped(NetworkManager.selected_tools)
 	# Offline we own the tool effects directly: apply each tool when the kit fires it.
 	if _item != null and _item.has_signal("tool_activated"):
 		_item.tool_activated.connect(_on_offline_tool)
+	# The kit can now end a disguise EARLY (running breaks it) — restore our body the
+	# moment it says so, not when our own countdown would have run out.
+	if _item != null and _item.has_signal("tool_expired"):
+		_item.tool_expired.connect(func(tool: int, _slot: int) -> void:
+			if tool == ItemComponent.Tool.DISGUISE and _disguise_left > 0.0:
+				_end_disguise_offline()
+				if _mhud != null:
+					_mhud.add_log("You broke into a run — disguise blown."))
 
 	# Rough scoring: +1 per valid kill, shown in the roster.
 	if kill_component != null and kill_component.has_signal("kill_resolved"):
@@ -254,6 +270,7 @@ func _process(delta: float) -> void:
 			var charges := _item.charges_left_slot(slot)
 			var cooldown := _item.cooldown_left_slot(slot)
 			var active := _item.active_left_slot(slot)
+			var regen := _item.regen_left_slot(slot)
 			var key := "slot%d" % slot
 			_mhud.set_ability_tool(key, ItemComponent.tool_name(tool), ItemComponent.tool_icon(tool))
 			var sub := "x%d" % charges
@@ -261,6 +278,8 @@ func _process(delta: float) -> void:
 				sub = "ON %ds" % int(ceil(active))
 			elif cooldown > 0.0:
 				sub = "%ds" % int(ceil(cooldown))
+			elif charges <= 0 and regen > 0.0:
+				sub = "+%ds" % int(ceil(regen))  # out of charges but recharging — never a dead "x0"
 			_mhud.set_ability(key, sub, (charges > 0 and cooldown <= 0.0 and active <= 0.0) or active > 0.0)
 		_mhud.set_ability("emote", "[V]", true)
 	# Offline smoke: freeze the AI hunter while it's standing inside any smoke cloud.
@@ -276,11 +295,8 @@ func _process(delta: float) -> void:
 	# Offline disguise: count down + restore the player's real body when it ends.
 	if _disguise_left > 0.0:
 		_disguise_left = maxf(0.0, _disguise_left - delta)
-		if _disguise_left == 0.0 and _disguise_real_index >= 0 and _player != null:
-			var pv := _player.get_node_or_null("CharacterVisual")
-			if pv != null and pv.has_method("set_appearance"):
-				pv.call("set_appearance", _disguise_real_index)
-			_disguise_real_index = -1
+		if _disguise_left == 0.0:
+			_end_disguise_offline()
 	# Offline morph: count down each NPC override + restore it when done.
 	for i in range(_offline_morphs.size() - 1, -1, -1):
 		var m: Dictionary = _offline_morphs[i]
@@ -291,6 +307,19 @@ func _process(delta: float) -> void:
 		elif float(m["left"]) <= 0.0:
 			mv.call("set_appearance", int(m["restore"]))
 			_offline_morphs.remove_at(i)
+	# Offline clones: drive each active clone in the player's live heading; drop it when its time's up
+	# (its look reverts via _offline_morphs; its motion returns to normal when the react timer lapses).
+	for i in range(_offline_clones.size() - 1, -1, -1):
+		var c: Dictionary = _offline_clones[i]
+		c["left"] = float(c["left"]) - delta
+		var cnpc = c["npc"]
+		var cgone := cnpc == null or not is_instance_valid(cnpc) or _player == null
+		if not cgone and cnpc.has_method("is_dead") and cnpc.is_dead():
+			cgone = true
+		if cgone or float(c["left"]) <= 0.0:
+			_offline_clones.remove_at(i)
+			continue
+		_drive_clone_offline(cnpc, c.get("target", cnpc.global_position), _player.velocity, float(c["max_scale"]))
 	# Top-left portrait shows "?" while your identity is hidden (disguise or morph active).
 	if _disguise_left > 0.0 or not _offline_morphs.is_empty():
 		_mhud.set_portrait_unknown()
@@ -310,6 +339,8 @@ func _on_offline_tool(tool: int, slot: int) -> void:
 		ok = _apply_disguise_offline()
 	elif tool == ItemComponent.Tool.MORPH:
 		_apply_morph_offline()
+	elif tool == ItemComponent.Tool.CLONES:
+		ok = _deploy_clones_offline()
 	elif tool == ItemComponent.Tool.POISON:
 		ok = _apply_poison_offline()
 	elif _mhud != null:
@@ -320,6 +351,17 @@ func _on_offline_tool(tool: int, slot: int) -> void:
 			_item.refund(slot)
 		if _mhud != null:
 			_mhud.add_log("Aim at someone in your ring first.")
+
+
+# End the offline disguise NOW: restore the player's real body and clear the timer. Called
+# both by the normal countdown and by the kit's break-on-run expiry.
+func _end_disguise_offline() -> void:
+	_disguise_left = 0.0
+	if _disguise_real_index >= 0 and _player != null:
+		var pv := _player.get_node_or_null("CharacterVisual")
+		if pv != null and pv.has_method("set_appearance"):
+			pv.call("set_appearance", _disguise_real_index)
+	_disguise_real_index = -1
 
 
 # Offline disguise: become a random commoner for the duration (single screen, so we just swap our
@@ -367,6 +409,60 @@ func _apply_morph_offline() -> void:
 		if visual != null and visual.has_method("set_appearance"):
 			_offline_morphs.append({"visual": visual, "restore": int(visual.call("get_appearance")), "left": _item.morph_seconds})
 			visual.call("set_appearance", look_index)
+
+
+# Offline CLONES: convert the nearest crowd NPCs into moving copies of the player that mirror the
+# player's heading. Their look reverts via _offline_morphs; _process drives their motion each frame.
+# Returns false (→ refund) when there's no crowd nearby to convert.
+func _deploy_clones_offline() -> bool:
+	if _player == null or _item == null:
+		return false
+	var src := _player.get_node_or_null("CharacterVisual")
+	if src == null or not src.has_method("get_appearance"):
+		return false
+	var look_index := int(src.call("get_appearance"))
+	var scored: Array = []
+	for node in get_tree().get_nodes_in_group("npc"):
+		var npc := node as Node2D
+		if npc == null or (npc.has_method("is_dead") and npc.is_dead()):
+			continue
+		var dist := npc.global_position.distance_to(_player.global_position)
+		if dist <= _item.clones_radius:
+			scored.append({"npc": npc, "dist": dist})
+	if scored.is_empty():
+		return false
+	scored.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a["dist"] < b["dist"])
+	# DIVERGING paths (mirrors the online version): each clone walks its own fanned-out target
+	# at the player's pace, so the copies scatter like separate pedestrians instead of lockstep.
+	var heading := _player.velocity.normalized() if _player.velocity.length() > 5.0 \
+			else Vector2.RIGHT.rotated(randf() * TAU)
+	var fan_angles: Array[float] = [deg_to_rad(-60.0), deg_to_rad(60.0), deg_to_rad(180.0), deg_to_rad(0.0)]
+	for i in mini(_item.clones_count, scored.size()):
+		var npc: Node2D = scored[i]["npc"]
+		var visual = npc.get_node_or_null("CharacterVisual")
+		if visual != null and visual.has_method("set_appearance"):
+			_offline_morphs.append({"visual": visual, "restore": int(visual.call("get_appearance")), "left": _item.clones_seconds})
+			visual.call("set_appearance", look_index)
+		var direction: Vector2 = heading.rotated(fan_angles[i % fan_angles.size()] + randf_range(-0.3, 0.3))
+		var target: Vector2 = _player.global_position + direction * _item.clones_scatter_distance_px
+		_offline_clones.append({"npc": npc, "left": _item.clones_seconds,
+			"max_scale": _item.clones_max_speed_scale, "target": target})
+	return true
+
+
+# One offline clone, one frame: match the player's pace but walk the clone's OWN diverging
+# target along navigation. A ~stationary player freezes the clones too (mirrors online).
+func _drive_clone_offline(npc: Node, target: Vector2, owner_velocity: Vector2, max_scale: float) -> void:
+	var speed := owner_velocity.length()
+	if speed < 5.0:
+		npc.call("drive_clone", Vector2.ZERO, 0.0, 0.3)  # player stopped → clone stands
+		return
+	var ms := float(npc.get("move_speed"))
+	var scale := (clampf(speed / ms, 0.0, max_scale)) if ms > 1.0 else 1.0
+	if npc.has_method("drive_clone_path"):
+		npc.call("drive_clone_path", target, scale, 0.3)
+	else:
+		npc.call("drive_clone", owner_velocity.normalized(), scale, 0.3)
 
 
 func _random_commoner_index() -> int:

@@ -2,16 +2,22 @@
 
 [ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
 
-; Compact arena — UNSEEN's MAIN MAP. Reuses the WHOLE test_map_01 script; only the grid
-; (layout_override) and the play size change. A 17x13 grid with VARIED building footprints
-; (squares, thin towers, and L-shapes — not just boxes), a 1-cell perimeter ring road, a
-; central fountain plaza, and two open CORNER POCKETS (NE + SW) where the sewer entrances
-; cluster. Rooftops are removed. Connectivity flood-fill verified (scratchpad/compact_layout.py).
+; Compact arena — UNSEEN's MAIN MAP (2-3 players). Reuses the WHOLE test_map_01 script; only the
+; grid (layout_override) and the play size change. v2 layout pass (prayer): the double west/east
+; boulevards and the long row-5/row-11 avenues are BROKEN with building jogs so no interior
+; sightline exceeds ~9 cells (chases now offer a corner within about half a screen); two roofed
+; ALLEY cut-throughs ('a') pierce the west block (via its courtyard) and the NE block — slip in
+; one mouth, exit another; one covered ALCOVE sits by the canal's west bank (a 1-deep hide pocket
+; under an overhang). Overhangs are ON (margin 2) so the concealment game matches the Citadel.
+; Perimeter ring keeps its long sightlines on purpose: it is the exposed "run at your peril" track.
+; Connectivity flood-fill verified (scratchpad gen_maps_v2.py).
 
 [node name="TestMap02" type="Node2D"]
 script = ExtResource("1_map")
 play_half_width = 1440.0
 play_half_height = 1120.0
-layout_override = Array[String](["#################", "#...............#", "#..####...###...#", "#..####...##....#", "#..#..#...##....#", "#..#............#", "#.......F.......#", "#.......W.......#", "#...###.B.##....#", "#.....#.W.##.#..#", "#..##.#.W....#..#", "#.......B.......#", "#################"])
+enable_overhangs = true
+overhang_border_margin = 2
+layout_override = Array[String](["#################", "#...............#", "#.###a#...#a###.#", "#.###a#...#a.##.#", "#.##..#...#a....#", "#..#......##....#", "#.......F.......#", "#.......W.......#", "#.#####.B.##....#", "#.....##W###.#..#", "#..##.#.W....#..#", "#..##...B....#..#", "#################"])
 
 [node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]

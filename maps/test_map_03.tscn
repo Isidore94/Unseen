@@ -2,22 +2,27 @@
 
 [ext_resource type="Script" path="res://scripts/test_map_01.gd" id="1_map"]
 
-; CITADEL — an AC-Rearmed-style dense city, the evolution of the Compact arena. Reuses the WHOLE
-; test_map_01 script; only the grid (layout_override) and the play size change. It is ~33% BIGGER
-; than Compact (play_half 1920x1493 vs 1440x1120) and uses a DENSER 27x21 grid so the 1-cell streets
-; are TIGHTER and there are far MORE buildings (274 vs Compact's ~95) — irregular blocks, L-shapes,
-; merged superblocks and a big central palazzo, split by winding 1-cell alleys, around a central
-; piazza with a fountain landmark. Same procedural stylized art as every other map.
-; STRIPPED FOR A PURE-PvP TEST: no portals (teleporters/trapdoor), no sewer access points, no canal
-; — just crowd, buildings and streets. Generated + flood-fill connectivity-verified (scratchpad/gen_citadel.py).
+; CITADEL — an AC-Rearmed-style dense city (3-4 players). Reuses the WHOLE test_map_01 script;
+; only the grid (layout_override) and the play size change. v2 layout pass (prayer):
+;  - the wasted DOUBLE south boulevard (two fully-open rows) is reclaimed — the second row is
+;    built over, and jogs break the remaining ring straights (N and S) plus the long interior
+;    avenues, so no uncovered sightline exceeds ~11 cells (was 25);
+;  - EIGHT roofed ALLEYS ('a'): the five old dead-end nooks are punched THROUGH their buildings
+;    (they were uncovered death traps; now they're cut-throughs — enter one mouth, exit another),
+;    a 4-cell covered passage crosses the long west-centre wall (row 13), a 3-cell passage cuts
+;    the big SE superblock (col 17), and a covered ARCH spans the col-5/row-14 crossroads;
+;  - two covered 1-deep ALCOVES ((17,9) and (20,16)) are deliberate hide pockets under overhangs;
+;  - SEWER corner pockets are back (NE+SW, 3 entrances each) so the corners have a purpose —
+;    teleporters/trapdoor stay REMOVED (enable_portals=false), sewers are duck-for-cover only.
+; Player spawns snap to the nearest open cell (the script handles the filled south row).
+; Connectivity flood-fill verified (scratchpad gen_maps_v2.py).
 
 [node name="TestMap03" type="Node2D"]
 script = ExtResource("1_map")
 play_half_width = 1920.0
 play_half_height = 1493.0
 enable_portals = false
-sewer_entrances_per_pocket = 0
 enable_overhangs = true
-layout_override = Array[String](["###########################", "#.........................#", "#.###.###.###.###....###..#", "#..##.###..##.###....###..#", "#.###................###..#", "#.##..###.###.###.##.###..#", "#.###..##..##.###..#.##...#", "#.....###............###..#", "#.###.###.#.....#.##......#", "#.###.###.#.....#.##......#", "#.###.###....F............#", "#..##.#####.....#..#.##...#", "#.###.#####.....#.##.###..#", "#.###.####......#.##.###..#", "#....................###..#", "#.###.###.....######.###..#", "#.###.###.#.#.######.###..#", "#.###.###.....######.##...#", "#.........................#", "#.........................#", "###########################"])
+layout_override = Array[String](["###########################", "#.........##......##......#", "#.###.###.....###....###..#", "#..aa.###..##.###....###..#", "#.###......##........####.#", "#.aa..###.###.###.#######.#", "#.###..aa..##.###..#.aa...#", "#.....###.....#......###..#", "#..##.###.#.....####..##..#", "##.##.###.#.....#.##..##..#", "#..##.###....F...........##", "#..aa.#####.....#..#.##...#", "#.###.#####.....#.##.###..#", "#.###.aaaa......#.##.###..#", "#....a..........#....###..#", "#.###.###.....###a#######.#", "#.###.###.#.#.###a##.####.#", "#.###.###.....###a##......#", "#.........###........##...#", "###########################", "###########################"])
 
 [node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]
