@@ -11,14 +11,17 @@ the host owns every outcome, and a client never receives data that reveals which
 (except the deliberate reveals) — see the server-authoritative rule (#5 below).
 
 ## Source-of-truth docs (read the relevant one before working — don't guess intent)
-- **`master_plan.md`** — *what the game is and how it plays.* Every mechanic, numbered by section
-  (§3 exposure, §5 detection, §6 kill, §7 contract, §8 map control, §9/§9A tools & classes, §16 pillars).
+- **`plan.md`** — *THE roadmap.* Gameplay + technical audit and dependency-ordered milestones
+  (P0 core rules §3, exposure model §4, gadgets §5, rooftops/sewers §6, architecture §7,
+  testing/telemetry §9, milestones §11, first slice §13). Being incorporated now.
+- **`potential gameplay updates.md`** — proposed gameplay experiments (exterior-route value,
+  optional objectives). Its §2 "Locked design decisions" is binding. Incorporated after plan.md.
 - **`COSMETIC_SYSTEM_SPEC.md`** — the cosmetic/identity rig (body/outfit/head/weapon layers, loadouts,
   inventory). **`ART_PIPELINE.md`** — the PixelLab art pipeline + 48px rig format.
 - **`CHANGELOG.md`** — detailed running log; update it as we go so sessions don't lose the thread.
   **`changelogsimple.md`** — the brief player-facing devlog.
-- *No build-plan doc right now* — the old `buildplan.md`/phase docs were removed; a fresh plan for the
-  next stage is incoming. Until then, the cross-cutting online rules live in #1–#7 below.
+- (Old `master_plan.md` / `MULTIPLAYER_PLAN.md` / `RESPAWN_MODE_PLAN.md` are deleted — code comments
+  still citing their § numbers are historical; `plan.md` supersedes them.)
 
 ## Engine & stack
 - Godot **4.7 stable**, **GDScript**, **Compatibility (OpenGL3)** renderer. Windows dev machine.

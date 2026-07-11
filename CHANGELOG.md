@@ -2,6 +2,118 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — sequential hunter intel: faint arrow → solid arrow → face plate
+
+- **The intel escalation is now ONE visual, in SEQUENCE** (user call: no more "translucent
+  square + arrow at the same time"): 25–49 Noticed = the 4-way pulse arrow is TRANSLUCENT
+  (`noticed_pulse_alpha` 0.45); 50+ Exposed = the SAME arrow turns SOLID and precise; the blue
+  EXPOSED face plate (the translucent portrait square) moved from 50 to a NEW third step,
+  `GameRules.reveal_exposure` (75) — so the plate and the arrow's solid switch never pop at the
+  same instant. Hot-roof glow stays at 50. PvE precision tiers now only sharpen DIRECTION —
+  the band alone picks the alpha.
+- New dev test `test_arrow_bands.tscn` (7 checks): no arrow <25, translucent cardinal pulse
+  25–49 (dark between pulses), solid at 50+, no stale solid when cooling back down. All pass.
+
+## Session: prayer — exposure economy: THREE decay speeds; player-kill heat decays slowest
+
+- **THREE EXPOSURE POOLS, three speeds — everything decays, nothing is permanent** (design call
+  this session): movement heat (running/lurking) falls FASTEST (5.3/s walking); committed spikes
+  (abilities + NPC kills + whiffs) bleed SLOWLY (0.25/s ≈ 100s per +25); and NEW: PLAYER kills
+  land +25 in their own SLOWEST pool (`kill_decay_per_second` 0.1/s ≈ 250s per kill) — each
+  assassination leaves you more visible to YOUR hunter for most of the round, so serial killers
+  get progressively easier to find (a snowball brake). Two un-decayed kills = the 50 Exposed
+  band. Poison player kills add the same heat when the body drops (poison total = +25 ability
+  +25 kill vs blade's +25). Counter-stuns verified exposure-free. Death still wipes everything.
+- New ExposureComponent Door 2b `add_kill_exposure()` + `_kill_exposure` pool; GameRules gains
+  `player_kill_committed_exposure` (25) + `player_kill_decay_per_second` (0.1), pushed at spawn
+  like the rest of the economy. Offline default committed decay aligned 0.42 → 0.25 so
+  single-player matches online. (Supersedes plan.md §4's single "+25 assassination into the
+  shared pool" — the locked decisions in potential gameplay updates.md §2 only bind the ability
+  +25, which is unchanged.)
+- dev_tests/test_contract_rules extended to 21 checks: per-outcome pool assertions (player kill
+  → slow pool only; whiff/mark → committed; interference → nothing) + a simulated 10s calm tick
+  proving the decay ordering movement > committed > player-kill. All pass.
+
+## Session: prayer — Rotating Targets lobby option, respawn safety, permanent dev_tests/
+
+- **ROTATING TARGETS (new lobby toggle, host-side, for A/B playtests)** — OFF (default) = STATIC:
+  your target is always the same player (the fixed seat ring, unchanged behaviour). ON = each new
+  life the host tries to deal you a DIFFERENT target than the one you had when you died; when no
+  fresh target exists yet you WAIT contract-less (arrow cleared, portrait "?", "lie low" notify)
+  until a death reshuffles the ring — or `rotating_wait_timeout_seconds` (20s) relents and hands
+  your old target back. 2-player matches always fall back to the mutual pair (no one else to
+  rotate to; the respawn look-change provides freshness there). The choice rides the lobby's
+  `_begin_match` RPC into `NetworkManager.rotating_targets` and is stamped into the match ledger
+  context, so A/B test ledgers are labelled.
+- **NEW `TargetRing` (scripts/net/target_ring.gd)** — first bite of plan §3.2's TargetGraph: ALL
+  who-hunts-whom math extracted into a pure class (no nodes/network). `from_seats()` = the old
+  static behaviour exactly; `rotating()` = exhaustive search (≤4! orders) preferring a fresh full
+  cycle, degrading to a zero-violation PATH (tail waits, head briefly unhunted), and falling back
+  to any cycle rather than ever stalling the match. Waiting players' stale stun-shields and
+  killable tags are cleaned on every rewire.
+- **RESPAWN SAFETY (plan §3.4)** — the spawn picker now HARD-EXCLUDES any candidate inside a live
+  player's estimated camera box (`spawn_camera_exclusion_extents`, ~780×470 px half-extents at
+  zoom 1.4 — nobody ever watches a body pop in) and replaces "closer to your target is better"
+  with a NEUTRAL DISTANCE BAND (`spawn_prey_band_min/max_px` 800–1800 ≈ a 10-20s walk; no more
+  unearned spawn-on-top contact). Spawn GRACE now breaks on ANY offensive act — landed kill,
+  whiff, interference, or tool use (`_break_grace_for`) — not just a landed kill.
+- **PERMANENT `dev_tests/` (plan §9)** — headless rule tests we keep instead of scratch-testing:
+  `test_contract_rules.tscn` (the 11-check attack matrix incl. interference lockout) and
+  `test_target_ring.tscn` (12 checks: static rings, rotating freshness, waiting, fallbacks), plus
+  `run_all.ps1` and a README. All 23 checks pass; online/lobby/SP scenes boot clean.
+
+## Session: prayer — plan.md incorporated: P0 core rules, GameRules data layer, 50-threshold, ledger
+
+`plan.md` (the ChatGPT-built gameplay/technical roadmap) is now the source-of-truth roadmap; its
+"first implementation slice" (§13) is in. `master_plan.md`, `MULTIPLAYER_PLAN.md` and
+`RESPAWN_MODE_PLAN.md` are DELETED (superseded — code comments citing their § numbers are
+historical); CLAUDE.md points at plan.md + `potential gameplay updates.md` (incorporated next; its
+§2 "Locked design decisions" is binding).
+
+- **P0 CONTRACT ENFORCEMENT (plan §3.1) — the ring is now the RULE, not guidance**: the
+  `is_in_group("player")` blanket that made EVERY human a valid clean kill is gone from blade AND
+  poison. Outcomes: assigned prey → kill; your hunter → counter-stun; any OTHER human →
+  INTERFERENCE (new signal — no death, no score, attacker told "not your contract"); NPC mark →
+  kill + blade lockout; civilian → whiff. Poison on an unrelated player is refused (charge
+  refunds). NEW `_sync_killable_groups()` runs after every ring mutation (rewire/relink/insert)
+  because the killable_for group is now load-bearing — it strips STALE memberships that previously
+  let a hunter keep killing an old target (pre-existing hole, masked by the blanket rule).
+  Verified with a 7-case attacker/victim matrix test: all pass.
+- **GameRules DATA LAYER (plan §7.2/§13.1)** — new `GameRules` resource (scripts/data/game_rules.gd)
+  + `data/rules/citadel_hunt_cycle.tres` (no marks, straight hunt) and `compact_marks_duel.tres`
+  (2 marks, carried across respawns). The map→mode coupling stays (it's a balance tool) but is now
+  explicit + versioned data: marks gate, round time (240s), score values, exposure thresholds,
+  ability/kill spikes, committed decay, blend-spots toggle all read from the profile — no more
+  `selected_map == COMPACT` branches. Every peer loads the same file deterministically.
+- **SCORING (plan §3.3) — readable and capped**: prey kill 100 is the only primary event; clean
+  approach 0–40 (from exposure at the kill), UNDER PRESSURE 15, ONE style tag max (poison/drop/
+  blend) 10; total bonus HARD-CAPPED at 50. REVENGE, STREAK multipliers, BLEND-farm (200!) and the
+  ESCAPE free-points award are removed. Counter-stun scores 0 (it's an escape tool, not a farm —
+  the stun effect itself is unchanged).
+- **EXPOSURE 50-THRESHOLD (plan §4; locked in potential gameplay updates.md §2)** — the serious
+  state begins at 50, no second cliff at 100. Hunt-arrow intel bands by TARGET exposure: <25
+  Blended = NO arrow (behaviour is the only tell); 25–49 Noticed = infrequent 4-way pulse
+  (flash_interval); 50+ Exposed = solid precise bearing. Blue reveal plate + hot-cover roof glow
+  both moved from 100 → 50. POISON now pays the same +25 committed spike as every ability (the
+  exception is deleted); kills commit +25 (was 22); committed decay 0.42 → 0.25/s (~100s per
+  action — two quick abilities cross the 50 threshold). Static blend circles are OFF in the core
+  profiles (meter-erasing camp spots); code kept for casual variants. This supersedes the earlier
+  "4-way unless 100%" arrow and 100-only roof glow.
+- **MATCH LEDGER (plan §9/§13.6)** — new host-only `MatchLedger` (scripts/net/match_ledger.gd):
+  timestamped JSON event stream (match_started, target_assigned, player_killed, player_respawned,
+  score_awarded, counter_stun, final_score, match_ended) written to `user://ledgers/match_<t>.json`
+  at match end, so playtest blocks are compared with data instead of memory.
+- **INTERFERENCE SHORT RECOVERY (plan §3.3 "failed strike + short recovery")** — striking a human
+  who is neither prey nor hunter still kills nobody, but now rattles the blade for
+  `interference_lockout_seconds` (5s; shorter than the 10s NPC window on purpose) — so blade-poking
+  strangers is never a FREE "is this a human?" probe. NPC kills are UNCHANGED (die + 10s lock).
+  `kill_lockout_started` now carries a reason ("npc_kill"/"interference") so the HUD log explains
+  the right cause; counter-stun stays legal during it. Verified with an 11-check matrix test
+  (stranger survives + 5s lock, prey blocked while rattled, stun legal, prey kill = no lockout,
+  NPC whiff = death + 10s).
+- Deferred from plan.md (next passes): §3.2 TargetGraph local-splice reassignment, §7.1 service
+  extraction from online_match.gd, evidence-based danger cues, tool reworks (Milestone C).
+
 ## Session: prayer — exposure economy: fast build, slow (1/3) wear-off for running + lurking
 
 - **1-second grace before the standing-still camp timer applies (playtest request)** — the shorter

@@ -59,6 +59,13 @@ enum Map { FOUR_ZONE, COMPACT, ROME, CITADEL }
 ## Defaults to CITADEL — our main map now (matches small_arena = true above).
 var selected_map: int = Map.CITADEL
 
+## ROTATING TARGETS (lobby option, host picks). false = STATIC: your target is always the same
+## player (the fixed seat ring). true = each new life the host tries to hand you a DIFFERENT
+## target than your last one — and when no fresh one exists yet you WAIT, contract-less, until
+## a death reshuffles the ring (or the match's wait timeout hands your old target back).
+## Lives here so it survives the lobby → match scene change; only the HOST's value matters.
+var rotating_targets: bool = false
+
 ## The two TOOLS this player picked in the lobby (ItemComponent.Tool ints: 0=smoke, 1=disguise,
 ## 2=morph, 3=decoy, 4=poison). Lives here so it survives the lobby → match scene change; the match
 ## sends it to the host, who stamps it into this player's spawn. Default: smoke + decoy.

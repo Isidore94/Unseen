@@ -100,10 +100,10 @@ var owner_stunned: bool = false
 ## your heading in lockstep — a synchronized trio was itself a tell that marked the whole group.
 @export var clones_scatter_distance_px: float = 420.0
 
-## Exposure (0-100) ADDED to the user each time an ability is used — a FLAT spike for every tool, so
-## any ability use reads the same on your hunter's arrow. It then decays over ~a minute
-## (ExposureComponent.committed_decay_per_second). POISON is the deliberate exception (a silent kill:
-## NO spike — see exposure_for_tool). Applied by the authority.
+## Exposure (0-100) ADDED to the user each time an ability is used — the SAME flat spike for every
+## tool, POISON INCLUDED (plan.md §4: no exposure-free tools), so any ability use reads the same on
+## your hunter's meter. It then decays slowly (ExposureComponent.committed_decay_per_second — ~100s
+## at 0.25/s). The match overwrites this from the map's GameRules at spawn. Applied by the authority.
 @export var ability_exposure_spike: float = 25.0
 
 ## Input actions (one per slot). Local co-op assigns each player its own (p1_/p2_).
@@ -199,11 +199,10 @@ func charges_for_tool(tool: int) -> int:
 		Tool.CLONES: return clones_charges
 	return 1
 
-func exposure_for_tool(tool: int) -> float:
-	# POISON is silent — no exposure spike (that's the whole point of a quiet kill). Every other
-	# ability adds the same flat spike.
-	if tool == Tool.POISON:
-		return 0.0
+func exposure_for_tool(_tool_id: int) -> float:
+	# EVERY ability pays the same flat committed spike — POISON INCLUDED (locked decision,
+	# plan.md §4 / potential gameplay updates.md §2: no exposure-free tools; poison's quietness
+	# is its delayed, deniable kill — not a free pass on the meter).
 	return ability_exposure_spike
 
 func cooldown_for_tool(tool: int) -> float:

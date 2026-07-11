@@ -7,14 +7,14 @@
 
 The prototype already contains most of the pieces needed for a strong game: server-authoritative movement and kills, a one-hunter/one-prey ring, a crowd disguise, exposure, respawns, seven tools, perks, danger feedback, map cover, four maps, scoring, cosmetics plumbing, Steam lobbies, and several experimental anti-stall systems. The project also imports cleanly in Godot 4.7.1, and both the menu and the local AI harness start headlessly without script errors.
 
-The next step should not be “add more features.” It should be to make one clear four-player ruleset consistently fun, measurable, and technically easy to tune. At present, several systems compete with or bypass the hunt/evade loop:
+The next step should not be “add more features.” It should be to make one clear map-and-mode pairing consistently fun, measurable, and technically easy to tune, starting with the four-player Citadel hunt. At present, several systems compete with or bypass the hunt/evade loop:
 
 - `KillComponent.request_kill()` and `host_poison()` treat **any player** as a valid clean kill. In a 3–4 player match, a player can therefore kill and score from someone who is not their assigned prey. The target ring becomes guidance rather than the game rule.
-- The map currently selects core rules. Compact activates a marks-first duel while Citadel activates immediate PvP. This makes it impossible to tell whether a balance change helped because both the arena and the rules change together.
+- The map already selects core rules: Compact activates a marks-first duel while Citadel activates immediate PvP. That coupling is a useful balance tool because map size, crowd density, routes, and player count change the correct pacing. The problem is that the relationship is hard-coded through map checks instead of being an explicit, versioned map-mode definition that can be measured and tuned.
 - `online_match.gd` is over 4,100 lines and owns match flow, spawning, contracts, scoring, danger, perks, gadgets, layers, cosmetics, HUD wiring, replication, and experiments. Changes to one system can easily break another.
 - Balance data is not a database or content layer. Roughly 400 exported values and hard-coded tool/perk tables are distributed through scripts and scenes. Comments have already drifted from live perk names and behavior.
-- Exposure is doing several jobs at once, but its consequences are concentrated at a 100-point cliff. The game often moves from weak feedback to a precise arrow and face reveal instead of creating readable escalating risk.
-- Poison is silent, delayed, exposure-free, and valid against every player. Disguise can fully suppress the hunter's arrow. Permanent access-point claims can deny traversal for an entire round. These are power-without-enough-counterplay cases.
+- Exposure is doing several jobs at once, but its harsh consequences are concentrated at a 100-point cliff. The important danger threshold should instead begin at 50: reaching half exposure means the player has entered the fully exposed state, while values above 50 increase persistence/intensity rather than withholding the real punishment until 100.
+- Poison is silent, delayed, exposure-free, and valid against every player. Every active item/ability—including poison—should add the same baseline +25 committed exposure, alongside any visible or audible tell. Disguise can fully suppress the hunter's arrow, and permanent access-point claims can deny traversal for an entire round. These are power-without-enough-counterplay cases.
 - Score bonuses can dwarf the 100-point base kill. Poison, revenge, focus, drop, streak, blend, and exposure bonuses can stack into several times the value of a normal kill. This obscures the goal and can snowball.
 - Counter-stuns award kill-level points on an eight-second cooldown. The prey can potentially farm their hunter instead of using the stun to escape.
 - The rooftop and sewer implementation is currently an abstract layer flag. Characters keep using surface position and collision geometry. The sewer is blind, grants perfect prey direction, and forbids kills; the rooftop is a visibility state rather than a real route network.
@@ -24,9 +24,9 @@ The next step should not be “add more features.” It should be to make one cl
 
 ## 2. Product direction to lock first
 
-### Primary mode: Hunt Cycle
+### Primary mode family: map-authored Hunt Cycle variants
 
-Build and tune one default mode before preserving variants:
+Build and tune one map-mode pairing at a time. Citadel's immediate four-player Hunt Cycle is the main competitive target; Compact's marks-first duel is a deliberately different, map-balanced variant:
 
 - **Players:** four is the design target. Three is fully supported. Two is a duel/testing variant, not the balance target.
 - **Round:** four minutes by default, tunable from three to five.
@@ -41,7 +41,9 @@ Build and tune one default mode before preserving variants:
 - **Respawn:** 2.5–3 seconds, out of all live players' view, near believable crowd cover, and not close to the killer.
 - **Session:** immediate rematch with loadout/map vote; a best-of-three prompt after each round and a “keep playing” flow after three.
 
-Do not key rules off map IDs. Introduce a `GameRules` resource selected independently from a `MapDefinition`. Compact, Citadel, Rome, and future maps must be testable under the same Hunt Cycle rules. A marks-first duel can remain as a named experimental ruleset after the core mode is proven.
+Keep game mode coupled to the map for balance, but make that coupling explicit. Each `MapDefinition` should reference its own `GameRules` resource (for example, `citadel_hunt_cycle.tres` or `compact_marks_duel.tres`) rather than branching on `selected_map` inside `online_match.gd`. The map-mode resource owns round length, player range, whether marks are required, crowd budget, respawn behavior, exposure thresholds, and enabled traversal systems.
+
+The variants may change pacing and objectives, but they share invariant combat rules: only assigned prey can be assassinated, your hunter can be counter-stunned, unrelated players cannot be farmed, and all meaningful actions create exposure. Balance tests should compare revisions of the **same map-mode pair**; cross-map comparisons are useful only after each pairing is stable.
 
 ### The intended 20-second decision loop
 
@@ -123,25 +125,27 @@ For ties: assigned kills, then fewest deaths, then clean-kill total. Do not let 
 
 ## 4. Rebuild exposure as the hunt/evade control system
 
-Keep one player-facing 0–100 meter, but give it four consequences instead of one cliff:
+Keep one player-facing 0–100 meter with **50 as the major danger breakpoint**. The worst exposure consequences switch on at 50 and remain active above it; 75 or 100 may strengthen their frequency, accuracy, or duration, but must not hide an entirely new punishment behind a second cliff.
 
 | Exposure | State | Hunter information | Prey meaning |
 |---:|---|---|---|
 | 0–24 | Blended | No automatic direction | Safest; behavior is the only tell |
 | 25–49 | Noticed | Infrequent four-way pulse | Speed created weak, delayed risk |
-| 50–74 | Tracked | More frequent four/eight-way pulse | Hunter can route toward the area |
-| 75–99 | Hunted | Fast eight-way pulse and stronger local tells | Escape requires a real route/tool |
-| 100 | Compromised | Precise off-screen bearing for a short window | Immediate danger, but still no on-screen outline |
+| 50–100 | Exposed | Full consequence package: precise/frequent off-screen tracking, exposed-state reveal cues, and nearby cover/activity tells | The hunter can converge reliably; values above 50 make those consequences more persistent, not categorically different |
 
 Rules:
 
 - The arrow always disappears when the prey is on screen. Never identify the exact on-screen figure.
-- Remove global face reveals from normal exposure. A portrait of the exact body skips too much of the crowd-reading game, especially after respawn. Reserve exact face intel for a deliberately earned, short-lived contract reward if playtests prove it is needed.
-- Separate **movement heat** from **action notoriety** internally even if the HUD combines them. Movement should rise quickly and recover in roughly 8–15 seconds of civilian behavior. Kills/tools should create a hunter-facing pulse/tell that lasts roughly 15–30 seconds rather than a mostly invisible +25 that takes about a minute to decay.
-- Replace flat `+25 except poison` with per-tool risk authored in `ToolDefinition`. Risk can be exposure, sound radius, a visible tell, root time, delayed payoff, or some combination.
+- If the map-mode uses exposure faceplates/reveal cues, activate them at 50 alongside the other harsh consequences—not only at 100. They may reveal the target's look, but never outline the exact on-screen actor; the final identification still happens among matching crowd bodies.
+- Separate **movement heat** from **committed action exposure** internally even though the HUD combines them. Running, erratic movement, and overhang loitering feed the recoverable movement pool. Items, abilities, kills, and claims feed the committed pool.
+- Start every active item/ability at a flat **+25 committed exposure**, including poison. A successful assassination should also start at +25; a civilian whiff can remain harsher (for example +40). Tool-specific sound, animation, rooting, or delay is additional counterplay, not a substitute for the shared +25 cost.
+- Make committed exposure decay much more slowly than running/overhang exposure. Initial tuning target: movement heat recovers at roughly 5–8 points per second while behaving calmly, but committed exposure decays at roughly **0.20–0.30 points per second**. At 0.25/s, one +25 action takes about 100 seconds to clear. This means one ability is a lasting warning and two quick abilities naturally cross the 50-point exposed threshold.
+- Keep the pools independent while recovering: walking away from an overhang can quickly clear that recoverable heat, but it cannot erase the two abilities the player chose to commit. The meter displays their clamped sum.
+- Author the shared +25 and both recovery rates in the map's `GameRules`, so Compact and Citadel can tune the surrounding round length/mark economy without silently changing what an ability commitment means.
 - Exposure reduction should come primarily from behaving like the crowd and breaking sight, not from standing inside one of five static blend circles. Convert blend spots into believable world interactions—bench, stall, fountain, procession—or remove them from the core mode.
 - Crowd density provides visual cover, not a huge numeric erase. The current `-40/s` blend modifier can delete the meter almost instantly and makes known circles camping objectives.
-- Keep overhang anti-loitering, but make its feedback local and gradual. A whole roof turning globally red at exactly 100 is a second hard cliff; use a short sound/visual pulse visible to nearby hunters instead.
+- Keep overhang anti-loitering in the recoverable movement pool. Its heat should wear off at the same faster rate as running heat once the player leaves and behaves normally; it must not decay as slowly as item/ability commitments.
+- Move the globally readable “hot cover” consequence from exactly 100 to the 50+ exposed state. Above 50, intensity/pulse frequency can scale upward, but 100 should not be the first point at which the serious consequence exists.
 
 ### Danger feedback
 
@@ -174,7 +178,7 @@ Start each life with one utility and one signature gadget. Prefer fixed charges 
 | Disguise | Nerve-test identity swap | Sprint/attack breaks it; arrow drops one precision tier rather than turning off; nearby application tell; 8–12 second duration |
 | Morph | Turn nearby civilians into look-alikes | Make the copy burst authoritative and deterministic; visible ripple tells observers that a morph happened, not which body cast it |
 | Decoy | Make a civilian perform a player-like tell | Give the decoy a believable authored action/path; one attentive counter-read should distinguish it after several seconds, not instantly |
-| Poison | Delayed assigned-prey kill | Assigned prey only; close application; 8–12 second delay; nonzero risk through exposure/contact animation; prey gets an ambiguous symptom and can cleanse at a public, exposed point or kill the poisoner before detonation |
+| Poison | Delayed assigned-prey kill | Assigned prey only; close application; 8–12 second delay; the same +25 committed exposure as every ability plus a subtle contact tell; prey gets an ambiguous symptom and can cleanse at a public, exposed point or kill the poisoner before detonation |
 | Firecracker | Disengage or force a reaction | Require line of sight; reduce full white-out and hard stun; strong sound/flash exposes the caster; cover/facing away reduces effect |
 | Clones | High-skill route confusion | Burst into independent predetermined routes; no every-frame clone driving RPC/state; copies expire on collision/attack and cannot block entrances |
 
@@ -240,7 +244,7 @@ Do not retrofit every map simultaneously. Build one “Vertical Citadel” test 
 - six total transitions, all with at least one counter-route;
 - no teleporter pads in the first test—the vertical routes already provide repositioning.
 
-Test the map under the same Hunt Cycle rules as flat Citadel. Keep flat Citadel as the control map.
+Treat Vertical Citadel as its own map-mode pairing. Begin by forking flat Citadel's `GameRules`, then intentionally tune only the values the new rooftop/sewer routes require. Keep flat Citadel and its frozen rules version as the control, so the effect of vertical layout can be separated from later balance changes without giving up map-specific balancing.
 
 ## 7. Technical architecture changes
 
@@ -269,8 +273,10 @@ There is no need for SQL or an online database at this stage. Use Godot resource
 
 ```text
 data/
-  rules/hunt_cycle.tres
+  rules/citadel_hunt_cycle.tres
+  rules/compact_marks_duel.tres
   maps/citadel.tres
+  maps/compact.tres
   tools/smoke.tres
   tools/poison.tres
   perks/...
@@ -279,10 +285,10 @@ data/
 
 Add typed resources:
 
-- `GameRules`: duration, player range, respawn/grace, score values, exposure thresholds, enabled systems.
+- `GameRules`: the rules profile for one map-mode pairing—duration, player range, marks, respawn/grace, score values, the 50-point exposed threshold, +25 committed action cost, movement recovery, committed recovery, and enabled systems.
 - `ToolDefinition`: stable ID, charges, cooldown, target mode, tell type/radius, risk cost, effect parameters, icon.
 - `PerkDefinition`: stable ID, benefit, drawback, ranked legality.
-- `MapDefinition`: scene, supported players, crowd density, layers, transitions, spawn/density regions.
+- `MapDefinition`: scene, supported players, crowd density, layers, transitions, spawn/density regions, and a required reference to the map's `GameRules` profile.
 - `CosmeticItem`: move live catalogue entries from hard-coded `make()` calls to `.tres` files as real content arrives.
 
 RPCs send stable IDs and compact runtime values, never resource objects. At match start, the host sends a rules/content version hash so mismatched clients cannot join ranked games.
@@ -373,7 +379,7 @@ These are tuning targets, not permanent rules:
 - average life: 35–65 seconds;
 - valid assigned kills per player in four minutes: 2–5;
 - respawn deaths within 8 seconds: under 5%;
-- time at exposure 100: under 10% of alive time, but reached at least once by most aggressive players;
+- time at exposure 50+: a meaningful but recoverable portion of the round; aggressive players who stack two commitments should enter it consistently, while disciplined players can stay below it by spacing actions;
 - civilian whiffs: possible but uncommon, roughly 0–2 per player per round;
 - counter-stun success: useful escape, under one success per life on average;
 - at least 70% of equipped gadget charges used; no gadget above 55% pick rate for several test blocks;
@@ -388,7 +394,7 @@ Ranked depth should come from readable decisions, map knowledge, route predictio
 
 Do not expose a ranked queue until all of these are true:
 
-- one locked Hunt Cycle ruleset and ranked-legal loadout pool;
+- a locked, versioned rules profile and ranked-legal loadout pool for every map in the ranked rotation;
 - assigned-prey-only combat with automated invariant tests;
 - anonymous actor replication and no obvious player/NPC packet or scene-tree distinction;
 - neutral/dedicated authority, reconnect handling, abandon rules, and result signing;
@@ -403,7 +409,7 @@ Use placement-based rating with uncertainty (four-player result order), with con
 
 ### Milestone A — Stable core baseline
 
-- Create `GameRules` and decouple rules from maps.
+- Create explicit map-mode resources: each `MapDefinition` references its balanced `GameRules` instead of relying on hard-coded map comparisons.
 - Enforce assigned-prey-only combat for blade and poison.
 - Extract/test `TargetGraph` and use local reassignment.
 - Simplify scoring and remove counter-stun points.
@@ -413,8 +419,8 @@ Use placement-based rating with uncertainty (four-player result order), with con
 
 ### Milestone B — Hunt/evade fun test
 
-- Implement exposure tiers and evidence-based danger.
-- Remove normal face reveals and static blend-circle meter deletion.
+- Implement the 50-point exposed threshold, flat +25 committed ability spikes, slow committed decay, faster running/overhang recovery, and evidence-based danger.
+- Move harsh exposure consequences/reveals to 50+, remove the unique 100-point punishment cliff, and remove static blend-circle meter deletion.
 - Tune one no-perk, two-basic-gadget ruleset on flat Citadel.
 - Improve respawn LOS/path safety.
 - Run repeated 2–5 round sessions and collect the fun targets above.
@@ -434,7 +440,7 @@ Use placement-based rating with uncertainty (four-player result order), with con
 
 - Build real surface/roof/sewer navigation and traversal graph.
 - Add server-owned transition state, tells, and occupancy.
-- Produce the single vertical-slice map and compare it against flat Citadel.
+- Produce the single vertical-slice map with its own versioned mode profile and compare it against the earlier flat Citadel pairing.
 - Add map connectivity/sightline/route metrics.
 
 **Exit test:** rooftops and sewers create prediction and escape decisions without becoming mandatory routes or safe zones.
@@ -476,11 +482,12 @@ Use placement-based rating with uncertainty (four-player result order), with con
 
 The highest-value first slice is deliberately small:
 
-1. Add `GameRules` with a four-minute Hunt Cycle preset and make both Compact and Citadel load it.
+1. Add a separate `GameRules` profile for each map: preserve Compact's marks-first duel and Citadel's immediate four-player Hunt Cycle, with each `MapDefinition` explicitly referencing its profile.
 2. Add a tested `TargetGraph` service.
 3. Route blade and poison through one `CombatResolver`; allow only prey kill, hunter stun, unrelated-player whiff, and civilian whiff.
 4. Change score to 100 base + at most 50 bonus; counter-stun scores zero.
-5. Add a JSON match ledger for assignments, attack results, deaths, respawns, and score.
-6. Run 20 four-player rounds on flat Citadel before changing exposure or adding content.
+5. Configure the Citadel profile with a 50-point exposed threshold, +25 committed exposure for every ability, faster movement/overhang recovery, and roughly 0.25/s committed decay.
+6. Add a JSON match ledger for assignments, exposure sources, attack results, deaths, respawns, and score.
+7. Run 20 four-player Citadel rounds and a separate Compact duel block; evaluate each map-mode pairing against its own baseline before adding content.
 
 That slice directly restores the premise: **going aggressive helps you kill your prey, but every aggressive action gives your hunter a better chance to kill you.** Everything else in this roadmap should strengthen that sentence.

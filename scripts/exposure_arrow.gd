@@ -10,10 +10,10 @@ class_name ExposureArrow
 # By the time the arrow is visible they've moved, so it gives a fuzzy hint, never
 # a precise "that one is your target".
 
-## Exposure (0-100) the target must exceed before its arrow can appear. Set to 100 so you only
-## become visible to enemy assassins at FULL exposure — letting players spend exposure on tools
-## freely without lighting up the moment they tick over halfway.
-@export var arrow_threshold: float = 100.0
+## Exposure (0-100) the target must exceed before its arrow can appear. 50 = the EXPOSED
+## threshold (plan.md §4): the serious tracking consequence starts at half, not behind a
+## second cliff at 100.
+@export var arrow_threshold: float = 50.0
 
 ## How far in from the screen edge the arrow sits, in pixels.
 @export var edge_margin: float = 90.0
@@ -55,11 +55,18 @@ class_name ExposureArrow
 ## the target is on your screen at every tier, so the final identification stays a crowd read.
 @export var precision_tier: int = 0
 
-## EXPOSURE TEETH (Pillar #2 — acting is exposing): the HUNT arrow is ALWAYS just 4-way cardinal
-## (un-triangulatable — "they're that way", not "that exact figure") UNTIL the target's own exposure
-## hits FULL, at which point it snaps to a precise bearing. One clean step, not a gradual ramp: stay
-## under 100 and you're only ever a rough compass heading; peg the meter and you're pinpointed.
-@export var exposure_precise_at: float = 100.0
+## EXPOSURE TEETH (plan.md §4 — the three intel bands the hunt arrow follows, driven entirely by
+## the TARGET's exposure):
+##   under noticed_at (Blended)  -> NO automatic direction at all; behaviour is the only tell
+##   noticed_at..exposed_at      -> an INFREQUENT 4-way pulse (flash_interval/flash_duration)
+##   exposed_at and above        -> solid PRECISE bearing (the 50+ consequence package)
+## The arrow still vanishes whenever the target is on screen, at every band.
+@export var noticed_at: float = 25.0
+@export var exposed_at: float = 50.0
+## Opacity of the NOTICED-band arrow (noticed_at..exposed_at) — deliberately TRANSLUCENT so the
+## intel escalates in sequence inside one visual: a faint pulse ("they're getting careless")
+## turns into a SOLID precise arrow at exposed_at. 0 = invisible, 1 = fully solid.
+@export var noticed_pulse_alpha: float = 0.45
 
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
@@ -147,32 +154,53 @@ func _process_exposure(delta: float) -> void:
 		_alpha = maxf(0.0, _alpha - delta / maxf(0.01, fade_out_time))
 
 
-# HUNT STYLE (the post-mark "hunt your human target" arrow). Deliberately IMPRECISE: it points in
-# only one of four CARDINAL directions (N/E/S/W) — never an exact bearing — so it says "they're that
-# way", not "that exact figure". BINARY, no fading: solid while the target is off-screen, OFF the
-# instant they're on your screen (a fade was a tell — you could watch it dim as a figure walked in,
-# giving the target away). Re-points live whenever they're off-screen again.
-func _process_flashing(_delta: float) -> void:
-	if _compute_offscreen_arrow():
-		# Precision = the SHARPER of your PvE-earned tier and the tier the TARGET's exposure forces.
-		# (0 = 4 cardinals, 1 = 8-way, 2 = precise bearing/no snap.)
-		var tier := maxi(precision_tier, _exposure_precision_tier())
-		if tier <= 0:
-			_snap_to_cardinal()
-		elif tier == 1:
-			_snap_to_8way()
-		_alpha = 1.0
-	else:
+# HUNT STYLE (the "hunt your human target" arrow) — plan.md §4's three intel bands, driven by the
+# TARGET's exposure. Below noticed_at: NO arrow at all — a calm prey must be found by reading the
+# crowd. In the noticed band: a brief 4-way cardinal PULSE every flash_interval seconds ("they're
+# roughly that way", occasionally). At exposed_at+: a solid precise bearing (the 50+ package).
+# BINARY, no fading: OFF the instant the target is on your screen (a fade was a tell). The PvE
+# ladder's earned precision_tier can only SHARPEN whatever band exposure grants.
+func _process_flashing(delta: float) -> void:
+	if not _compute_offscreen_arrow():
 		_alpha = 0.0  # on-screen / dead / gone → off, no fade
+		return
+	var band := _exposure_band()
+	if band <= 0 and precision_tier <= 0:
+		_alpha = 0.0  # Blended: no automatic direction — behaviour is the only tell
+		_flash_timer = flash_interval  # so entering the noticed band pulses promptly
+		return
+	# SEQUENTIAL escalation inside ONE visual: the exposure BAND picks the arrow's ALPHA
+	# (translucent while merely Noticed, SOLID once Exposed) — never two cues stacked at once.
+	# The PvE precision tier only sharpens the DIRECTION, never the opacity.
+	var band_alpha: float = 1.0 if band >= 2 else noticed_pulse_alpha
+	if band >= 2 or precision_tier >= 2:
+		_alpha = band_alpha  # precise bearing (solid at Exposed; faint if only ladder-earned)
+		return
+	if precision_tier == 1 and band < 2:
+		_snap_to_8way()  # PvE-ladder middle tier: steady but 8-way, still faint until Exposed
+		_alpha = band_alpha
+		return
+	# Noticed band: an infrequent, TRANSLUCENT 4-way pulse.
+	_flash_timer += delta
+	if _flash_timer >= flash_interval:
+		_flash_timer = 0.0
+	if _flash_timer <= flash_duration:
+		_snap_to_cardinal()
+		_alpha = noticed_pulse_alpha
+	else:
+		_alpha = 0.0
 
 
-# The hunt-arrow precision FORCED by the target's exposure. 4-way (0) until the target is FULLY
-# exposed, then precise (2) — no 8-way middle step (the arrow is "only ever 4-way unless 100%").
-func _exposure_precision_tier() -> int:
+# Which intel band the target's exposure grants the hunter: 0 = Blended (no direction),
+# 1 = Noticed (4-way pulse), 2 = Exposed (precise). See plan.md §4's table.
+func _exposure_band() -> int:
 	if _target_exposure == null:
 		return 0
-	if _target_exposure.exposure >= exposure_precise_at:
+	var e: float = _target_exposure.exposure
+	if e >= exposed_at:
 		return 2
+	if e >= noticed_at:
+		return 1
 	return 0
 
 

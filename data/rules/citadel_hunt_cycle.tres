@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="GameRules" load_steps=2 format=3 uid="uid://rulescitadel01"]
+
+[ext_resource type="Script" path="res://scripts/data/game_rules.gd" id="1_rules"]
+
+; CITADEL — immediate 3-4 player Hunt Cycle (plan.md §2): no NPC marks, straight to the
+; contract ring. The main competitive pairing; balance-test THIS file against its own history.
+
+[resource]
+script = ExtResource("1_rules")
+display_name = "Hunt Cycle (3-4P Citadel)"
+requires_marks = false
+marks_per_player = 0
+round_time_seconds = 240.0
+noticed_exposure = 25.0
+exposed_exposure = 50.0
+ability_committed_exposure = 25.0
+kill_committed_exposure = 25.0
+committed_decay_per_second = 0.25
+prey_kill_points = 100
+kill_bonus_cap = 50
+clean_approach_max_bonus = 40
+under_pressure_bonus = 15
+style_tag_bonus = 10
+counter_stun_points = 0
+blend_spots_enabled = false

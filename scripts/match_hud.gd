@@ -449,7 +449,7 @@ func tour_steps() -> Array:
 		{"rect": _region_rects.get("log", Rect2()), "title": "SCORE & EVENT LOG",
 			"body": "Your points and kill count, with the event feed below — kill bonuses, warnings, disguise breaks and system messages all print here."},
 		{"rect": Rect2(), "title": "THE GOLDEN RULES",
-			"body": "Walk, don't run — running is what gives you away. Lock a suspect and get close to strike. Kill the WRONG person and you pay 40 exposure plus a 10s blade lock. If you spot your own hunter first, strike them to STUN them. Blend in. Good luck."},
+			"body": "Walk, don't run — running is what gives you away. Lock a suspect and get close to strike. Kill the WRONG person and you pay 40 exposure plus a 10s blade lock; strike a player who isn't your contract and the blow fails but rattles your blade for 5s. If you spot your own hunter first, strike them to STUN them. Blend in. Good luck."},
 	]
 
 func set_timer(round_text: String, time_text: String) -> void:

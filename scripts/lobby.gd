@@ -26,6 +26,8 @@ var _start_button: Button = null
 ## until every entry is ready.
 var _ready_peers: Dictionary = {}
 var _map_picker: OptionButton = null
+## Host-only: the "Rotating targets" toggle (see _begin_match — its state rides to every peer).
+var _rotating_check: CheckButton = null
 var _tool1_picker: OptionButton = null
 var _tool2_picker: OptionButton = null
 var _skin_picker: OptionButton = null
@@ -225,6 +227,15 @@ func _build_ui() -> void:
 		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		right.add_child(_map_picker)
 
+		# ROTATING TARGETS (host toggle, for A/B playtests): OFF = your target is always the same
+		# player. ON = each new life deals you a DIFFERENT target than your last — occasionally
+		# waiting for the next death to free one up. Mostly matters on the 3-4 player map (with
+		# 2 players there is no one else to rotate to).
+		_rotating_check = CheckButton.new()
+		_rotating_check.text = "Rotating targets (new target each life)"
+		_rotating_check.button_pressed = NetworkManager.rotating_targets  # remember across rematches
+		right.add_child(_rotating_check)
+
 		_start_button = Button.new()
 		_start_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_start_button.pressed.connect(_on_start_pressed)
@@ -355,15 +366,17 @@ func _on_start_pressed() -> void:
 	# Tell EVERY peer (including us) to load the match together, with the host's MAP choice. Use the
 	# item's ID (not its row index), so the picker can show any subset of maps in any order.
 	var map_id := _map_picker.get_selected_id() if _map_picker != null else NetworkManager.Map.CITADEL
-	_begin_match.rpc(map_id)
+	var rotating := _rotating_check != null and _rotating_check.button_pressed
+	_begin_match.rpc(map_id, rotating)
 
 
-# Sent by the host to all peers: record the MAP choice and load the match scene together.
-# The match's own ready handshake then takes over (nobody is spawned until every client's
-# scene is up). small_arena is derived so the existing compact-crowd logic keeps working.
+# Sent by the host to all peers: record the MAP + ROTATING-TARGETS choices and load the match
+# scene together. The match's own ready handshake then takes over (nobody is spawned until every
+# client's scene is up). small_arena is derived so the existing compact-crowd logic keeps working.
 @rpc("authority", "call_local", "reliable")
-func _begin_match(map_id: int) -> void:
+func _begin_match(map_id: int, rotating_targets: bool) -> void:
 	NetworkManager.selected_map = map_id
+	NetworkManager.rotating_targets = rotating_targets
 	NetworkManager.small_arena = map_id != NetworkManager.Map.FOUR_ZONE
 	get_tree().change_scene_to_file(ONLINE_MATCH_SCENE)
 

@@ -23,6 +23,35 @@ const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
 ## Reloaded on a rematch (re-runs the whole start handshake with everyone still connected).
 const ONLINE_MATCH_SCENE := "res://scenes/online_match.tscn"
 
+# === GameRules (plan.md §7.2/§13.1): the map-mode rules profile =============================
+## Which rules profile each map runs. The map deliberately selects the mode; this table makes
+## that coupling explicit + versioned instead of `selected_map == COMPACT` branches. Maps not
+## listed fall back to the Citadel Hunt Cycle profile.
+const RULES_BY_MAP := {
+	NetworkManager.Map.COMPACT: "res://data/rules/compact_marks_duel.tres",
+	NetworkManager.Map.CITADEL: "res://data/rules/citadel_hunt_cycle.tres",
+}
+var _rules_cache: GameRules = null
+
+## HOST-only match event ledger (plan.md §9): a JSON record of assignments, kills, respawns and
+## scores, written to user://ledgers/ at match end so playtest blocks can be compared with data.
+var _ledger: MatchLedger = null
+
+# Log one host-side match event (no-op on clients / before the ledger starts).
+func _ledger_log(type: String, data: Dictionary = {}) -> void:
+	if _ledger != null:
+		_ledger.log_event(type, data)
+
+# The active rules profile. Every peer loads the same file from the shared lobby map choice —
+# deterministic, no network message needed (same pattern as _crowd_size_for_map).
+func _rules() -> GameRules:
+	if _rules_cache == null:
+		var path: String = RULES_BY_MAP.get(NetworkManager.selected_map, "res://data/rules/citadel_hunt_cycle.tres")
+		_rules_cache = load(path) as GameRules
+		if _rules_cache == null:
+			_rules_cache = GameRules.new()  # missing file → safe defaults, never a crash
+	return _rules_cache
+
 ## FALLBACK crowd size for the COMPACT/Rome arenas — only used if the map can't report its
 ## walkable area (open_cell_count). Normally the crowd is sized by DENSITY instead (below).
 @export var compact_npc_count: int = 55
@@ -111,23 +140,15 @@ const ROSTER_COLORS := [Color(0.3, 0.7, 1.0), Color(0.4, 0.85, 0.4), Color(0.95,
 ## A clean low-exposure kill stacks the exposure modifier on top of this (see `_award_kill_bonuses`).
 @export var player_kill_points: int = 100
 
-# === KILL-QUALITY BONUSES (AC Rearmed-style) — extra points + an on-screen label per stylish kill ===
-## Bonus for a silent POISON kill on your target.
-@export var poison_bonus: int = 150
-## Bonus for killing the player who most recently killed YOU (REVENGE).
-@export var revenge_bonus: int = 200
+# === KILL BONUSES (plan.md §3.3 — readable, CAPPED; values live in the map's GameRules) ===========
+# The prey kill (100) is the only primary scoring event. Bonuses: clean approach 0-40 (by your
+# exposure at the kill), under-pressure 15, ONE style tag 10 — hard-capped at 50 total per kill.
+# REVENGE / STREAK multipliers / ESCAPE free-points are gone: they dwarfed the base kill and
+# rewarded farming side-conditions over the contract.
 var _style_bonus_by_peer: Dictionary = {}  ## peer -> accumulated kill-quality bonus points
-var _last_killed_by: Dictionary = {}       ## peer -> the peer who most recently killed them (for revenge)
-## Per extra kill in a streak (no death between). STREAK x3 = +2*this. Reset to 0 on death.
-@export var streak_step_bonus: int = 100
-## Bonus for killing your target while YOUR OWN hunter is closing on you (danger level >= 1).
-@export var focus_bonus: int = 150
-## Bonus for a DROP kill — striking within drop_kill_window seconds of dropping off a rooftop.
-@export var drop_bonus: int = 150
+var _last_killed_by: Dictionary = {}       ## peer -> who most recently killed them (spawn anti-farm)
+## A kill within this many seconds of a rooftop drop earns the DROP style tag.
 @export var drop_kill_window: float = 2.5
-## Bonus + cooldown for shaking a hunter who'd closed to "very near" (danger 2 -> 0 while alive).
-@export var escape_bonus: int = 120
-@export var escape_cooldown: float = 6.0
 # === PASSIVE PERKS (AC-style loadout modifier, picked in the lobby) ================================
 # One perk per AXIS so picks feel different: stealth / awareness / tools / aggression.
 # (Old BLENDER overlapped GHOST — both were "less exposure"; old SURVIVOR bought ~1.6 extra grace
@@ -160,9 +181,7 @@ var _perk_by_peer: Dictionary = {}        ## peer -> chosen perk int (host-side;
 var _blend_spots: Array = []              ## Array[Vector2] spot centres (host: the source of truth)
 var _blended_by_peer: Dictionary = {}     ## peer -> currently blended?
 
-var _streak_by_peer: Dictionary = {}      ## peer -> consecutive player kills without dying
 var _deaths_by_peer: Dictionary = {}      ## peer -> times killed (shown on the scoreboard breakdown)
-var _escape_ready_at: Dictionary = {}     ## peer -> _elapsed time when their next ESCAPE bonus is allowed
 var _drop_recent_until: Dictionary = {}   ## peer -> _elapsed time until which a kill counts as a DROP
 var _last_layer_by_peer: Dictionary = {}  ## peer -> last-seen layer, to detect a ROOFTOP->GROUND drop
 
@@ -181,10 +200,26 @@ var _last_layer_by_peer: Dictionary = {}  ## peer -> last-seen layer, to detect 
 @export var spawn_density_weight: float = 1.0
 ## Spawn picker: radius (px) the crowd-density count is measured over at each candidate point.
 @export var spawn_density_radius_px: float = 360.0
-## Spawn picker: weight on closeness to your new target (start with a hunt, not a long commute).
-@export var spawn_target_proximity_weight: float = 0.0008
+## Spawn picker (plan.md §3.4): the preferred distance BAND to your target. Closer than min is
+## unearned contact (you'd spawn on top of your prey); farther than max is a long dead commute.
+## The band should equal roughly a 10-20 second walk. Unit: px (walk speed is ~100 px/s).
+@export var spawn_prey_band_min_px: float = 800.0
+## Spawn picker (plan.md §3.4): far edge of the preferred target-distance band. Unit: px.
+@export var spawn_prey_band_max_px: float = 1800.0
+## Spawn picker: score added for a candidate inside the prey band (fades to 0 one band-width
+## outside it). Comparable to a few points of crowd density, so density still dominates.
+@export var spawn_prey_band_weight: float = 4.0
+## Spawn picker (plan.md §3.4): candidates inside any LIVE player's estimated camera view are
+## hard-excluded — nobody should ever watch a body pop into existence. Half-extents of that view
+## box in world px: 1920x1080 viewport at zoom 1.4 shows ~1371x771, halved is ~686x386, plus a
+## ~95px margin. Retune if network_camera_zoom changes.
+@export var spawn_camera_exclusion_extents: Vector2 = Vector2(780.0, 470.0)
 ## Spawn picker: pick at random among the top-N scoring candidates so spawns aren't campable.
 @export var spawn_topk: int = 4
+## ROTATING TARGETS: how long a WAITING player (alive but contract-less because no fresh target
+## exists) can sit before the host relents and lets their old target be re-dealt. 0 = never
+## relent (wait until a death reshuffles the ring). Unit: seconds.
+@export var rotating_wait_timeout_seconds: float = 20.0
 
 const NO_POS := Vector2(INF, INF)
 var _seat_order: Array = []        ## fixed peer order set at match start; target = next LIVING peer in it
@@ -240,8 +275,9 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 @export var stun_duration: float = 3.0
 ## Cooldown (seconds) before you can counter-stun your hunter again.
 @export var stun_cooldown: float = 8.0
-## Points for a successful counter-stun — "just like getting a kill" (matches the flat per-kill base).
-@export var counter_stun_points: int = 100
+## Points for a successful counter-stun. 0 by design (plan.md §3.3): the stun is a defensive
+## ESCAPE tool — scoring it made farming your own hunter better than hunting. Set from GameRules.
+@export var counter_stun_points: int = 0
 var _stun_ready_at: Dictionary = {}  ## peer -> the _elapsed time at which their next stun is allowed
 
 var _map: Node = null
@@ -276,6 +312,13 @@ var _phase_by_peer: Dictionary = {}
 ## prey (master_plan §7.2). If your target dies before you reach them, you re-link to the next
 ## living player in the ring (_next_living_target) so your arrow/reveal stay meaningful.
 var _ring_target: Dictionary = {}  # hunter_peer -> target_peer
+## ROTATING TARGETS state (host-only; only used when the lobby turned the option on):
+## peer -> the prey they were hunting when they DIED. Their next life's assignment must avoid
+## this peer (that's the option's whole promise); the entry is spent once they get a fresh one.
+var _forbidden_prey: Dictionary = {}
+## peer -> Time.get_ticks_msec() when they became WAITING (alive but contract-less). Drives the
+## rotating_wait_timeout_seconds rescue and clears the moment they receive any target.
+var _rotating_wait_since: Dictionary = {}
 ## True once the WHOLE match is decided (one player left, or time up). A single death no longer
 ## ends the match (buildplan §7.5) — it only eliminates that player.
 var _match_over: bool = false
@@ -445,6 +488,11 @@ signal host_kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
 func _ready() -> void:
 	add_to_group("online_match")  # Phase 9 experiments find the match here (read-only accessors)
 	CosmeticRegistry.roll_filler_bodies()  # this match's 3–5 commoner crowd looks
+	# Apply the map-mode RULES profile (every peer loads the same file — see _rules()).
+	round_time_limit = _rules().round_time_seconds
+	marks_per_player = _rules().marks_per_player
+	player_kill_points = _rules().prey_kill_points
+	counter_stun_points = _rules().counter_stun_points
 	_build_start_curtain()  # FIRST: shield input before anything else exists to click on
 	_build_world()
 	_build_hud()
@@ -528,6 +576,17 @@ func _maybe_begin_match() -> void:
 		if not _ready_clients.has(client_peer):
 			return  # still waiting on someone
 	_match_begun = true
+	# Start the host-side match ledger (plan.md §9) — every assignment/kill/respawn/score below
+	# gets a timestamped record, written to user://ledgers/ when the match ends.
+	_ledger = MatchLedger.new()
+	_ledger.name = "MatchLedger"
+	add_child(_ledger)
+	_ledger.start({
+		"rules": _rules().display_name,
+		"map": int(NetworkManager.selected_map),
+		"players": 1 + _expected_clients.size(),
+		"rotating_targets": NetworkManager.rotating_targets,  # so A/B playtest ledgers are labelled
+	})
 	# Spawn in a SHUFFLED order so player numbers (= spawn order) are reassigned each match — a
 	# rematch gives everyone a fresh number, which also rotates who-hunts-whom (the ring follows
 	# number order below). Host is just another peer in the shuffle.
@@ -543,7 +602,7 @@ func _maybe_begin_match() -> void:
 		# them ONCE — they carry across respawns, so it's kill-2-ever); the 3-4 player map goes
 		# STRAIGHT to the hunt (no NPC kills). Either way it's continuous-respawn PvP after that.
 		_seat_order = spawn_order.duplicate()
-		_recompute_ring_from_seats()
+		_rebuild_ring()
 		if _marks_gate_enabled():
 			for peer_id in _players_by_peer:
 				_assign_mark_for_peer(peer_id)  # 2 marks each; hunt opens per-peer when they're cleared
@@ -763,6 +822,7 @@ func _send_target_to(peer_id: int) -> void:
 	if target == null or not is_instance_valid(target):
 		return
 	_receive_target.rpc_id(peer_id, String(target.name))
+	_ledger_log("target_assigned", {"hunter": peer_id, "prey": target_peer})
 	# RESPAWN MODE: always show the hunter their target's LOOK as the red TARGET plate (the AC
 	# way — you know the face, you must find it among its crowd look-alikes). A disguised target
 	# shows as "?" (_revealed_look). Classic mode keeps this as an EARNED reveal instead
@@ -828,6 +888,21 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 	if exposure != null:
 		exposure.exposure_changed.connect(_on_player_exposure_changed.bind(peer_id))
 
+	# EXPOSURE ECONOMY from the map-mode rules (host copies are authoritative): every ability —
+	# poison included — commits the same +25 (decays ~0.25/s); NPC kills commit +25 at the same
+	# rate; PLAYER kills land +25 in the SLOWEST pool (~0.1/s) so serial killers stay readable.
+	var match_rules := _rules()
+	if exposure != null:
+		exposure.set("committed_decay_per_second", match_rules.committed_decay_per_second)
+		exposure.set("kill_decay_per_second", match_rules.player_kill_decay_per_second)
+	var rules_item := character.get_node_or_null("ItemComponent") as ItemComponent
+	if rules_item != null:
+		rules_item.ability_exposure_spike = match_rules.ability_committed_exposure
+	var rules_kill := character.get_node_or_null("KillComponent") as KillComponent
+	if rules_kill != null:
+		rules_kill.kill_exposure_spike = match_rules.kill_committed_exposure
+		rules_kill.player_kill_exposure_spike = match_rules.player_kill_committed_exposure
+
 	# Host watches for this player being killed (eliminates them; ends the match if last).
 	character.died.connect(_on_player_killed.bind(peer_id))
 
@@ -840,9 +915,16 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		kill.kill_resolved.connect(_relay_kill_resolved)
 		# Striking your hunter is a counter-STUN (not a kill) — the host freezes them + scores it.
 		kill.counter_stun_requested.connect(_on_counter_stun.bind(peer_id))
-		# Killing an innocent LOCKS the blade (host-side) — tell the owner so their HUD counts it down.
-		kill.kill_lockout_started.connect(func(seconds: float) -> void:
-			_receive_kill_lockout.rpc_id(peer_id, seconds))
+		# Any blade lockout (NPC kill OR interference, host-side) — tell the owner so their HUD
+		# counts it down with the right explanation for why it started.
+		kill.kill_lockout_started.connect(func(seconds: float, reason: String) -> void:
+			_receive_kill_lockout.rpc_id(peer_id, seconds, reason))
+		# INTERFERENCE (plan.md §3.1): struck a human who is neither prey nor hunter — no kill,
+		# just the short recovery above. Tell the attacker why, WITHOUT leaking who their hunter
+		# is (the message is the same whether the victim was random or someone else's prey).
+		kill.interference_committed.connect(func(_victim: Node2D) -> void:
+			_break_grace_for(peer_id)  # an offensive act, even a failed one, ends spawn grace (§3.4)
+			_notify_owner.rpc_id(peer_id, "Not your contract — your blade stays sheathed."))
 
 	# LURK warnings (host-side sim flips the state): tell the owner WHY their exposure is
 	# climbing — a rising bar with no explanation reads as a bug.
@@ -874,9 +956,10 @@ func _on_player_exposure_changed(value: float, peer_id: int) -> void:
 	var hunter_peer := _hunter_of_target(peer_id)
 	if hunter_peer != 0:
 		_receive_opponent_exposure.rpc_id(hunter_peer, value)
-	# BLUE reveal (§7.4): hitting 100% exposure reveals your look to EVERY other living player
-	# (you've become a beacon), once.
-	if value >= 100.0 and not bool(_exposure_revealed.get(peer_id, false)):
+	# BLUE reveal: the face plate is the LAST intel step, kept sequential (faint arrow at 25 →
+	# solid arrow at 50 → face plate at reveal_exposure) so the plate and the arrow's solid
+	# switch never pop at the same instant — one escalation at a time.
+	if value >= _rules().reveal_exposure and not bool(_exposure_revealed.get(peer_id, false)):
 		_exposure_revealed[peer_id] = true
 		var character := _players_by_peer.get(peer_id) as Player
 		if character != null:
@@ -1345,8 +1428,13 @@ func _on_player_killed(loser_peer: int) -> void:
 	if bool(_dead_by_peer.get(loser_peer, false)):
 		return  # already eliminated
 	_dead_by_peer[loser_peer] = true
-	_streak_by_peer[loser_peer] = 0  # dying ends your kill streak
 	_deaths_by_peer[loser_peer] = int(_deaths_by_peer.get(loser_peer, 0)) + 1  # for the scoreboard breakdown
+	var early_loser := _players_by_peer.get(loser_peer) as Player
+	_ledger_log("player_killed", {
+		"victim": loser_peer,
+		"killer": int(early_loser.get("last_attacker_peer")) if early_loser != null else -1,
+		"method": str(early_loser.get("last_attacker_method")) if early_loser != null else "",
+	})
 
 	# Drop the dead player from the EXPOSED reveal row on every screen — they're out, so their blue
 	# plate shouldn't keep hanging around (the roster already dims + ✗-tags them via _build_roster_rows).
@@ -1384,7 +1472,13 @@ func _on_player_killed(loser_peer: int) -> void:
 		# schedule this player's return. The round ends only on the clock (_host_score_tick).
 		# The loser gets a full-screen "YOU'VE BEEN KILLED" splash with the respawn countdown —
 		# the old one-line log entry was so easy to miss players didn't realise they had died.
-		_recompute_ring_from_seats()
+		# ROTATING TARGETS: remember who they were hunting when they fell — their NEXT life
+		# must be dealt someone else (that's the option's promise).
+		if _rotating_targets_on():
+			var prey_at_death := int(_ring_target.get(loser_peer, 0))
+			if prey_at_death != 0:
+				_forbidden_prey[loser_peer] = prey_at_death
+		_rebuild_ring()
 		_respawn_rewire_all()
 		_respawn_due[loser_peer] = respawn_delay_seconds
 		_receive_respawn_death.rpc_id(loser_peer, killer_name, method, respawn_delay_seconds)
@@ -1670,7 +1764,9 @@ func _tick_cover_glow(delta: float) -> void:
 		if node == null or not is_instance_valid(node):
 			continue
 		var exposure := node.exposure_component
-		if exposure == null or exposure.exposure < 99.0:
+		# Hot-cover glows from the EXPOSED threshold (50) up — part of the 50+ consequence
+		# package, not a separate 100-only punishment (plan.md §4).
+		if exposure == null or exposure.exposure < _rules().exposed_exposure:
 			continue
 		if node.has_method("is_under_cover") and bool(node.call("is_under_cover")):
 			hot.append(node.global_position)
@@ -1732,6 +1828,7 @@ func _relink_hunters_of(gone_peer: int) -> void:
 					if hunter == _target_reveal_to:
 						_target_reveal_subject = new_target
 						_receive_target_reveal.rpc_id(_target_reveal_to, _revealed_look(_players_by_peer[new_target]))
+	_sync_killable_groups()  # strip stale killable tags left by the old edge (§3.1)
 
 
 # Any living player other than `hunter` (used to re-link a hunter whose target just died).
@@ -1763,10 +1860,16 @@ func _on_peer_kill_landed(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
 	_kills_by_peer[peer_id] = int(_kills_by_peer.get(peer_id, 0)) + 1
-	# RESPAWN grace breaks the moment you act offensively — no shielded spawn pushes.
-	if _grace_due.has(peer_id):
-		_grace_due.erase(peer_id)
-		_clear_grace(peer_id)
+	_break_grace_for(peer_id)
+
+
+# RESPAWN grace ends the moment its owner acts offensively (plan §3.4) — any strike (landed,
+# whiffed, or interfered) or tool use. A shielded player must never get to open a fight while
+# unkillable. Safe to call for peers with no grace running (it just does nothing).
+func _break_grace_for(peer: int) -> void:
+	if _grace_due.has(peer):
+		_grace_due.erase(peer)
+		_clear_grace(peer)
 
 
 # Splice a late joiner into the ring so it stays one connected loop: pick a living player L,
@@ -1787,6 +1890,28 @@ func _insert_into_ring(new_peer: int) -> void:
 	var their_target: int = int(_ring_target.get(link, 0))
 	_ring_target[link] = new_peer
 	_ring_target[new_peer] = their_target if their_target != 0 else link
+	_sync_killable_groups()
+
+
+# Make the killable_for_<hunter> PLAYER memberships EXACTLY mirror the current ring for every
+# hunter whose hunt is open (plan.md §3.1: the group IS the kill gate now, so a stale membership
+# means a hunter could still kill a PREVIOUS target — a contract violation). Adds the missing
+# tag, strips stale ones. NPC marks use the same groups but are never touched here (we only
+# iterate player nodes). Idempotent and cheap (players × players); call after ring mutations.
+func _sync_killable_groups() -> void:
+	for hunter in _players_by_peer:
+		var group := "killable_for_%d" % int(hunter)
+		var prey: int = int(_ring_target.get(hunter, 0))
+		var hunt_open: bool = _phase_by_peer.get(hunter, "marks") == "target"
+		for other in _players_by_peer:
+			var node := _players_by_peer[other] as Node
+			if node == null or not is_instance_valid(node):
+				continue
+			var should_be_killable: bool = hunt_open and prey != 0 and int(other) == prey
+			if should_be_killable and not node.is_in_group(group):
+				node.add_to_group(group)
+			elif not should_be_killable and node.is_in_group(group):
+				node.remove_from_group(group)
 
 
 # ================================================================================================
@@ -1830,7 +1955,8 @@ func _respawn_player(peer: int) -> void:
 	node.set("grace_active", true)
 	_grace_due[peer] = respawn_grace_seconds
 	_assign_respawn_look(peer, node)  # come back wearing a DIFFERENT face so your hunter must re-find you
-	_recompute_ring_from_seats()
+	_ledger_log("player_respawned", {"peer": peer})
+	_rebuild_ring()
 	_respawn_rewire_all()
 	_ladder_reset_life(peer)  # fresh life: wipe earned upgrades, re-lock the 2nd tool, new marks (no-op if ladder off)
 	_notify_owner.rpc_id(peer, "Respawned — fresh face. Briefly safe.")
@@ -1902,28 +2028,67 @@ func _clear_grace(peer: int) -> void:
 		node.set("grace_active", false)
 
 
-# The stable contract chain: target = the next LIVING player in the fixed seat order. Always one valid
-# cycle over the living — no self-target (>=2 alive), no targetless player (>=2 alive), and no mutual
-# pair (>=3 alive). At exactly 2 alive the pair is mutual (the only valid 2-player chain; accepted).
-func _recompute_ring_from_seats() -> void:
-	_ring_target.clear()
-	var n := _seat_order.size()
-	for i in n:
-		var hunter: int = int(_seat_order[i])
-		if bool(_dead_by_peer.get(hunter, false)) or not _players_by_peer.has(hunter):
+# True when this match runs the lobby's ROTATING TARGETS variant. Respawn mode only — classic
+# elimination keeps its fixed contracts (there are no "next lives" to rotate between).
+func _rotating_targets_on() -> bool:
+	return NetworkManager.rotating_targets and _respawn_mode()
+
+
+# Re-derive the hunter->prey chain over the LIVING players (the math lives in TargetRing so
+# dev_tests can hammer it without a match). STATIC (default): the fixed seat order — your target
+# is always the same player while you're both alive. ROTATING (lobby option): a fresh random
+# cycle avoiding everyone's last-life prey; a player who can't get a fresh target yet WAITS
+# (no ring entry) until a later rebuild — or the wait timeout — frees one up.
+func _rebuild_ring() -> void:
+	var living: Array = []
+	for p in _players_by_peer:
+		if not bool(_dead_by_peer.get(p, false)):
+			living.append(int(p))
+	if not _rotating_targets_on():
+		_ring_target = TargetRing.from_seats(_seat_order, living)
+		return
+	_ring_target = TargetRing.rotating(living, _forbidden_prey)
+	# A hunter who received a FRESH prey has spent their freshness constraint — it only guards
+	# the assignment for this life; later mid-life reshuffles may deal anyone back.
+	for hunter in _ring_target.keys():
+		if _forbidden_prey.has(hunter) and int(_ring_target[hunter]) != int(_forbidden_prey[hunter]):
+			_forbidden_prey.erase(hunter)
+	# Start/stop each waiting player's clock (so the timeout rescue knows how long they've sat).
+	for p in living:
+		if not _ring_target.has(p):
+			if not _rotating_wait_since.has(p):
+				_rotating_wait_since[p] = Time.get_ticks_msec()
+				_notify_owner.rpc_id(p, "No fresh contract available — lie low until the streets shift.")
+				_ledger_log("target_pending", {"peer": p})
+		else:
+			_rotating_wait_since.erase(p)
+
+
+# ROTATING TARGETS: a waiting player has sat contract-less too long — give up on freshness for
+# them (an old face beats no contract at all) and reshuffle. Host per-frame, cheap early-outs.
+func _tick_rotating_wait() -> void:
+	if _rotating_wait_since.is_empty() or not _rotating_targets_on():
+		return
+	if rotating_wait_timeout_seconds <= 0.0:
+		return  # 0 = never relent; waits only end when a death reshuffles the ring
+	var rescued := false
+	for p in _rotating_wait_since.keys():
+		if float(Time.get_ticks_msec() - int(_rotating_wait_since[p])) / 1000.0 < rotating_wait_timeout_seconds:
 			continue
-		for step in range(1, n):
-			var cand: int = int(_seat_order[(i + step) % n])
-			if cand != hunter and not bool(_dead_by_peer.get(cand, false)) and _players_by_peer.has(cand):
-				_ring_target[hunter] = cand
-				break
+		_rotating_wait_since.erase(p)
+		_forbidden_prey.erase(p)
+		rescued = true
+		_notify_owner.rpc_id(p, "The trail circles back — your old target is fair game again.")
+	if rescued:
+		_rebuild_ring()
+		_respawn_rewire_all()
 
 
-# The 2-player map keeps the kill-2-NPCs-first gate; the 3-4 player (Citadel) map goes straight to
-# the hunt. Keyed off the selected map, which IS the mode. Only consulted on the respawn path
-# (classic non-respawn mode always does its own marks flow).
+# Whether this map-mode gates the hunt behind NPC marks (Compact's duel does; Citadel's Hunt
+# Cycle doesn't). Read from the map's GameRules profile — the coupling is data, not a map check.
+# Only consulted on the respawn path (classic non-respawn mode always does its own marks flow).
 func _marks_gate_enabled() -> bool:
-	return _respawn_mode() and NetworkManager.selected_map == NetworkManager.Map.COMPACT
+	return _respawn_mode() and _rules().requires_marks
 
 
 # Push the current ring to clients: every living hunter is in 'target' phase, knows its prey, can kill
@@ -1953,6 +2118,25 @@ func _respawn_rewire_all() -> void:
 		var prey_kc := (_players_by_peer[prey] as Node).get_node_or_null("KillComponent")
 		if prey_kc != null:
 			prey_kc.set("stun_only_peer", int(hunter) if _players_by_peer.size() > 2 else 0)
+	# ROTATING TARGETS: anyone alive but TARGETLESS (waiting for a fresh contract) must stop
+	# hunting their old one — blank their arrow ("" clears the resolved target) and portrait
+	# ("?" = unknown look), so the wait reads as "no contract", not a stale one.
+	if _rotating_targets_on():
+		for p in _players_by_peer:
+			if bool(_dead_by_peer.get(p, false)) or _ring_target.has(int(p)):
+				continue
+			_receive_target.rpc_id(p, "")
+			_receive_target_reveal.rpc_id(p, -1, false)
+	# A player with NO current hunter (a rotating wait leaves the chain's head unhunted) must not
+	# keep a stale stun-shield aimed at a previous hunter — striking them should interfere, not stun.
+	for p in _players_by_peer:
+		var node := _players_by_peer[p] as Node
+		if node == null or not is_instance_valid(node):
+			continue
+		var kc := node.get_node_or_null("KillComponent")
+		if kc != null and _hunter_of_target(int(p)) == 0:
+			kc.set("stun_only_peer", 0)
+	_sync_killable_groups()  # strip stale killable tags left by previous ring shapes (§3.1)
 
 
 # Host: choose a SAFE-BUT-RELEVANT respawn point. Density-weighted when enabled; authored fallback else.
@@ -1966,15 +2150,18 @@ func _pick_spawn(peer: int) -> Vector2:
 	var scored: Array = []
 	for _i in spawn_candidate_samples:
 		var p: Vector2 = map.random_walkable_point()
-		# HARD EXCLUDE: too near any live player (their contact/visual zone) or near your killer (anti-farm).
-		if _too_close_to_live_player(p):
+		# HARD EXCLUDE (plan §3.4): visible on any live player's screen (nobody may watch a body
+		# pop in), too near any live player, or near your killer (anti-farm).
+		if _inside_live_player_view(p) or _too_close_to_live_player(p):
 			continue
 		if killer_pos != NO_POS and p.distance_to(killer_pos) < spawn_anti_farm_px:
 			continue
-		# SCORE: strongly favour crowd density (respawn already blended); favour closeness to your target.
+		# SCORE: strongly favour crowd density (respawn already blended); prefer the NEUTRAL
+		# distance band to your target — a 10-20s approach, never spawn-on-top contact (§3.4).
 		var score := float(_crowd_density_at(p, spawn_density_radius_px)) * spawn_density_weight
 		if target_node != null and is_instance_valid(target_node):
-			score += spawn_target_proximity_weight * (4000.0 - minf(4000.0, p.distance_to(target_node.global_position)))
+			var prey_distance := p.distance_to(target_node.global_position)
+			score += spawn_prey_band_weight * _band_score(prey_distance, spawn_prey_band_min_px, spawn_prey_band_max_px)
 		scored.append({"pos": p, "score": score})
 	if scored.is_empty():
 		# Everywhere excluded (tight map / full lobby): fall back to an authored spawn (never a kill zone).
@@ -1993,6 +2180,32 @@ func _too_close_to_live_player(p: Vector2) -> bool:
 		if node != null and is_instance_valid(node) and p.distance_to(node.global_position) < spawn_contact_exclusion_px:
 			return true
 	return false
+
+
+# Whether `p` falls inside ANY live player's estimated camera box (plan §3.4's "camera rectangle
+# plus a margin"). The box is centred on each player because every camera follows its player.
+func _inside_live_player_view(p: Vector2) -> bool:
+	for q in _players_by_peer:
+		if bool(_dead_by_peer.get(q, false)):
+			continue
+		var node := _players_by_peer[q] as Node2D
+		if node == null or not is_instance_valid(node):
+			continue
+		var offset := p - node.global_position
+		if absf(offset.x) <= spawn_camera_exclusion_extents.x and absf(offset.y) <= spawn_camera_exclusion_extents.y:
+			return true
+	return false
+
+
+# 1.0 inside [band_min, band_max], fading linearly to 0.0 over one extra band-width outside —
+# the picker PREFERS the neutral approach band without hard-rejecting decent fallback spots.
+func _band_score(distance: float, band_min: float, band_max: float) -> float:
+	var fade := maxf(1.0, band_max - band_min)
+	if distance < band_min:
+		return clampf(1.0 - (band_min - distance) / fade, 0.0, 1.0)
+	if distance > band_max:
+		return clampf(1.0 - (distance - band_max) / fade, 0.0, 1.0)
+	return 1.0
 
 
 # Live crowd density at a point (host-side; the online crowd are Npc children of _crowd_parent).
@@ -2203,18 +2416,14 @@ func _tick_danger(delta: float) -> void:
 						var offset := hunter_node.global_position - prey_node.global_position
 						if absf(offset.x) <= view_half_width_px and absf(offset.y) <= view_half_height_px:
 							level = 1
-		var prev := int(_danger_level_by_peer.get(prey, -1))
 		_danger_level_by_peer[prey] = level
 		# Send EVERY tick (not just on change). It's one int per player per 0.25s — cheap — and it means a
 		# danger overlay that finished building AFTER the level first settled (common in a 2p match where
 		# you engage your hunter immediately and stay close) still gets the current level instead of being
 		# stuck at "safe" forever.
 		_receive_danger.rpc_id(int(prey), level)
-		# ESCAPE: were "very near" (2), now clear (0), still alive, off cooldown → reward shaking them.
-		if prev >= 2 and level == 0 and not bool(_dead_by_peer.get(prey, false)) and _elapsed >= float(_escape_ready_at.get(prey, 0.0)):
-			_escape_ready_at[prey] = _elapsed + escape_cooldown
-			_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + escape_bonus
-			_receive_kill_bonus.rpc_id(int(prey), "ESCAPED", escape_bonus)
+		# (The old ESCAPE free-points award is gone — plan.md §3.3: escaping is its own reward;
+		# score comes from the contract kill.)
 
 
 # Host per-frame: watch for a player dropping ROOFTOP -> GROUND, so a quick kill after counts as a DROP.
@@ -2239,7 +2448,11 @@ func _tick_drop_watch(_delta: float) -> void:
 # ================================================================================================
 
 # Host: choose blend-spot positions (biased to dense crowd) and tell everyone to draw the markers.
+# OFF in the core rules profiles (plan.md §4): exposure relief should come from moving like the
+# crowd and breaking sight, not from camping five known circles that erase the meter.
 func _setup_blend_spots() -> void:
+	if not _rules().blend_spots_enabled:
+		return
 	var map := _map as TestMap01
 	if map == null or not map.has_method("random_walkable_point"):
 		return
@@ -2302,59 +2515,54 @@ func _receive_danger(level: int) -> void:
 
 
 # ================================================================================================
-# KILL-QUALITY BONUSES (AC Rearmed-style). Host-side: when a player kills their target, grade the
-# kill (unseen / discreet / poison / revenge), bank the bonus, and pop a label on the killer's screen.
+# KILL BONUSES (plan.md §3.3). Host-side: when a player kills their assigned prey, grade the kill
+# with a score a player can read WITHOUT a spreadsheet: clean approach (0-40, from your exposure
+# at the moment of the kill) + under-pressure (15) + at most ONE style tag (10) — all hard-capped
+# so the 100-point contract kill always dominates. REVENGE/STREAK/BLEND-farm multipliers are gone.
 # ================================================================================================
 
-# Host: grade `killer_peer`'s kill of `loser_peer` and award stealth/poison/revenge bonuses.
+# Host: grade `killer_peer`'s kill of `loser_peer` and award the capped bonuses.
 func _award_kill_bonuses(killer_peer: int, loser_peer: int, loser: Node) -> void:
-	_last_killed_by[loser_peer] = killer_peer  # so the loser can later score REVENGE on this killer
+	_last_killed_by[loser_peer] = killer_peer  # the spawn picker uses this for anti-farm placement
 	if killer_peer <= 0:
 		return
+	var rules := _rules()
 	var labels: Array = []
 	var bonus := 0
-	# EXPOSURE MODIFIER (on top of the flat per-kill base): the cleaner you were at the moment of the
-	# kill, the bigger the bonus. 0 exposure → +100, 50 → +50, 100 → +0 (AC "Incognito" model — an
-	# unseen kill is worth the most). Exposure now decays over time, so staying quiet between kills pays.
+	# CLEAN APPROACH (0..clean_approach_max_bonus): the quieter you were at the kill, the more.
+	# 0 exposure → +40, half → +20, fully exposed → +0 (the AC "Incognito" model, rescaled).
 	var killer_exposure := 0.0
 	var killer_node := _players_by_peer.get(killer_peer) as Player
 	if killer_node != null and is_instance_valid(killer_node) and killer_node.exposure_component != null:
 		killer_exposure = killer_node.exposure_component.exposure
-	var exposure_modifier: int = clampi(int(round(100.0 - killer_exposure)), 0, 100)
-	if exposure_modifier > 0:
-		bonus += exposure_modifier
-		var stealth_label := "INCOGNITO" if exposure_modifier >= 80 else ("DISCREET" if exposure_modifier >= 40 else "CLEAN")
-		labels.append("%s +%d" % [stealth_label, exposure_modifier])
-	# Silent poison finish.
-	if loser != null and String(loser.get("last_attacker_method")) == "poison":
-		bonus += poison_bonus
-		labels.append("POISON")
-	# Revenge: the player we just killed had most recently killed US.
-	if int(_last_killed_by.get(killer_peer, 0)) == loser_peer:
-		bonus += revenge_bonus
-		labels.append("REVENGE")
-		_last_killed_by.erase(killer_peer)  # consumed — no repeat-revenge on the same grudge
-	# FOCUS: you killed your target while your OWN hunter was closing on you (under pressure).
+	var clean_bonus: int = clampi(int(round((100.0 - killer_exposure) * rules.clean_approach_max_bonus / 100.0)),
+		0, rules.clean_approach_max_bonus)
+	if clean_bonus > 0:
+		bonus += clean_bonus
+		var stealth_label := "INCOGNITO" if killer_exposure <= 20.0 else ("DISCREET" if killer_exposure <= 60.0 else "CLEAN")
+		labels.append("%s +%d" % [stealth_label, clean_bonus])
+	# UNDER PRESSURE: you finished your prey while your OWN hunter was closing on you.
 	if int(_danger_level_by_peer.get(killer_peer, 0)) >= 1:
-		bonus += focus_bonus
-		labels.append("FOCUS")
-	# DROP: you struck just after dropping off a rooftop.
-	if _elapsed < float(_drop_recent_until.get(killer_peer, 0.0)):
-		bonus += drop_bonus
-		labels.append("DROP")
-	# STREAK: consecutive player kills without dying.
-	var streak := int(_streak_by_peer.get(killer_peer, 0)) + 1
-	_streak_by_peer[killer_peer] = streak
-	if streak >= 2:
-		bonus += streak_step_bonus * (streak - 1)
-		labels.append("STREAK x%d" % streak)
-	# BLEND KILL: you struck from a hiding spot.
-	if bool(_blended_by_peer.get(killer_peer, false)):
-		bonus += blend_kill_bonus
-		labels.append("BLEND KILL")
+		bonus += rules.under_pressure_bonus
+		labels.append("UNDER PRESSURE")
+	# ONE style tag maximum (plan.md §3.3): poison, drop, or blend — first match wins, flat value.
+	var style_tag := ""
+	if loser != null and String(loser.get("last_attacker_method")) == "poison":
+		style_tag = "POISON"
+	elif _elapsed < float(_drop_recent_until.get(killer_peer, 0.0)):
+		style_tag = "DROP"
+	elif bool(_blended_by_peer.get(killer_peer, false)):
+		style_tag = "BLEND"
+	if style_tag != "":
+		bonus += rules.style_tag_bonus
+		labels.append(style_tag)
+	# HARD CAP: no bonus stack may rival the contract kill itself.
+	bonus = mini(bonus, rules.kill_bonus_cap)
 	if bonus > 0:
 		_style_bonus_by_peer[killer_peer] = int(_style_bonus_by_peer.get(killer_peer, 0)) + bonus
 		_receive_kill_bonus.rpc_id(killer_peer, " · ".join(labels), bonus)
+	_ledger_log("score_awarded", {"peer": killer_peer, "base": player_kill_points,
+		"bonus": bonus, "tags": labels})
 
 
 # Owner-only: a stylish kill — log it and pop a fading centered label for juice.
@@ -2373,12 +2581,16 @@ var _kill_lockout_display: float = 0.0
 var _kill_lockout_label: Label = null
 
 
-# Owner-only: the host locked our blade after an NPC kill. Start the visible countdown.
+# Owner-only: the host locked our blade (NPC kill or interference). Start the visible countdown,
+# and explain the right cause — a countdown with the wrong explanation reads as a bug.
 @rpc("authority", "call_local", "reliable")
-func _receive_kill_lockout(seconds: float) -> void:
+func _receive_kill_lockout(seconds: float, reason: String) -> void:
 	_kill_lockout_display = seconds
 	if _mhud != null:
-		_mhud.add_log("Blade locked — lay low for %ds after a crowd kill." % int(round(seconds)))
+		if reason == "interference":
+			_mhud.add_log("Blade rattled for %ds — that wasn't your contract." % int(round(seconds)))
+		else:
+			_mhud.add_log("Blade locked — lay low for %ds after a crowd kill." % int(round(seconds)))
 	_update_kill_lockout_banner()
 
 
@@ -2523,8 +2735,13 @@ func _counter_stun_hunter(prey: int, hunter: int) -> bool:
 		return false  # on cooldown
 	_stun_left_by_peer[hunter] = maxf(float(_stun_left_by_peer.get(hunter, 0.0)), stun_duration)
 	_stun_ready_at[prey] = _elapsed + stun_cooldown
-	_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + counter_stun_points
-	_receive_kill_bonus.rpc_id(prey, "COUNTER-STUN", counter_stun_points)
+	_ledger_log("counter_stun", {"prey": prey, "hunter": hunter})
+	# Scoring only if the rules profile pays for stuns (0 in the core modes — it's an ESCAPE tool).
+	if counter_stun_points > 0:
+		_style_bonus_by_peer[prey] = int(_style_bonus_by_peer.get(prey, 0)) + counter_stun_points
+		_receive_kill_bonus.rpc_id(prey, "COUNTER-STUN", counter_stun_points)
+	else:
+		_notify_owner.rpc_id(prey, "Hunter stunned — RUN.")
 	_notify_owner.rpc_id(hunter, "Stunned! Your prey turned the tables — re-blend and try again.")
 	_danger_level_by_peer[prey] = -1  # force a danger refresh next tick (the hunter is frozen now)
 	return true
@@ -2562,6 +2779,10 @@ func _end_match(reason: String) -> void:
 	if _match_over:
 		return
 	_match_over = true
+	if _ledger != null:
+		for peer_id in _players_by_peer:
+			_ledger_log("final_score", {"peer": peer_id, "score": _score_for_peer(peer_id)})
+		_ledger.finish(reason)  # writes user://ledgers/match_<time>.json
 	var rows: Array = []
 	for peer_id in _players_by_peer:
 		var row := _score_for_peer(peer_id)
@@ -2773,6 +2994,7 @@ func _process(delta: float) -> void:
 		_host_score_tick(delta)  # advance the clock + sample exposure for scoring
 		_update_smoke_stuns(delta)  # stun anyone standing in a smoke cloud
 		_tick_respawns(delta)  # RESPAWN MODE: count down pending respawns + grace windows
+		_tick_rotating_wait()  # ROTATING TARGETS: rescue anyone waiting too long for a fresh contract
 		_tick_danger(delta)  # AC-style "hunter closing in" cue (host decides the level; identity-safe)
 		_tick_drop_watch(delta)  # watch rooftop->ground drops, for the DROP kill bonus
 		_tick_blend(delta)  # active blending: standing still in a hide-spot bleeds exposure fast
@@ -3410,6 +3632,7 @@ func _update_identity_portrait() -> void:
 # HOST: a tool was used by `peer_id`. Apply its world effect (server-authoritative), then refresh
 # that player's readout. (Disguise/morph/decoy/poison are wired in the next slices.)
 func _on_tool_activated(tool: int, slot: int, peer_id: int) -> void:
+	_break_grace_for(peer_id)  # a tool use is an offensive act — it ends spawn grace (plan §3.4)
 	var character := _players_by_peer.get(peer_id) as Player
 	if character != null and is_instance_valid(character):
 		var ok := true
@@ -4071,6 +4294,11 @@ func _make_scoreboard_row(cells: Array, color: Color, font_size: int) -> HBoxCon
 # Re-emit a player's resolved kill at the match level (wired from each KillComponent on spawn).
 func _relay_kill_resolved(killer: Node, victim: Node, was_valid: bool) -> void:
 	host_kill_resolved.emit(killer, victim, was_valid)
+	# Any resolved strike — clean OR whiff — is an offensive act: it ends the striker's spawn
+	# grace (plan §3.4). controlling_peer_id is 0/absent for NPCs, so they can never match.
+	var striker_peer := int(killer.get("controlling_peer_id")) if killer != null else 0
+	if striker_peer > 0:
+		_break_grace_for(striker_peer)
 	# CORE crowd panic: scatter nearby NPCs on EVERY resolved kill. Owned here (not the optional
 	# crowd_reaction experiment) so it's reliable online and in exported builds — the experiment's
 	# file-scan loader doesn't run in exports, which is why the crowd never reacted in MP. Poison never

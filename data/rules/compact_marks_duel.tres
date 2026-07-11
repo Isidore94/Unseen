@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="GameRules" load_steps=2 format=3 uid="uid://rulescompact01"]
+
+[ext_resource type="Script" path="res://scripts/data/game_rules.gd" id="1_rules"]
+
+; COMPACT — the 2-player marks-first duel (plan.md §2): kill your 2 NPC marks (once — they
+; persist across respawns), then hunt your rival. A deliberately different, map-balanced
+; variant of the shared combat rules. NOTE: "potential gameplay updates.md" proposes making
+; this a faster 1v1 without the slow NPC kills — when that lands, it's an edit to THIS file.
+
+[resource]
+script = ExtResource("1_rules")
+display_name = "Marks Duel (2P Compact)"
+requires_marks = true
+marks_per_player = 2
+round_time_seconds = 240.0
+noticed_exposure = 25.0
+exposed_exposure = 50.0
+ability_committed_exposure = 25.0
+kill_committed_exposure = 25.0
+committed_decay_per_second = 0.25
+prey_kill_points = 100
+kill_bonus_cap = 50
+clean_approach_max_bonus = 40
+under_pressure_bonus = 15
+style_tag_bonus = 10
+counter_stun_points = 0
+blend_spots_enabled = false

@@ -230,9 +230,12 @@ func _build_hud(map: TestMap01) -> Label:
 	if kill_component != null:
 		kill_component.lock_changed.connect(func(is_locked: bool) -> void:
 			if is_locked: _mhud.add_log("Suspect locked."))
-		# Blade lockout after any NPC kill (mirrors online; the component enforces it).
-		kill_component.kill_lockout_started.connect(func(seconds: float) -> void:
-			_mhud.add_log("Blade locked — lay low for %ds after a crowd kill." % int(round(seconds))))
+		# Blade lockout after an NPC kill or interference (mirrors online; the component enforces it).
+		kill_component.kill_lockout_started.connect(func(seconds: float, reason: String) -> void:
+			if reason == "interference":
+				_mhud.add_log("Blade rattled for %ds — that wasn't your target." % int(round(seconds)))
+			else:
+				_mhud.add_log("Blade locked — lay low for %ds after a crowd kill." % int(round(seconds))))
 
 	_item = _player.get_node_or_null("ItemComponent") as ItemComponent
 	# The offline harness honours the lobby's tool pick, so you can test ANY tool here (e.g. open a

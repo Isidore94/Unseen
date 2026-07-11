@@ -8,20 +8,18 @@ class_name ExposureComponent
 # out from the crowd. 0 = a calm, invisible civilian. 100 = a screaming beacon.
 # Hunters use it to decide how easily they can spot you.
 #
-# *** EXPOSURE HAS TWO PARTS (the key design rule) ***
-#   1. MOVEMENT exposure — RECOVERABLE. Running (and erratic movement) raise it;
-#      walking calmly and standing still bring it back down. This is the heat you
-#      build by moving fast, and you can cool it off by moving like a civilian.
-#   2. COMMITTED exposure — a one-off SPIKE that DECAYS over time. Kills and tools
-#      add to this; it then bleeds away on its own at `committed_decay_per_second`
-#      (an ability spike of +25 fully clears in about a minute). It is NOT a
-#      permanent floor — exposure "always works off over time" — so a tool/kill is
-#      a temporary tell that you out-run by going quiet, not a lifelong scar.
+# *** EXPOSURE HAS THREE POOLS (the key design rule) ***
+# Everything decays — nothing is permanent — but each pool at its own speed:
+#   1. MOVEMENT exposure — RECOVERABLE, the FASTEST to fall. Running (and erratic
+#      movement, and lurking) raise it; walking calmly brings it back down fast.
+#   2. COMMITTED exposure — tools/abilities and NPC kills. A one-off spike that
+#      bleeds at `committed_decay_per_second` (+25 clears in ~100s at 0.25/s).
+#      A lasting tell you out-wait by going quiet, not a lifelong scar.
+#   3. PLAYER-KILL heat — the SLOWEST (kill_decay_per_second, ~0.1/s). Each
+#      assassination keeps you readable to YOUR hunter for most of the round:
+#      the more you kill, the easier you are to find (a snowball brake).
 #
-# Your TOTAL exposure (what everyone reads) = movement + committed, clamped 0–100.
-# So you always cool down: walk off the movement heat, and the committed spike
-# decays on its own. (POISON is the deliberate exception — a silent kill that
-# adds NO committed spike at all; see ItemComponent.)
+# Your TOTAL exposure (what everyone reads) = all three summed, clamped 0–100.
 #
 # ---------------------------------------------------------------------------
 # THIS COMPONENT IS A HUB — three "doors" for the rest of the game to push it:
@@ -50,9 +48,17 @@ class_name ExposureComponent
 ## for the same slow wear-off.
 @export var idle_fall_per_second: float = 2.7
 
-## The COMMITTED (kill/tool) spike bleeds away at this many points per second, always — no input
-## needed. 0.42 ≈ a +25 ability spike clearing in ~60s ("comes down over a minute").
-@export var committed_decay_per_second: float = 0.42
+## The COMMITTED (tool/NPC-kill) spike bleeds away at this many points per second, always — no
+## input needed. 0.25 ≈ a +25 spike clearing in ~100s: MUCH slower than movement heat (walking
+## it off), so committed actions are a lasting tell. Matches the GameRules profile value online
+## (pushed at spawn); this default keeps single-player/offline on the same economy.
+@export var committed_decay_per_second: float = 0.25
+
+## The PLAYER-KILL pool bleeds away at this many points per second — the SLOWEST of all three
+## pools BY DESIGN: each assassination makes you more visible to YOUR hunter for most of the
+## round (0.1 ≈ a +25 kill taking ~250s to clear; two un-decayed kills sit you at the 50
+## Exposed threshold). A snowball brake: the more you kill, the easier you are to find.
+@export var kill_decay_per_second: float = 0.1
 
 ## A direction change bigger than this many degrees between frames counts as
 ## "erratic" (0 = straight line, 180 = full reverse).
@@ -71,8 +77,12 @@ var exposure: float = 0.0
 ## never erase a kill/tool commitment.
 var _movement_exposure: float = 0.0
 
-## The spike added by kills/tools. Decays over time (committed_decay_per_second), not permanent.
+## The spike added by NPC kills/tools. Decays over time (committed_decay_per_second), not permanent.
 var _committed_exposure: float = 0.0
+
+## The spike added by PLAYER kills (Door 2b). Decays the SLOWEST (kill_decay_per_second) —
+## kill heat that keeps a serial killer readable to their hunter for most of the round.
+var _kill_exposure: float = 0.0
 
 ## Remembers last frame's direction so we can measure how sharply you turned.
 var _last_direction: Vector2 = Vector2.ZERO
@@ -86,27 +96,42 @@ func update(is_running: bool, is_moving: bool, direction: Vector2, delta: float)
 	var rate_per_second: float = _movement_rate_per_second(is_running, is_moving, direction)
 	rate_per_second += _total_continuous_rate()
 	_movement_exposure = clampf(_movement_exposure + rate_per_second * delta, 0.0, 100.0)
-	# The committed spike always bleeds away over time (it is no longer a permanent floor).
+	# Both spike pools always bleed away over time (nothing is a permanent floor) — the
+	# committed (tool/NPC-kill) pool at its rate, the player-kill pool at its slower one.
 	if _committed_exposure > 0.0:
 		_committed_exposure = maxf(0.0, _committed_exposure - committed_decay_per_second * delta)
+	if _kill_exposure > 0.0:
+		_kill_exposure = maxf(0.0, _kill_exposure - kill_decay_per_second * delta)
 	_recompute_total()
 
 
 # === DOOR 2: COMMITTED ONE-OFF SPIKES (then decay over time) ===============
-# Kills and tools call this. It adds an instant spike that then bleeds away on its
+# NPC kills and tools call this. It adds an instant spike that then bleeds away on its
 # own (committed_decay_per_second) — a temporary tell, not a permanent floor.
 func add_exposure(amount: float, reason: String = "") -> void:
 	_committed_exposure = clampf(_committed_exposure + amount, 0.0, 100.0)
 	if debug_print_changes:
-		print("[Exposure] committed %+.1f (%s) -> floor %.1f, total %.1f" % [amount, reason, _committed_exposure, clampf(_movement_exposure + _committed_exposure, 0.0, 100.0)])
+		print("[Exposure] committed %+.1f (%s) -> floor %.1f, total %.1f" % [amount, reason, _committed_exposure, exposure])
 	_recompute_total()
 
 
-# RESPAWN MODE (RESPAWN_MODE_PLAN.md §2): wipe ALL exposure — both the recoverable movement heat AND
-# the permanent committed floor — back to zero for a fresh life. "Keep nothing" on death.
+# === DOOR 2b: PLAYER-KILL HEAT (the slowest-decaying pool) ==================
+# Assassinating a PLAYER calls this. Same idea as Door 2, but the spike lands in its own pool
+# with the slowest decay (kill_decay_per_second) — so the more players you kill this life, the
+# more visible you stay to YOUR hunter, for most of the round.
+func add_kill_exposure(amount: float, reason: String = "") -> void:
+	_kill_exposure = clampf(_kill_exposure + amount, 0.0, 100.0)
+	if debug_print_changes:
+		print("[Exposure] kill-heat %+.1f (%s) -> pool %.1f, total %.1f" % [amount, reason, _kill_exposure, exposure])
+	_recompute_total()
+
+
+# RESPAWN MODE (RESPAWN_MODE_PLAN.md §2): wipe ALL exposure — the recoverable movement heat AND
+# both spike pools — back to zero for a fresh life. "Keep nothing" on death.
 func reset() -> void:
 	_movement_exposure = 0.0
 	_committed_exposure = 0.0
+	_kill_exposure = 0.0
 	_recompute_total()
 
 
@@ -155,7 +180,7 @@ func _movement_rate_per_second(is_running: bool, is_moving: bool, direction: Vec
 # Combines the two parts into the total, clamps, and announces real changes. Both parts
 # decay on their own, so the total always trends back toward 0 when you go quiet.
 func _recompute_total() -> void:
-	var total: float = clampf(_movement_exposure + _committed_exposure, 0.0, 100.0)
+	var total: float = clampf(_movement_exposure + _committed_exposure + _kill_exposure, 0.0, 100.0)
 	if total == exposure:
 		return
 	exposure = total
