@@ -35,17 +35,20 @@ class_name ExposureComponent
 # ---------------------------------------------------------------------------
 
 # --- MOVEMENT TUNABLES (the recoverable part) ---
-## Exposure built per second while RUNNING. Running is the biggest single source.
+## Exposure built per second while RUNNING. Running is the biggest single source — it builds FAST.
 @export var run_rise_per_second: float = 28.0
 
 ## Extra exposure per second while changing direction sharply/erratically.
 @export var erratic_rise_per_second: float = 18.0
 
-## Movement exposure bled AWAY per second while blend-walking calmly.
-@export var walk_fall_per_second: float = 16.0
+## Movement exposure bled AWAY per second while blend-walking calmly. Cut to ~1/3 of the old 16 so
+## heat WEARS OFF SLOWLY — running (and lurking under a roof) build fast but linger, keeping a loud
+## moment a lasting tell instead of something you shrug off in a couple of seconds.
+@export var walk_fall_per_second: float = 5.3
 
-## Movement exposure bled away per second while standing completely still.
-@export var idle_fall_per_second: float = 8.0
+## Movement exposure bled away per second while standing completely still. Also ~1/3 of the old 8,
+## for the same slow wear-off.
+@export var idle_fall_per_second: float = 2.7
 
 ## The COMMITTED (kill/tool) spike bleeds away at this many points per second, always — no input
 ## needed. 0.42 ≈ a +25 ability spike clearing in ~60s ("comes down over a minute").

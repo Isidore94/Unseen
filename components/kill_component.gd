@@ -203,13 +203,26 @@ func _cycle_lock() -> void:
 
 # The character currently soft-locked (or null), and whether it's within striking range — read by the
 # private reticle so a controller player can SEE who they'll hit and when to press.
+# FREED/DEAD GUARD: a killed NPC's node lives ~0.4s (its death fade) then is deleted. This getter is
+# read every RENDER frame — which can run between physics ticks (where the lock is normally cleared)
+# — so it drops a lock the instant its target is freed OR merely dead, and never hands out a stale
+# pointer (a freed one crashes the typed reticle call; a dead one would draw on a corpse).
 func locked_target() -> Node2D:
+	if not _lock_is_live():
+		_primed = null
 	return _primed
 
 
 func lock_in_range() -> bool:
-	return _primed != null and is_instance_valid(_primed) \
+	return _lock_is_live() \
 		and _body.global_position.distance_to(_primed.global_position) <= kill_range
+
+
+# True only while the current lock points at a real, living target. Used by the reticle getters
+# so a freed/dead NPC never leaks out of this component.
+func _lock_is_live() -> bool:
+	return _primed != null and is_instance_valid(_primed) \
+		and not (_primed.has_method("is_dead") and _primed.is_dead())
 
 
 # HOST-ONLY: validate and resolve a kill request. Never trust the client — re-check

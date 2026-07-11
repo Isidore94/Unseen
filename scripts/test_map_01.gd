@@ -113,8 +113,9 @@ enum Zone { NW, NE, SW, SE, HUB }
 ## OVERHANG concealment (master_plan §8 cover; the "shadow" cover we had on the Citadel): when true,
 ## every building casts a walkable ROOF OVERHANG over the adjacent street toward the map centre. That
 ## overhang (a RoofOverlay zone) is drawn OPAQUE above players, so it HIDES whoever's under it on OTHER
-## screens, and turns translucent only on your OWN screen while you personally stand under it. Purely
-## visual (no exposure effect); the street underneath stays walkable. Off by default — maps opt in.
+## screens, and turns translucent only on your OWN screen while you personally stand under it. The
+## street underneath stays walkable, and LOITERING under cover past a grace window charges exposure
+## (the LURK rule — Player._update_lurk reads these same rects). Off by default — maps opt in.
 @export var enable_overhangs: bool = false
 ## Buildings within this many cells of the map BORDER cast NO overhang — less cover at the edges, more
 ## toward the busy centre. Set 0 to give EVERY building an overhang (the original all-buildings web).
@@ -193,6 +194,52 @@ func get_portal_links() -> Array:
 # Building rectangles (in world coords) — used by the mini-map to sketch the layout.
 func get_building_rects() -> Array:
 	return _building_rects()
+
+
+# === mini-map paint data ====================================================
+# Everything the HUD mini-map needs to draw a TRUE MINIATURE of this map: one coloured rect
+# per grid cell — streets tinted by district, buildings in their real per-building roof
+# colours, water/bridges/alleys in their real palette — plus the fountain landmark. The
+# mini-map calls this ONCE and caches the result, so none of this runs per-frame.
+func minimap_paint() -> Dictionary:
+	var cells: Array = []
+	var styles := _building_styles()
+	var ground := sand_light.lerp(sand_dark, 0.4)
+	for row in _rows():
+		for col in _cols():
+			var cell_rect := _cell_rect(col, row)
+			var on_boundary: bool = row == 0 or row == _rows() - 1 or col == 0 or col == _cols() - 1
+			var color: Color
+			if on_boundary and _is_building(col, row):
+				# The outer wall ring reads as a neutral FRAME, not as randomly-roofed houses.
+				color = wall_color.darkened(0.25)
+			elif _is_building(col, row):
+				color = styles[Vector2i(col, row)]["roof"] as Color
+			elif _is_water(col, row):
+				color = water_color
+			elif _is_bridge(col, row):
+				color = bridge_color
+			elif _is_alley(col, row):
+				color = alley_floor_color
+			elif _is_fountain(col, row):
+				color = fountain_water_color
+			else:
+				# Street: sand, washed with its district colour — STRONGER than the world's
+				# subtle tint, so the four quarters read at mini-map scale.
+				color = ground
+				var zone := _cell_zone(col, row)
+				if zone != Zone.HUB:
+					color = ground.lerp(_zone_floor_color(zone), 0.3)
+			cells.append({"rect": cell_rect, "color": color})
+	return {
+		"cells": cells,
+		"has_fountain": _has_fountain(),
+		"fountain_center": _fountain_center(),
+		"fountain_radius": fountain_radius,
+		"fountain_water": fountain_water_color,
+		"fountain_stone": fountain_stone_color,
+		"water_margin": water_color,
+	}
 
 # Which zone a world point falls in (for future zone-aware systems, e.g. §7.2/§7.3).
 func get_zone_at(world_point: Vector2) -> Zone:
@@ -1239,6 +1286,13 @@ func setup_roof_overlay(local_player: Node2D) -> void:
 			_roof_overlay.add_alley(r)      # roofed secret passages (same shadow-cover behaviour)
 	if local_player != null:
 		_roof_overlay.set_local_player(local_player)
+
+
+# Forward the current HOT (100%-exposed-under-cover) player positions to this map's roof overlay,
+# so the zones they occupy glow red. No-op if there's no overlay (overhangs disabled).
+func set_cover_hot_positions(world_positions: Array) -> void:
+	if _roof_overlay != null and is_instance_valid(_roof_overlay):
+		_roof_overlay.set_hot_positions(world_positions)
 
 
 # The overhang cover zones: for every BUILDING cell, a roof lip reaching over the adjacent WALKABLE

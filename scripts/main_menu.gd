@@ -84,6 +84,9 @@ func _build_ui() -> void:
 	join_ip_button.pressed.connect(_on_join_pressed)
 	ip_row.add_child(join_ip_button)
 
+	var tutorial_button := _add_button(panel, "Tutorial (learn to play)")
+	tutorial_button.pressed.connect(_on_tutorial_pressed)
+
 	var local_button := _add_button(panel, "Single-player (offline)")
 	local_button.pressed.connect(_on_local_test_pressed)
 
@@ -185,4 +188,12 @@ func _on_join_pressed() -> void:
 
 
 func _on_local_test_pressed() -> void:
+	NetworkManager.tutorial_mode = false  # a plain SP match — no tour
+	get_tree().change_scene_to_file(SINGLE_PLAYER_SCENE)
+
+
+# TUTORIAL: boot the SAME single-player-vs-bot harness, but flagged so it opens the click-through
+# GUI tour over the top. A brand-new player learns the controls + HUD against a live AI hunter.
+func _on_tutorial_pressed() -> void:
+	NetworkManager.tutorial_mode = true
 	get_tree().change_scene_to_file(SINGLE_PLAYER_SCENE)

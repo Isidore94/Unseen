@@ -2,6 +2,166 @@
 
 Short, session-by-session log so we never lose the thread between sessions.
 
+## Session: prayer — exposure economy: fast build, slow (1/3) wear-off for running + lurking
+
+- **1-second grace before the standing-still camp timer applies (playtest request)** — the shorter
+  still-grace used to bite the instant your velocity dropped, so a momentary pause while pacing under
+  a roof (to look around, to line up a kill) immediately swapped you onto the harsh 3s camp timer.
+  New `lurk_still_debuff_grace_seconds` (1.0): you must stand CONTINUOUSLY still for a full second
+  before the still-grace kicks in; move again and it resets instantly. Both HUD cover countdowns
+  (online + offline) now mirror the exact same rule locally — necessary because a CLIENT never runs
+  `_update_lurk` (the host simulates it), so the readout can't just read the player's counters or it
+  would show the wrong grace on clients. Verified: moving → 8s, still 0.5s → 8s (forgiven), still
+  1.5s → 3s (bites), moving again → 8s (reset).
+
+- **Overhang exposure now builds AS FAST AS RUNNING, and all movement heat wears off 1/3 as fast
+  (playtest tuning)** — lurking under a roof was climbing too slowly. `lurk_exposure_rise_per_second`
+  20 → **33**, so standing still under cover nets ~+30/s (≈ run_rise 28) — squatting in the shadows
+  now lights you up as quickly as sprinting. And because running heat and lurk heat share the one
+  recoverable pool, the cool-off rates were cut to ~1/3 to make the heat LINGER: `walk_fall` 16 →
+  **5.3/s**, `idle_fall` 8 → **2.7/s**. So running still builds fast (run_rise unchanged at 28) but
+  now wears off 1/3 as slowly too — a loud moment stays a tell for ~19s of calm walking instead of
+  ~6s. Measured: lurk build ~30/s, wear-off ~2.6/s (both as intended). (Kill/tool committed spikes
+  are a separate pool — unchanged.)
+
+## Session: prayer — map = mode (2p / 3-4p), respawn look-swap, 4-way arrows, overhang feedback
+
+- **The MAP now picks the MODE, and the lobby labels them so (playtest request)** — the picker reads
+  "2 Player · Compact (kill 2 NPCs, then duel)" and "3-4 Player · Citadel (free-for-all, no NPCs)".
+- **2-PLAYER (Compact): the marks gate is back, and marks CARRY OVER** — respawn PvP, but you must
+  kill your **2 NPC marks before you can hunt your rival** (`_marks_gate_enabled()` keyed off the
+  Compact map). You clear them ONCE — they persist across respawns (never re-assigned), so it's
+  kill-2-ever; after your first life you spawn straight into the hunt. Implemented by feeding the
+  existing marks→`_begin_target_phase` flow through the respawn path and gating `_respawn_rewire_all`
+  so a hunter still owing marks can't open their hunt (they still SEE their target's portrait/arrow).
+- **3-4 PLAYER (Citadel): no NPC kills** — straight to the free-for-all hunt (unchanged respawn
+  behaviour; only the 2p path gained the gate, so this mode is untouched).
+- **You RESPAWN wearing a different face** — on each respawn the host swaps the player to a new
+  assassin skin (`_assign_respawn_look` → `_different_assassin_body`), applies it on every machine,
+  and refreshes the hunter's red TARGET portrait to the new look, so a hunter who memorised your face
+  must re-find you. Crucially the player's crowd **look-alikes are repainted to match** (NPCs wearing
+  the old look → new look via `_apply_player_look`), so the pocket of doubles that hides them follows
+  the change instead of leaving them a lone new face — the §0.3 blend holds. (Caveat: filler NPCs
+  that happened to share the old skin also shift; harmless, and it only strengthens the blend.)
+- **Hunt arrow is ONLY EVER 4-way, unless the target hits 100% exposure — then precise** — dropped
+  the 8-way middle tier and the 45/80 thresholds; now it's one clean step (`exposure_precise_at =
+  100`, `_exposure_precision_tier` returns 0 or 2). Stay under full and you're only ever a rough
+  compass heading; peg the meter and you're pinpointed. Verified: 4-way through 99%, precise at 100.
+- **OVERHANG lurk: countdown, quicker-when-still, red glow at 100% (playtest request)** —
+  (1) a HUD **"Shadow cover — Ns"** countdown shows the grace ticking down while you're under a roof,
+  flipping to a red **"EXPOSED — KEEP MOVING"** once it runs out and exposure starts charging (owner
+  recomputes it locally from position; the real exposure stays host-authoritative). (2) **Standing
+  STILL** under cover uses a much shorter grace (`lurk_grace_still_seconds = 3` vs 8 when moving —
+  `_lurk_grace_now`), since a motionless squat is the most obvious camp. (3) At **100% exposure while
+  under cover**, that roof **throbs RED for everyone** (host feeds hot positions → `RoofOverlay`
+  tints the zone) — a "someone's pinned in here" tell that's identity-safe (marks the roof, not the
+  body, and only at the already-caught 100% state). Wired online AND in the offline/tutorial harness.
+
+## Session: prayer — reticle crash fix, firecracker blind, perk redesign, mid-match scoreboard
+
+- **LURK EXPOSURE: loitering under roof cover now costs you (design decision — reverses the old
+  "cover is purely visual" ruling, which stopped making sense once map v2 multiplied covered
+  space)** — overhangs/alleys stay FREE for the first `lurk_grace_seconds` (8s — matching how long
+  civilians pause under awnings, so ducking through cover stays crowd-normal), then a Door-3
+  continuous modifier adds `lurk_exposure_rise_per_second` (20/s, which nets ~+12/s standing or
+  ~+4/s walking after natural cool-off) into the RECOVERABLE movement heat — so like run heat it
+  bleeds off once you move on. The timer only resets after `lurk_reset_outside_seconds` (3s) out
+  of cover, so edge-dancing the overhang boundary doesn't wipe it. Lives in `Player._update_lurk`
+  (runs on whichever machine simulates the body — host online, so server-authoritative; cover
+  rects read once from the map). Cleared on revive. Owner gets log warnings on start/stop
+  ("you're drawing eyes" / "you slip back into the flow") online AND offline; stale "no exposure
+  effect" comments updated in roof_overlay/test_map_01; tour text mentions it. Verified with a
+  live scene test: 0 exposure through the grace, warning at exactly 8.0s, ~+12/s while lurking,
+  decay after stepping out, reset after 3s outside.
+- **EXPOSURE BAR now BLINKS on every rise (playtest request: make exposure events obvious)** —
+  `MatchHud.set_exposure` detects any increase (running, sharp turns, tools, kills, lurking —
+  they all flow through the same bar) and pulses the segments bright; a sustained rise re-triggers
+  the pulse continuously, reading as a warning heartbeat. A silently creeping bar was easy to miss.
+- **NEW-PLAYER GUI TOUR (playtest request)** — a click-through tutorial (`scripts/ui/gui_tour.gd`,
+  `GuiTour`): dims the screen and SPOTLIGHTS one HUD panel at a time (gold-bordered hole in the
+  dim) with a caption card — 10 steps: welcome, exposure/portrait, target plate, objective, timer,
+  live scores, mini-map, tools, score+log, and a golden-rules recap. Steps come from
+  `MatchHud.tour_steps()` using the HUD's REAL panel rects (a new `_region_rects` dict is now the
+  single source for panel layout + tour), so the spotlight always matches the actual screen. Now
+  its OWN menu item (revised below); re-openable mid-match from the scoreboard's **HOW TO PLAY**
+  button.
+- **TUTORIAL is now its own menu button (revised from first-run auto-open)** — a new "Tutorial
+  (learn to play)" button on the main menu boots the single-player-vs-bot harness with the GUI
+  tour over the top, so a new player learns the HUD against a live AI hunter (`NetworkManager
+  .tutorial_mode` flag survives the scene change; the plain Single-player button clears it). MP
+  matches NO LONGER auto-open the tour — they just start (the old per-install `seen_before`/
+  `mark_seen` persistence is removed). **Only a LEFT-CLICK advances the tour now** (Esc closes) —
+  the mouse shield stops clicks but keyboard/gamepad fall straight through, so WASD keeps moving
+  you and fighting the bot while the tour points things out; movement never advances a step.
+  Verified: menu launches the SP scene with the tour, clicks advance / W doesn't, Esc closes.
+- **Legend panel removed (playtest verdict: useless)** — the old map-legend box at (16,222) no
+  longer builds; `_legend_panel`/`set_legend_target_color` stay dormant in case a redesigned
+  legend returns.
+- **RESPAWN-MODE DEATH SPLASH (playtest request: "need to know when you died")** — dying used to
+  print one easy-to-miss log line. Now the killed player gets an unmissable full-screen splash:
+  red impact flash settling to a wash, big "YOU'VE BEEN KILLED", who got you and how ("Assassinated
+  by X" / "Poisoned by X" via the existing `_death_cause_text`), and a live "Respawning in N…"
+  countdown that fades out as you come back. Host sends killer/method/delay privately to the loser
+  (`_receive_respawn_death`); classic elimination keeps its own death screen + spectate.
+- **Fixed the lock-reticle "previously freed" crash FOR REAL (recurred after the first attempt)** —
+  the earlier fix guarded `KillComponent.locked_target()`, but the crash is thrown at PARAMETER
+  BIND: `LockReticle.track(target: Node2D, …)` type-checks the incoming value the instant it binds,
+  and a freed NPC reference fails that subclass check with the hard "previously freed" error —
+  before any guard in the body or caller can run. Root fix: `track()`'s parameter is now UNTYPED,
+  so a freed reference binds harmlessly and the existing `is_instance_valid` guard hides the reticle
+  instead of crashing. Also hardened `locked_target()`/`lock_in_range()` to drop a lock the instant
+  its target is freed OR merely dead (new `_lock_is_live()`), so the reticle releases during the
+  0.4s death-fade instead of lingering on a corpse. Verified headless by passing an actually-freed
+  node into `track()` — it now survives where it previously hard-crashed.
+- **START CURTAIN: matches are input-shielded while they load (playtest request: "freeze the
+  start so no one can click / cause issues")** — a full-screen dim overlay (`StartCurtain`
+  CanvasLayer, built at the TOP of `_ready()` on every peer) covers the ENTIRE load window: scene
+  build → spawn handshake → per-viewer crowd reskin → the 3/2/1 countdown. Its ColorRect uses
+  `MOUSE_FILTER_STOP` so every click is swallowed, and `_unhandled_input` early-returns while it's
+  up so the scoreboard / menu / debug keys are inert too. The countdown text ("GET READY…" → 3/2/1
+  → GO!) shows on the curtain itself, which fades out at GO!. The player bodies are ALSO held still
+  underneath by the existing host-authoritative `_net_frozen` freeze — the curtain is the belt to
+  that suspenders. A safety net lifts it the instant the local player exists and isn't frozen
+  (covers a lost "GO!" or a 0-second countdown), so no one is ever trapped behind it; the
+  no-countdown host path now also clears `_net_frozen` (was a latent stuck-frozen edge). NOT a
+  `get_tree().paused` — that would freeze the host's own countdown timer + the net synchronizers
+  and deadlock the unfreeze; shielding input is the correct tool. Verified headless: curtain exists,
+  STOPs mouse, and its dismiss latch flips input back on.
+- **MINI-MAP is now a true MINIATURE of the map (playtest request: "hard to read")** — it was faint
+  white boxes on a dark panel (10% alpha buildings, nothing else). New `TestMap01.minimap_paint()`
+  exports one coloured rect per grid cell — buildings in their real per-building roof colours,
+  streets washed with their district tint (stronger than the world tint so quarters read at mini
+  scale), canal water, plank bridges, alley floors — plus the fountain landmark, sewer-entrance
+  markers, and the outer wall ring drawn as a neutral dark frame (not randomly-roofed houses).
+  The mini-map caches it once at setup (zero per-frame cost) and replays it; player/mark/ping dots
+  got dark outline rings so they stay readable on the light sand. Verified by rasterising both
+  maps' paint data to PNGs headless and eyeballing them.
+
+- **Fixed: "previously freed" crash in the lock reticle (playtest bug)** — killing an NPC left the
+  soft-lock pointing at its corpse node, which is deleted ~0.4s later. The physics tick clears the
+  stale lock, but `_update_lock_reticle` runs every RENDER frame — at high refresh rates it grabbed
+  the freed pointer between physics ticks and passing it to the typed `LockReticle.track(Node2D)`
+  parameter crashed. `KillComponent.locked_target()` now nulls-and-clears a freed `_primed` before
+  handing it out.
+- **FIRECRACKER now BLINDS (playtest request)** — players caught in the burst radius get their whole
+  screen whited out for `firecracker_blind_seconds` (3s: fully opaque for 70%, quick fade for the
+  rest) on a canvas layer ABOVE the HUD (no minimap peeking), alongside the existing brief 1.6s
+  stun — you get your legs back while still blind, so the last second is a panic scramble.
+- **PERK REDESIGN (review requested)** — old set overlapped: GHOST and BLENDER were both "less
+  exposure" (indistinguishable in play) and SURVIVOR bought ~1.6 unnoticeable grace seconds. New
+  set is one perk per axis: **GHOST** (stealth — exposure bleeds off 1.6×, unchanged), **VIGILANT**
+  (awareness — your very-near hunter warning fires from 1.5× further; replaces Blender),
+  **SWIFT** (tools — now scales charge REGEN as well as cooldowns ×0.7), **BUTCHER** (aggression —
+  the NPC-kill blade lockout is halved; replaces Survivor). Lobby names/descriptions updated;
+  perk ids reused so the picker wiring is untouched.
+- **MID-MATCH SCOREBOARD (Tab or Esc; gamepad Back)** — a pause-style overlay (game keeps running)
+  with the live per-player breakdown — SCORE / KILLS / STYLE points / DEATHS, coloured by roster
+  colour, "(YOU)" tagged, ✗ for dead — plus RESUME and **LEAVE MATCH** buttons. Esc no longer
+  instantly quits to the menu (that was a match-losing reflex trap); it opens this board, and
+  leaving is an explicit button. Rows come from the existing ~1/s roster broadcast, now extended
+  with style/deaths (new `_deaths_by_peer`); an open board live-updates. New `show_scoreboard`
+  input action (Tab + gamepad Back) in project.godot.
+
 ## Session: prayer — map layout v2 (both arenas), errand crowd, ability balance
 
 Full implementation of the map/NPC/ability review. Both layouts were regenerated and

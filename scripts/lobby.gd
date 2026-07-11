@@ -48,13 +48,14 @@ const TOOL_DESCRIPTIONS := [
 	"Clones — turn the two nearest civilians into moving copies of YOU that scatter off in their own directions at your pace, so a hunter sees three of you walking apart and has to pick one.",
 ]
 ## Passive PERKS, in OnlineMatch's perk-id order (the picker index IS the perk id). One per match.
-const PERK_NAMES := ["None", "Ghost", "Blender", "Swift", "Survivor"]
+## One perk per AXIS — stealth / awareness / tools / aggression — so picks feel different.
+const PERK_NAMES := ["None", "Ghost", "Vigilant", "Swift", "Butcher"]
 const PERK_DESCRIPTIONS := [
 	"None — no passive perk.",
 	"Ghost — your exposure cools off faster, so you recover from running sooner.",
-	"Blender — your exposure rises slower when you run, so you stand out less.",
-	"Swift — your tool cooldowns are shorter.",
-	"Survivor — you stay safe (kill-immune) longer after each respawn.",
+	"Vigilant — you sense your hunter closing in from further away (the very-near warning fires sooner).",
+	"Swift — your tool cooldowns AND charge recharges are faster.",
+	"Butcher — the blade lockout after killing a civilian is halved (kill through the crowd sooner).",
 ]
 ## Local, PRIVATE character choices (never broadcast to the lobby — hidden identity).
 var _chosen_assassin: StringName = &""
@@ -212,14 +213,15 @@ func _build_ui() -> void:
 			copy_button.pressed.connect(_on_copy_code_pressed.bind(copy_button))
 			right.add_child(copy_button)
 
-		# Host picks the MAP. Each item carries its Map ID (read back via get_selected_id at start), so the
-		# picker can list any SUBSET of maps in any order. For now only Compact + Citadel — Four Zones and
-		# Rome are hidden until they're reworked (the Map enum + their scenes still exist for later).
-		right.add_child(_section_label("Map"))
+		# Host picks the MAP, which now also picks the MODE (see online_match): the small COMPACT map is
+		# the 1v1 "2 Player" mode (kill 2 NPC marks, then hunt your rival), the bigger CITADEL is the
+		# "3-4 Player" free-for-all (straight to the hunt, no NPC marks). Each item carries its Map ID
+		# (read back via get_selected_id at start), so the picker can list any subset in any order.
+		right.add_child(_section_label("Map / Mode"))
 		_map_picker = OptionButton.new()
-		_map_picker.add_item("Compact Arena (small)", NetworkManager.Map.COMPACT)
-		_map_picker.add_item("Citadel (AC-style — bigger, dense, tight alleys)", NetworkManager.Map.CITADEL)
-		_select_map_id(NetworkManager.Map.CITADEL)  # default to the Citadel
+		_map_picker.add_item("2 Player  ·  Compact (kill 2 NPCs, then duel)", NetworkManager.Map.COMPACT)
+		_map_picker.add_item("3-4 Player  ·  Citadel (free-for-all, no NPCs)", NetworkManager.Map.CITADEL)
+		_select_map_id(NetworkManager.Map.CITADEL)  # default to the 3-4 player Citadel
 		_map_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		right.add_child(_map_picker)
 

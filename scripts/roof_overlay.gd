@@ -13,7 +13,9 @@ class_name RoofOverlay
 # WHY THIS IS SAFE (and why the fade is LOCAL-ONLY): each machine runs its own RoofOverlay for its own
 # player. Your zone fades only for YOU (your player is under it); on an opponent's machine that same zone
 # stays opaque, hiding you. So the reveal can never be used to see or track an opponent — it only ever
-# opens your own view of a zone you personally occupy. Purely visual (Aaron: no exposure/detection effect).
+# opens your own view of a zone you personally occupy. THE OVERLAY ITSELF is purely visual; the LURK
+# rule (Player._update_lurk) separately charges exposure for loitering under cover past a grace window,
+# so hiding here is a pause, not a home. (Supersedes the original "no exposure effect" ruling.)
 #
 # It works TODAY with flat placeholder colours (test the hide/reveal feel before any PixelLab art exists)
 # and takes real tile textures later via the same add_* calls — nothing else changes.
@@ -43,6 +45,21 @@ enum Kind { ROOF, OVERHANG, ALLEY }
 
 ## The player THIS machine controls. ONLY their position reveals a zone (keeps the reveal local + safe).
 var _local_player: Node2D = null
+
+## World positions of players who are FULLY exposed (100%) while under cover — the match feeds these
+## in (host-authoritative). Any concealment zone containing one glows RED for everyone, so a maxed-out
+## camper's roof lights up as a "someone's pinned in here" tell. Identity-safe: it marks the ROOF, not
+## a character, and only fires at 100% exposure (already the "you're caught" state).
+var _hot_positions: Array = []
+## The red the hot zones pulse toward, and the live pulse phase (a slow throb so it reads as an alarm).
+@export var hot_color: Color = Color(0.95, 0.15, 0.12)
+var _hot_pulse: float = 0.0
+
+
+# The match pushes the current hot (100%-exposed-under-cover) world positions each update.
+func set_hot_positions(world_positions: Array) -> void:
+	_hot_positions = world_positions
+	queue_redraw()
 
 ## Every overhead section. One dictionary per section:
 ##   {rect:Rect2, texture:Texture2D|null, kind:int, alpha:float, target_alpha:float}
@@ -105,6 +122,10 @@ func _process(delta: float) -> void:
 	if _sections.is_empty():
 		return
 	var needs_redraw := false
+	# Keep the hot-zone alarm throbbing while any zone is lit.
+	if not _hot_positions.is_empty():
+		_hot_pulse += delta
+		needs_redraw = true
 	var player_pos := Vector2.INF
 	if _local_player != null and is_instance_valid(_local_player):
 		player_pos = _local_player.global_position
@@ -142,3 +163,17 @@ func _draw() -> void:
 			var col := placeholder_roof_color
 			col.a *= alpha
 			draw_rect(rect, col, true)
+		# HOT: a maxed-out (100% exposure) player is under this concealment zone — throb it RED as a
+		# "someone's pinned in here" tell. Drawn ON TOP of the roof (even the translucent, revealed
+		# state), so it shows on every screen.
+		if _is_cover(kind) and _zone_is_hot(rect):
+			var throb: float = 0.45 + 0.35 * sin(_hot_pulse * 6.0)
+			draw_rect(rect, Color(hot_color.r, hot_color.g, hot_color.b, clampf(throb, 0.0, 1.0)), true)
+
+
+# Does any hot (100%-exposed) player position fall inside this cover zone?
+func _zone_is_hot(rect: Rect2) -> bool:
+	for pos in _hot_positions:
+		if rect.has_point(pos):
+			return true
+	return false

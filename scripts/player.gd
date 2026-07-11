@@ -335,6 +335,13 @@ func revive(spawn_position: Vector2) -> void:
 	var exposure := get_node_or_null("ExposureComponent")
 	if exposure != null and exposure.has_method("reset"):
 		exposure.reset()
+	# Fresh life = fresh lurk state (silently — a "back in the flow" log at respawn would confuse).
+	_lurking = false
+	_lurk_under_seconds = 0.0
+	_lurk_outside_seconds = 0.0
+	_lurk_still_seconds = 0.0
+	if exposure_component != null:
+		exposure_component.remove_continuous_modifier("lurking")
 
 
 # The character inside our interaction ring we'd act on (the ring visual's highlight + tools).
@@ -528,6 +535,115 @@ func _apply_movement(direction: Vector2, run_held: bool, delta: float) -> void:
 	var is_moving: bool = direction != Vector2.ZERO
 	var is_running: bool = is_moving and run_held
 	exposure_component.update(is_running, is_moving, direction, delta)
+	_update_lurk(delta)  # LURK: loitering under roof cover past the grace starts exposing you
+
+
+# === LURK exposure (loitering under overhang/alley cover — the anti-camp rule) ==============
+# Roof cover hides you from other screens, and the first few seconds are FREE — that's the
+# intended duck-and-break-line-of-sight play, and it matches how long civilians pause under
+# awnings. Staying LONGER is crowd-deviant loitering, so exposure starts to climb via a Door 3
+# continuous modifier. It feeds the RECOVERABLE movement heat, so like running heat it bleeds
+# off on its own once you move along. Runs on whichever machine simulates this body (the host
+# online — server-authoritative; the client's own copy is cosmetic-only, its bar comes from
+# host pushes).
+
+## Seconds of continuous cover before lurking starts to expose you while MOVING under it (pacing,
+## pausing briefly). Civilians linger under cover up to ~8s, so longer reads as loitering.
+@export var lurk_grace_seconds: float = 8.0
+## Shorter grace when standing STILL under cover — a motionless figure squatting in the shadows is
+## the most obvious camp, so it starts exposing you much sooner than pacing does.
+@export var lurk_grace_still_seconds: float = 3.0
+## Below this speed (px/s) you count as standing STILL (uses the shorter still grace).
+@export var lurk_still_speed: float = 12.0
+## You must stand still CONTINUOUSLY for this long before the shorter still-grace kicks in — a brief
+## pause while pacing (to look around, to line up a kill) shouldn't instantly slap you with the
+## harsher camp timer.
+@export var lurk_still_debuff_grace_seconds: float = 1.0
+## Exposure added per second while lurking (into the recoverable movement heat). Builds FAST — about
+## as fast as running: standing still under a roof nets ~+30/s (33 − 2.7 idle fall), pacing under it
+## ~+28/s (33 − 5.3 walk fall), roughly the run_rise of 28. So squatting in the shadows lights you up
+## as quickly as sprinting would, and (via the slow walk/idle falls) it then wears off just as slowly.
+@export var lurk_exposure_rise_per_second: float = 33.0
+## Seconds you must stay OUT of cover before the lurk timer resets. Stops edge-dancing on the
+## overhang boundary from wiping the timer every frame — you must genuinely move on.
+@export var lurk_reset_outside_seconds: float = 3.0
+
+## Emitted when the lurk state flips (true = now lurking and exposing). The match relays it to
+## the owner as a log warning so the rising bar is never a mystery.
+signal lurk_state_changed(lurking: bool)
+
+var _lurk_under_seconds: float = 0.0    ## continuous seconds spent under cover
+var _lurk_outside_seconds: float = 0.0  ## seconds since we last stood under cover
+var _lurk_still_seconds: float = 0.0    ## continuous seconds spent standing still (for the still-grace delay)
+var _lurking: bool = false
+var _cover_rects: Array = []            ## the map's overhang+alley rects (static, cached once)
+var _cover_rects_cached: bool = false
+
+
+func _update_lurk(delta: float) -> void:
+	# Track how long we've stood continuously still — the still-grace only bites after
+	# lurk_still_debuff_grace_seconds of it, so a momentary pause doesn't punish you.
+	if velocity.length() <= lurk_still_speed:
+		_lurk_still_seconds += delta
+	else:
+		_lurk_still_seconds = 0.0
+	var under := _is_under_cover(global_position)
+	if under:
+		_lurk_outside_seconds = 0.0
+		_lurk_under_seconds += delta
+	else:
+		_lurk_outside_seconds += delta
+		if _lurk_outside_seconds >= lurk_reset_outside_seconds:
+			_lurk_under_seconds = 0.0
+	var lurking_now := under and _lurk_under_seconds >= _lurk_grace_now()
+	if lurking_now == _lurking:
+		return
+	_lurking = lurking_now
+	if exposure_component != null:
+		if _lurking:
+			exposure_component.set_continuous_modifier("lurking", lurk_exposure_rise_per_second)
+		else:
+			exposure_component.remove_continuous_modifier("lurking")
+	lurk_state_changed.emit(_lurking)
+
+
+# The grace right now: the SHORT still-grace only once you've been continuously still past the
+# still-debuff grace (a brief pause keeps the longer moving grace); the longer one otherwise.
+func _lurk_grace_now() -> float:
+	var settled_still := velocity.length() <= lurk_still_speed and _lurk_still_seconds >= lurk_still_debuff_grace_seconds
+	return lurk_grace_still_seconds if settled_still else lurk_grace_seconds
+
+
+# === lurk HUD read-outs (the owner's client reads these to draw the cover countdown) =========
+# The owner's match code can't see the host-side lurk timer, so it recomputes the countdown locally
+# from position + these. Purely for the on-screen "cover Ns / EXPOSED" readout; the real exposure
+# stays host-authoritative in _update_lurk.
+
+# Is this body standing under a concealment roof right now?
+func is_under_cover() -> bool:
+	return _is_under_cover(global_position)
+
+# The effective grace right now (still vs moving) — the countdown's ceiling.
+func lurk_grace_now() -> float:
+	return _lurk_grace_now()
+
+
+# Is this point under any concealment roof (overhang lip or alley)? The rect list is static
+# per match, so it's fetched from the map once. Maps without overhang cover have no rects —
+# the check is then a no-op and lurking never triggers there.
+func _is_under_cover(point: Vector2) -> bool:
+	if not _cover_rects_cached:
+		_cover_rects_cached = true
+		var map := get_tree().get_first_node_in_group("map")
+		if map != null and map.get("enable_overhangs") == true:
+			if map.has_method("overhang_rects"):
+				_cover_rects.append_array(map.overhang_rects())
+			if map.has_method("alley_rects"):
+				_cover_rects.append_array(map.alley_rects())
+	for rect in _cover_rects:
+		if (rect as Rect2).has_point(point):
+			return true
+	return false
 
 
 # Pure movement: set velocity from the input and slide. NO exposure here — client-side

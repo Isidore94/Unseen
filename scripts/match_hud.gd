@@ -24,6 +24,7 @@ var _objective_last: String = ""     # so we only pulse when the objective actua
 var _objective_tween: Tween = null
 var _legend_target_swatch: ColorRect = null  # the "your kill targets" colour chip in the legend
 var _countdown_label: Label = null            # big centred start-of-round "3/2/1/GO!" overlay
+var _cover_label: Label = null                # "Shadow cover — Ns" / "EXPOSED" while under a roof
 var _round_label: Label = null
 var _time_label: Label = null
 var _roster_rows: Array = []          # Array of {name:Label, score:Label, dot:ColorRect}
@@ -40,6 +41,7 @@ var minimap_slot: Control = null      # the match drops its MiniMap in here
 var _reveals: HBoxContainer = null     # holds the TARGET (red) + EXPOSED (blue) reveal portraits
 var _target_plate: Control = null
 var _exposed_plates: Dictionary = {}   # reveal_id (revealed peer) -> its EXPOSED plate, so it updates
+var _region_rects: Dictionary = {}     # panel name -> screen Rect2 (single source for layout + tour)
 const MAX_LOG := 6
 ## Seconds the OBJECTIVE box stays fully visible after a change before it fades away.
 const OBJECTIVE_HOLD_SECONDS := 4.5
@@ -64,15 +66,29 @@ func _ready() -> void:
 	var vp := _root.get_viewport_rect().size
 	if vp == Vector2.ZERO:
 		vp = Vector2(1920, 1080)
-	_portrait_panel(Rect2(16, 16, 320, 96))
-	_objectives_panel(Rect2(16, 126, 330, 84))
-	_legend_panel(Rect2(16, 222, 330, 126))
-	_timer_banner(Rect2(vp.x * 0.5 - 200, 12, 400, 60))
-	_roster_panel(Rect2(vp.x - 316, 16, 300, 156))
-	_score_panel(Rect2(16, vp.y - 268, 360, 44))  # YOUR kill-score, just above the log box (left side)
-	_log_panel(Rect2(16, vp.y - 220, 360, 204))
-	_ability_bar(Rect2(vp.x * 0.5 - 300, vp.y - 106, 600, 92))
-	_minimap_panel(Rect2(vp.x - 268, vp.y - 268, 252, 252))
+	# One source of truth for every panel's screen rect: the builders below AND the GUI tour
+	# (tour_steps) both read from here, so the tutorial spotlight always matches the real HUD.
+	_region_rects = {
+		"portrait": Rect2(16, 16, 320, 96),
+		"objective": Rect2(16, 126, 330, 84),
+		"timer": Rect2(vp.x * 0.5 - 200, 12, 400, 60),
+		"roster": Rect2(vp.x - 316, 16, 300, 156),
+		"score": Rect2(16, vp.y - 268, 360, 44),
+		"log": Rect2(16, vp.y - 220, 360, 204),
+		"abilities": Rect2(vp.x * 0.5 - 300, vp.y - 106, 600, 92),
+		"minimap": Rect2(vp.x - 268, vp.y - 268, 252, 252),
+		"reveals": Rect2(vp.x * 0.5 - 170, 34, 340, 104),  # the dynamic plate row's home area
+	}
+	_portrait_panel(_region_rects["portrait"])
+	_objectives_panel(_region_rects["objective"])
+	# (The old map LEGEND panel that sat at (16,222) is gone — playtest verdict: useless. Its
+	# builder + set_legend_target_color stay dormant below in case a redesigned legend returns.)
+	_timer_banner(_region_rects["timer"])
+	_roster_panel(_region_rects["roster"])
+	_score_panel(_region_rects["score"])  # YOUR kill-score, just above the log box (left side)
+	_log_panel(_region_rects["log"])
+	_ability_bar(_region_rects["abilities"])
+	_minimap_panel(_region_rects["minimap"])
 	_reveals_row(Vector2(vp.x * 0.5, 82))
 	# Big centred start-of-round countdown ("3/2/1/GO!"), hidden until the match feeds it.
 	_countdown_label = Label.new()
@@ -84,6 +100,21 @@ func _ready() -> void:
 	_countdown_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_countdown_label.visible = false
 	_root.add_child(_countdown_label)
+
+	# Cover countdown ("Shadow cover — Ns" / "EXPOSED — KEEP MOVING"): centred a little above the
+	# ability bar so it reads as a live status while you're under a roof. Hidden until fed.
+	_cover_label = Label.new()
+	_cover_label.set_anchors_preset(Control.PRESET_CENTER)
+	_cover_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_cover_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_cover_label.offset_top = vp.y * 0.32
+	_cover_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_cover_label.add_theme_font_size_override("font_size", 22)
+	_cover_label.add_theme_constant_override("outline_size", 6)
+	_cover_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_cover_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cover_label.visible = false
+	_root.add_child(_cover_label)
 
 
 # === styling helpers =======================================================
@@ -318,6 +349,32 @@ func set_exposure(fraction: float) -> void:
 	var lit := int(round(clampf(fraction, 0.0, 1.0) * _exposure_segs.size()))
 	for i in _exposure_segs.size():
 		_exposure_segs[i].color = (Color(0.85, 0.35, 0.25) if fraction > 0.66 else (Color(0.85, 0.7, 0.3) if fraction > 0.33 else Color(0.4, 0.7, 0.35))) if i < lit else Color(0.2, 0.18, 0.15)
+	# RISING? BLINK the bar. Every exposure-raising event — running, sharp turns, tools, kills,
+	# lurking under roofs — makes the bar visibly flash, so the player always knows they're
+	# getting hotter the moment it happens (a silently creeping bar was easy to miss).
+	if fraction > _exposure_last_fraction + 0.002:
+		_pulse_exposure_bar()
+	_exposure_last_fraction = fraction
+
+
+## Last displayed exposure fraction (to detect rises) + the one-at-a-time blink tween. While
+## exposure keeps rising the blink simply re-triggers as each pulse ends — a steady heartbeat.
+var _exposure_last_fraction: float = 0.0
+var _exposure_pulse: Tween = null
+
+
+func _pulse_exposure_bar() -> void:
+	if _exposure_pulse != null and _exposure_pulse.is_running():
+		return
+	_exposure_pulse = create_tween()
+	_exposure_pulse.tween_method(_set_exposure_bar_glow, 1.0, 2.1, 0.1)
+	_exposure_pulse.tween_method(_set_exposure_bar_glow, 2.1, 1.0, 0.25)
+
+
+# Brighten every segment uniformly (modulate above 1.0 pushes toward white — the "blink").
+func _set_exposure_bar_glow(strength: float) -> void:
+	for seg in _exposure_segs:
+		seg.modulate = Color(strength, strength, strength)
 
 func set_objective(main_text: String, _optional_text: String = "") -> void:
 	if _objective_label: _objective_label.text = main_text
@@ -342,6 +399,19 @@ func _pulse_objective() -> void:
 	_objective_tween.tween_property(_objective_panel, "modulate:a", 0.0, 0.8)
 
 # Show the big centred countdown text ("3"/"GO!"); pass "" to hide it.
+# The overhang cover status: a grace COUNTDOWN ("Shadow cover — 3s") in calm gold, or the red
+# "EXPOSED — KEEP MOVING" warning once the grace runs out and lurking starts charging exposure.
+# Empty text hides it.
+func set_cover_timer(text: String, warning: bool) -> void:
+	if _cover_label == null:
+		return
+	_cover_label.visible = text != ""
+	if text == "":
+		return
+	_cover_label.text = text
+	_cover_label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.35) if warning else Color(0.85, 0.82, 0.6))
+
+
 func set_countdown(text: String) -> void:
 	if _countdown_label == null:
 		return
@@ -349,9 +419,38 @@ func set_countdown(text: String) -> void:
 	_countdown_label.visible = text != ""
 
 # Recolour the legend's "your kill targets" chip to match this player's ring/roster colour.
+# (Dormant while the legend panel is removed — the swatch is null, so this is a no-op.)
 func set_legend_target_color(c: Color) -> void:
 	if _legend_target_swatch != null:
 		_legend_target_swatch.color = c
+
+
+# The new-player GUI TOUR script (GuiTour reads this): one step per HUD panel, each with the
+# panel's REAL on-screen rect from _region_rects — so the spotlight always matches this HUD.
+# A zero rect = a full-screen text card (used for the welcome + the rules recap).
+func tour_steps() -> Array:
+	return [
+		{"rect": Rect2(), "title": "WELCOME TO UNSEEN",
+			"body": "You are an assassin hidden in a crowd of look-alikes. Hunt your target without standing out — because someone else is hunting YOU. This quick tour shows what everything on screen does."},
+		{"rect": _region_rects.get("portrait", Rect2()), "title": "YOU & YOUR EXPOSURE",
+			"body": "Your portrait and EXPOSURE bar. Running, using tools, killing — and loitering under roof cover too long — raise exposure (the bar BLINKS whenever it's climbing); walking calmly cools it. The higher it is, the more precisely your hunter's arrow tracks you. The frame turns RED while someone is hunting you."},
+		{"rect": _region_rects.get("reveals", Rect2()), "title": "TARGET PLATE",
+			"body": "The red plate is your TARGET'S look — find that face in the crowd and strike. Careful: the crowd contains NPC copies of that same face. A '?' means they're disguised right now. Blue plates are players revealed by hitting 100% exposure."},
+		{"rect": _region_rects.get("objective", Rect2()), "title": "OBJECTIVE",
+			"body": "What to do right now. It updates as the match state changes (new target, respawn, and so on)."},
+		{"rect": _region_rects.get("timer", Rect2()), "title": "ROUND TIMER",
+			"body": "The round ends when this hits zero — highest score wins. Dying only costs you a few seconds and your heat; the clock is the real limit."},
+		{"rect": _region_rects.get("roster", Rect2()), "title": "LIVE SCORES",
+			"body": "Everyone's running score. Press Tab (or Esc) any time for the full breakdown — kills, style points, deaths — and the Leave Match button."},
+		{"rect": _region_rects.get("minimap", Rect2()), "title": "MINI-MAP",
+			"body": "A miniature of the city: districts by colour, the fountain, sewer grates in green. Your blue dot is you; objective dots and pings appear here."},
+		{"rect": _region_rects.get("abilities", Rect2()), "title": "YOUR TOOLS",
+			"body": "The two tools you picked in the lobby. A number is a cooldown; '+Ns' means a spent charge is recharging. You can't use tools while stunned, and killing a civilian locks your blade for 10 seconds."},
+		{"rect": _region_rects.get("log", Rect2()), "title": "SCORE & EVENT LOG",
+			"body": "Your points and kill count, with the event feed below — kill bonuses, warnings, disguise breaks and system messages all print here."},
+		{"rect": Rect2(), "title": "THE GOLDEN RULES",
+			"body": "Walk, don't run — running is what gives you away. Lock a suspect and get close to strike. Kill the WRONG person and you pay 40 exposure plus a 10s blade lock. If you spot your own hunter first, strike them to STUN them. Blend in. Good luck."},
+	]
 
 func set_timer(round_text: String, time_text: String) -> void:
 	if _round_label: _round_label.text = round_text

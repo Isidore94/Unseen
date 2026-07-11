@@ -129,19 +129,22 @@ var _last_killed_by: Dictionary = {}       ## peer -> the peer who most recently
 @export var escape_bonus: int = 120
 @export var escape_cooldown: float = 6.0
 # === PASSIVE PERKS (AC-style loadout modifier, picked in the lobby) ================================
+# One perk per AXIS so picks feel different: stealth / awareness / tools / aggression.
+# (Old BLENDER overlapped GHOST — both were "less exposure"; old SURVIVOR bought ~1.6 extra grace
+# seconds nobody noticed. Their ids are reused by VIGILANT and BUTCHER.)
 const PERK_NONE := 0
-const PERK_GHOST := 1     ## faster exposure recovery
-const PERK_BLENDER := 2   ## exposure rises slower
-const PERK_SWIFT := 3     ## faster tool cooldowns
-const PERK_SURVIVOR := 4  ## longer respawn grace
+const PERK_GHOST := 1     ## stealth: exposure bleeds off faster
+const PERK_VIGILANT := 2  ## awareness: you sense your hunter's approach from further away
+const PERK_SWIFT := 3     ## tools: cooldowns AND charge regen faster
+const PERK_BUTCHER := 4   ## aggression: the NPC-kill blade lockout is halved
 ## GHOST: multiply how fast exposure bleeds off while walking/idle.
 @export var ghost_recovery_scale: float = 1.6
-## BLENDER: multiply how fast exposure RISES while running / turning sharply (lower = stealthier).
-@export var blender_rise_scale: float = 0.7
-## SWIFT: multiply tool cooldowns (lower = faster).
+## VIGILANT: multiply YOUR very-near hunter warning distance (danger level 2 fires from further).
+@export var vigilant_close_scale: float = 1.5
+## SWIFT: multiply tool cooldowns AND the charge-regen wait (lower = faster).
 @export var swift_cooldown_scale: float = 0.7
-## SURVIVOR: multiply post-respawn grace duration.
-@export var survivor_grace_scale: float = 1.8
+## BUTCHER: multiply the blade lockout after an NPC kill (lower = shorter lay-low window).
+@export var butcher_lockout_scale: float = 0.5
 var _perk_by_peer: Dictionary = {}        ## peer -> chosen perk int (host-side; applied at spawn)
 
 # === ACTIVE BLENDING / HIDING SPOTS (AC-style) ====================================================
@@ -158,6 +161,7 @@ var _blend_spots: Array = []              ## Array[Vector2] spot centres (host: 
 var _blended_by_peer: Dictionary = {}     ## peer -> currently blended?
 
 var _streak_by_peer: Dictionary = {}      ## peer -> consecutive player kills without dying
+var _deaths_by_peer: Dictionary = {}      ## peer -> times killed (shown on the scoreboard breakdown)
 var _escape_ready_at: Dictionary = {}     ## peer -> _elapsed time when their next ESCAPE bonus is allowed
 var _drop_recent_until: Dictionary = {}   ## peer -> _elapsed time until which a kill counts as a DROP
 var _last_layer_by_peer: Dictionary = {}  ## peer -> last-seen layer, to detect a ROOFTOP->GROUND drop
@@ -226,6 +230,10 @@ var _danger_level_by_peer: Dictionary = {}  ## last level sent to each peer (onl
 @export var firecracker_radius: float = 320.0
 ## How long (seconds) players caught in the burst are stunned (can't move or kill).
 @export var firecracker_stun_seconds: float = 1.6
+## How long (seconds) players caught in the burst are BLINDED — their whole screen whites out
+## (fully opaque for most of it, a quick fade at the end). Longer than the stun on purpose: you
+## regain your legs while still blind, so the victim's last second is a blind panic scramble.
+@export var firecracker_blind_seconds: float = 3.0
 
 # === COUNTER-STUN (AC Rearmed) — you can't kill the player hunting you; STRIKING them stuns them ====
 ## How long (seconds) a stunned hunter is frozen (can't move or kill) — reuses the smoke-stun system.
@@ -415,6 +423,19 @@ var _debug_layer: CanvasLayer = null
 var _debug_label: Label = null
 var _debug_visible: bool = false
 
+## START CURTAIN — a full-screen input shield shown from the instant the match scene loads until
+## the round goes live ("GO!"). It covers the WHOLE load window (scene build → spawn handshake →
+## per-viewer reskin → the 3/2/1 countdown), swallowing every mouse click and blocking the
+## scoreboard/menu/debug keys, so a player can't click on or trigger ANYTHING while things settle.
+## The player bodies are ALSO held still underneath by the host-authoritative `_net_frozen` flag —
+## the curtain is the belt to that suspenders. Built in _ready() on every peer; dismissed once the
+## local round is live. (A true get_tree().paused would freeze the host's own countdown timer +
+## the network synchronizers, deadlocking the unfreeze — so we shield input instead of pausing.)
+var _start_curtain: CanvasLayer = null
+var _start_curtain_label: Label = null
+var _start_curtain_dim: ColorRect = null
+var _start_curtain_dismissed: bool = false
+
 ## Phase 9 HOOK (PHASE_9_EXPERIMENTS.md). Re-announces every resolved kill at the MATCH level so
 ## experiments can listen in one place instead of re-wiring per player spawn. online_match emits
 ## this; it does not know or care who listens (the one-way dependency rule, §1.2).
@@ -424,6 +445,7 @@ signal host_kill_resolved(killer: Node, victim: Node, was_valid_target: bool)
 func _ready() -> void:
 	add_to_group("online_match")  # Phase 9 experiments find the match here (read-only accessors)
 	CosmeticRegistry.roll_filler_bodies()  # this match's 3–5 commoner crowd looks
+	_build_start_curtain()  # FIRST: shield input before anything else exists to click on
 	_build_world()
 	_build_hud()
 	_build_debug_overlay()
@@ -517,11 +539,17 @@ func _maybe_begin_match() -> void:
 	_spawn_crowd()
 	_setup_blend_spots()  # scatter hide-here zones at dense-crowd points
 	if _respawn_mode():
-		# RESPAWN MODE: PvP from the first life. Marks are OPTIONAL ladder content (off in this
-		# increment), so we skip the mandatory mark gate and put everyone straight into the hunt.
+		# RESPAWN MODE. The 2-PLAYER map gates the hunt behind killing 2 NPC marks first (you clear
+		# them ONCE — they carry across respawns, so it's kill-2-ever); the 3-4 player map goes
+		# STRAIGHT to the hunt (no NPC kills). Either way it's continuous-respawn PvP after that.
 		_seat_order = spawn_order.duplicate()
 		_recompute_ring_from_seats()
-		_respawn_rewire_all()
+		if _marks_gate_enabled():
+			for peer_id in _players_by_peer:
+				_assign_mark_for_peer(peer_id)  # 2 marks each; hunt opens per-peer when they're cleared
+			_notify_targets()                    # show each player their target (portrait/arrow) from the start
+		else:
+			_respawn_rewire_all()                # 3-4p: everyone can hunt immediately
 		if _ladder_on():
 			for peer_id in _players_by_peer:
 				_ladder_reset_life(peer_id)  # hand out the first life's optional marks + lock the 2nd tool
@@ -536,7 +564,54 @@ func _maybe_begin_match() -> void:
 		_round_countdown = round_start_countdown
 		_start_round_countdown.rpc(round_start_countdown)
 	else:
+		# No countdown: go live immediately, and clear the round-start freeze the players spawned
+		# with (otherwise everyone — and the start curtain's safety net — would wait on it forever).
 		_round_active = true
+		for character in _players_by_peer.values():
+			if character != null and is_instance_valid(character):
+				character.set("_net_frozen", false)
+
+
+# Build the full-screen start curtain (input shield + "GET READY"/countdown text). Called at the
+# very top of _ready() so it exists before the world/HUD, covering the whole load window.
+func _build_start_curtain() -> void:
+	_start_curtain = CanvasLayer.new()
+	_start_curtain.name = "StartCurtain"
+	_start_curtain.layer = 80  # above HUD (≤5) + scoreboard (40); below the flashbang (90)
+	add_child(_start_curtain)
+	# A full-rect Control that STOPS mouse input, so nothing underneath is clickable, plus a dim
+	# panel so the world loading in isn't a distraction (and can't be read/acted on).
+	_start_curtain_dim = ColorRect.new()
+	_start_curtain_dim.color = Color(0.03, 0.04, 0.06, 0.9)
+	_start_curtain_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_start_curtain_dim.mouse_filter = Control.MOUSE_FILTER_STOP  # swallow every click
+	_start_curtain.add_child(_start_curtain_dim)
+	_start_curtain_label = Label.new()
+	_start_curtain_label.text = "GET READY…"
+	_start_curtain_label.add_theme_font_size_override("font_size", 54)
+	_start_curtain_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
+	_start_curtain_label.add_theme_constant_override("outline_size", 8)
+	_start_curtain_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_start_curtain_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_start_curtain_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_start_curtain_label.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_start_curtain_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_start_curtain.add_child(_start_curtain_label)
+
+
+func _start_curtain_up() -> bool:
+	return _start_curtain != null and is_instance_valid(_start_curtain) and not _start_curtain_dismissed
+
+
+# Fade the curtain out and free it — called once, when the local round goes live ("GO!").
+func _dismiss_start_curtain() -> void:
+	if _start_curtain_dismissed or _start_curtain == null or not is_instance_valid(_start_curtain):
+		return
+	_start_curtain_dismissed = true
+	var fade := create_tween()
+	fade.tween_property(_start_curtain_dim, "color:a", 0.0, 0.4)
+	fade.parallel().tween_property(_start_curtain_label, "modulate:a", 0.0, 0.4)
+	fade.tween_callback(_start_curtain.queue_free)
 
 
 # Everyone: kick off the local "3/2/1/GO!" display. The actual unfreeze is host-authoritative
@@ -560,14 +635,27 @@ func _tick_round_countdown(delta: float) -> void:
 	# EVERY peer: the on-screen overlay (local timer; all peers started it ~together via the RPC).
 	if _countdown_display > 0.0:
 		_countdown_display = maxf(0.0, _countdown_display - delta)
+		var text := str(int(ceil(_countdown_display))) if _countdown_display > 0.0 else "GO!"
 		if _mhud != null:
-			_mhud.set_countdown(str(int(ceil(_countdown_display))) if _countdown_display > 0.0 else "GO!")
+			_mhud.set_countdown(text)
+		if _start_curtain_up():
+			_start_curtain_label.text = text  # the countdown shows ON the curtain (it's on top)
 		if _countdown_display == 0.0:
 			_go_left = 0.8  # hold "GO!" briefly, then clear
+			_dismiss_start_curtain()  # round is live → lift the shield (fades over the "GO!" hold)
 	elif _go_left > 0.0:
 		_go_left = maxf(0.0, _go_left - delta)
 		if _go_left == 0.0 and _mhud != null:
 			_mhud.set_countdown("")
+
+	# SAFETY NET: if the round is somehow already live for us but the curtain is still up (a lost/late
+	# "GO!" display, or round_start_countdown == 0 with no countdown at all), lift it the moment our
+	# own player exists and isn't frozen — the replicated _net_frozen flag is the authoritative
+	# "am I still held" signal on host AND client, so no one is ever trapped behind the shield.
+	if _start_curtain_up() and _countdown_display <= 0.0:
+		var me := _find_local_player()
+		if me != null and not bool(me.get("_net_frozen")):
+			_dismiss_start_curtain()
 
 
 # The crowd size for the chosen map. Big map (FOUR_ZONE) uses npc_count; the small arenas use the
@@ -755,6 +843,14 @@ func _spawn_player_for_peer(peer_id: int) -> void:
 		# Killing an innocent LOCKS the blade (host-side) — tell the owner so their HUD counts it down.
 		kill.kill_lockout_started.connect(func(seconds: float) -> void:
 			_receive_kill_lockout.rpc_id(peer_id, seconds))
+
+	# LURK warnings (host-side sim flips the state): tell the owner WHY their exposure is
+	# climbing — a rising bar with no explanation reads as a bug.
+	character.lurk_state_changed.connect(func(lurking: bool) -> void:
+		if lurking:
+			_notify_owner.rpc_id(peer_id, "You've lingered in the shadows too long — you're drawing eyes.")
+		else:
+			_notify_owner.rpc_id(peer_id, "You slip back into the flow of the crowd."))
 
 	# Host owns this player's tool kit: apply each tool's world effect when used + push the
 	# charges/cooldown readout to the owner whenever it changes.
@@ -961,25 +1057,26 @@ func _perk_for_peer(peer_id: int) -> int:
 	return PERK_NONE
 
 # Host-only: apply a peer's passive perk modifier to their (host-side) character at spawn. Persists
-# across respawns (revive() doesn't touch these tunables); SURVIVOR is handled at respawn instead.
+# across respawns (revive() doesn't touch these tunables). VIGILANT lives in _tick_danger instead
+# (it scales a per-tick distance check, not a spawn-time stat).
 func _apply_perk(character: Player, peer_id: int) -> void:
 	var perk := _perk_for_peer(peer_id)
 	if perk == PERK_NONE:
 		return
 	var exposure := character.get_node_or_null("ExposureComponent")
 	var item := character.get_node_or_null("ItemComponent") as ItemComponent
+	var kill := character.get_node_or_null("KillComponent") as KillComponent
 	match perk:
 		PERK_GHOST:
 			if exposure != null:
 				exposure.walk_fall_per_second *= ghost_recovery_scale
 				exposure.idle_fall_per_second *= ghost_recovery_scale
-		PERK_BLENDER:
-			if exposure != null:
-				exposure.run_rise_per_second *= blender_rise_scale
-				exposure.erratic_rise_per_second *= blender_rise_scale
 		PERK_SWIFT:
 			if item != null:
-				item.cooldown_scale = swift_cooldown_scale
+				item.cooldown_scale = swift_cooldown_scale  # scales cooldowns AND charge regen
+		PERK_BUTCHER:
+			if kill != null:
+				kill.npc_kill_cooldown_seconds *= butcher_lockout_scale
 
 
 # === player identity (nickname + number + colour), shared by BOTH leaderboards ==============
@@ -1249,6 +1346,7 @@ func _on_player_killed(loser_peer: int) -> void:
 		return  # already eliminated
 	_dead_by_peer[loser_peer] = true
 	_streak_by_peer[loser_peer] = 0  # dying ends your kill streak
+	_deaths_by_peer[loser_peer] = int(_deaths_by_peer.get(loser_peer, 0)) + 1  # for the scoreboard breakdown
 
 	# Drop the dead player from the EXPOSED reveal row on every screen — they're out, so their blue
 	# plate shouldn't keep hanging around (the roster already dims + ✗-tags them via _build_roster_rows).
@@ -1276,20 +1374,25 @@ func _on_player_killed(loser_peer: int) -> void:
 	if loser != null:
 		_freeze_player.rpc(String(loser.name))
 
+	# WHO got them + HOW — used by both modes' death feedback. Sent only to the loser
+	# (their killer's identity stays private to everyone else).
+	var killer_name: String = _display_name_for(killer_peer) if killer_peer > 0 else ""
+	var method: String = str(loser.get("last_attacker_method")) if loser != null else ""
+
 	if _respawn_mode():
 		# RESPAWN MODE: no spectate, no last-standing end. Re-form the chain over the living and
 		# schedule this player's return. The round ends only on the clock (_host_score_tick).
+		# The loser gets a full-screen "YOU'VE BEEN KILLED" splash with the respawn countdown —
+		# the old one-line log entry was so easy to miss players didn't realise they had died.
 		_recompute_ring_from_seats()
 		_respawn_rewire_all()
 		_respawn_due[loser_peer] = respawn_delay_seconds
-		_notify_owner.rpc_id(loser_peer, "You were killed — respawning…")
+		_receive_respawn_death.rpc_id(loser_peer, killer_name, method, respawn_delay_seconds)
 		_update_status()
 		return
 
 	# Tell the eliminated player WHO got them + HOW, so their machine shows the death screen and
-	# drops them into free-spectate. Sent only to the loser (their identity stays private to others).
-	var killer_name: String = _display_name_for(killer_peer) if killer_peer > 0 else ""
-	var method: String = str(loser.get("last_attacker_method")) if loser != null else ""
+	# drops them into free-spectate.
 	if loser_peer == multiplayer.get_unique_id():
 		_enter_spectate(killer_name, method)  # the host themselves died
 	else:
@@ -1406,6 +1509,211 @@ func _death_cause_text(killer_name: String, method: String) -> String:
 	return "Assassinated by %s" % killer_name
 
 
+# ================================================================================================
+# RESPAWN-MODE DEATH SPLASH — an unmissable "YOU'VE BEEN KILLED" screen for the few seconds you're
+# down: red flash, who got you and how, and a live respawn countdown. Fades out as you come back.
+# (Classic mode keeps its own elimination screen + spectate; this is only for respawn deaths.)
+# ================================================================================================
+
+## The splash overlay (built once, reshown on each death) and its live pieces.
+var _death_splash_layer: CanvasLayer = null
+var _death_splash_flash: ColorRect = null
+var _death_splash_cause: Label = null
+var _death_splash_timer_label: Label = null
+## Seconds until our respawn (drives the countdown + auto-fade). 0 = splash idle/hidden.
+var _death_splash_left: float = 0.0
+
+
+# Owner-only: we were killed in respawn mode — flash the death splash with the respawn countdown.
+@rpc("authority", "call_local", "reliable")
+func _receive_respawn_death(killer_name: String, method: String, delay: float) -> void:
+	if _death_splash_layer == null or not is_instance_valid(_death_splash_layer):
+		_build_death_splash()
+	_death_splash_left = maxf(0.5, delay)
+	_death_splash_cause.text = _death_cause_text(killer_name, method)
+	_death_splash_timer_label.text = "Respawning…"
+	_death_splash_layer.visible = true
+	var content := _death_splash_layer.get_child(0) as CanvasItem
+	content.modulate.a = 1.0  # the content column, restored from any earlier fade-out
+	# Red impact flash: slam in strong, settle to a readable wash for the rest of the downtime.
+	_death_splash_flash.color = Color(0.55, 0.02, 0.02, 0.6)
+	var settle := create_tween()
+	settle.tween_property(_death_splash_flash, "color:a", 0.3, 0.45)
+	if _mhud != null:
+		_mhud.add_log(_death_cause_text(killer_name, method))
+
+
+func _build_death_splash() -> void:
+	_death_splash_layer = CanvasLayer.new()
+	_death_splash_layer.name = "DeathSplash"
+	_death_splash_layer.layer = 70  # over HUD + scoreboard; under the start curtain (80) + flashbang (90)
+	_death_splash_layer.visible = false
+	add_child(_death_splash_layer)
+	var column := Control.new()  # child 0 — everything lives here so one fade covers it all
+	column.set_anchors_preset(Control.PRESET_FULL_RECT)
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_death_splash_layer.add_child(column)
+	_death_splash_flash = ColorRect.new()
+	_death_splash_flash.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_death_splash_flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_death_splash_flash)
+	var headline := Label.new()
+	headline.text = "YOU'VE BEEN KILLED"
+	headline.add_theme_font_size_override("font_size", 64)
+	headline.add_theme_color_override("font_color", Color(1.0, 0.9, 0.9))
+	headline.add_theme_constant_override("outline_size", 10)
+	headline.add_theme_color_override("font_outline_color", Color(0.25, 0.0, 0.0, 0.95))
+	headline.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	headline.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	headline.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	headline.offset_top = 300.0
+	headline.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(headline)
+	_death_splash_cause = Label.new()
+	_death_splash_cause.add_theme_font_size_override("font_size", 26)
+	_death_splash_cause.add_theme_color_override("font_color", Color(1.0, 0.75, 0.7))
+	_death_splash_cause.add_theme_constant_override("outline_size", 6)
+	_death_splash_cause.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_death_splash_cause.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_death_splash_cause.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_death_splash_cause.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_death_splash_cause.offset_top = 390.0
+	_death_splash_cause.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_death_splash_cause)
+	_death_splash_timer_label = Label.new()
+	_death_splash_timer_label.add_theme_font_size_override("font_size", 22)
+	_death_splash_timer_label.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
+	_death_splash_timer_label.add_theme_constant_override("outline_size", 6)
+	_death_splash_timer_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_death_splash_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_death_splash_timer_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_death_splash_timer_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_death_splash_timer_label.offset_top = 435.0
+	_death_splash_timer_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_death_splash_timer_label)
+
+
+# ================================================================================================
+# OVERHANG COVER FEEDBACK — the owner's "you're about to get exposed" countdown, and the host-driven
+# red glow on a maxed-out camper's roof. Both read the same lurk rule the Player enforces host-side.
+# ================================================================================================
+
+## Owner-side local mirror of the lurk timers (DISPLAY only — the real exposure is host-authoritative
+## in Player._update_lurk). We recompute them here rather than reading the player's own counters,
+## because a CLIENT never runs _update_lurk (the host simulates it), so those counters are only live
+## on the host. Mirroring the exact same rule locally keeps the countdown honest on every machine.
+var _cover_hud_under: float = 0.0
+var _cover_hud_outside: float = 0.0
+var _cover_hud_still: float = 0.0
+
+# Owner per-frame: recompute how long we've been under cover (and still) and drive the countdown.
+func _tick_cover_hud(delta: float) -> void:
+	if _mhud == null or _spectating:
+		return
+	var me := _local_player
+	if me == null or not is_instance_valid(me) or not me.has_method("is_under_cover") or me.is_dead():
+		_mhud.set_cover_timer("", false)
+		return
+	_mhud.set_cover_timer(_cover_hud_text(me, delta), _cover_hud_exposed)
+
+
+## True while the last _cover_hud_text() call decided we're past the grace (drives the red styling).
+var _cover_hud_exposed: bool = false
+
+
+# The cover readout for `me` this frame, mirroring Player._update_lurk / _lurk_grace_now exactly:
+# a countdown while inside the grace, the red warning once it runs out, "" when not under cover.
+func _cover_hud_text(me: Node2D, delta: float) -> String:
+	# Continuous-still timer — the short still-grace only applies after the still-debuff delay.
+	var speed: float = (me.get("velocity") as Vector2).length()
+	if speed <= float(me.get("lurk_still_speed")):
+		_cover_hud_still += delta
+	else:
+		_cover_hud_still = 0.0
+	var under: bool = me.call("is_under_cover")
+	if under:
+		_cover_hud_outside = 0.0
+		_cover_hud_under += delta
+	else:
+		_cover_hud_outside += delta
+		if _cover_hud_outside >= float(me.get("lurk_reset_outside_seconds")):
+			_cover_hud_under = 0.0
+		_cover_hud_exposed = false
+		return ""
+	var settled_still: bool = speed <= float(me.get("lurk_still_speed")) \
+		and _cover_hud_still >= float(me.get("lurk_still_debuff_grace_seconds"))
+	var grace: float = float(me.get("lurk_grace_still_seconds")) if settled_still else float(me.get("lurk_grace_seconds"))
+	var remaining: float = grace - _cover_hud_under
+	_cover_hud_exposed = remaining <= 0.0
+	if remaining > 0.0:
+		return "Shadow cover — %ds" % int(ceil(remaining))
+	return "EXPOSED — KEEP MOVING"
+
+
+## Host: which world positions are currently HOT (a player at ~full exposure standing under cover),
+## resent to everyone only when the set changes. Throttled by _cover_glow_accum.
+var _cover_hot_positions: Array = []
+var _cover_glow_accum: float = 0.0
+
+func _tick_cover_glow(delta: float) -> void:
+	if _match_over:
+		return
+	_cover_glow_accum += delta
+	if _cover_glow_accum < 0.2:
+		return
+	_cover_glow_accum = 0.0
+	var hot: Array = []
+	for peer in _players_by_peer:
+		if bool(_dead_by_peer.get(peer, false)):
+			continue
+		var node := _players_by_peer[peer] as Player
+		if node == null or not is_instance_valid(node):
+			continue
+		var exposure := node.exposure_component
+		if exposure == null or exposure.exposure < 99.0:
+			continue
+		if node.has_method("is_under_cover") and bool(node.call("is_under_cover")):
+			hot.append(node.global_position)
+	# Only broadcast when the set actually changes (cheap: compare sizes + rounded points).
+	if not _hot_positions_equal(hot, _cover_hot_positions):
+		_cover_hot_positions = hot
+		_receive_cover_hot.rpc(hot)
+
+
+func _hot_positions_equal(a: Array, b: Array) -> bool:
+	if a.size() != b.size():
+		return false
+	for i in a.size():
+		if (a[i] as Vector2).distance_to(b[i]) > 8.0:
+			return false
+	return true
+
+
+# Everyone: apply the host's current hot-roof positions to our local map overlay (which tints the
+# matching cover zones red). Purely visual + identity-safe (marks the roof, not the character).
+@rpc("authority", "call_local", "reliable")
+func _receive_cover_hot(positions: Array) -> void:
+	if _map is TestMap01 and (_map as TestMap01).has_method("set_cover_hot_positions"):
+		(_map as TestMap01).set_cover_hot_positions(positions)
+
+
+# Per-frame: run the respawn countdown on the splash and fade it away as we come back.
+func _tick_death_splash(delta: float) -> void:
+	if _death_splash_left <= 0.0 or _death_splash_layer == null or not is_instance_valid(_death_splash_layer):
+		return
+	_death_splash_left = maxf(0.0, _death_splash_left - delta)
+	if _death_splash_left > 0.0:
+		_death_splash_timer_label.text = "Respawning in %d…" % int(ceil(_death_splash_left))
+	else:
+		_death_splash_timer_label.text = "GO."
+	if _death_splash_left == 0.0:
+		var fade := create_tween()
+		fade.tween_property(_death_splash_layer.get_child(0), "modulate:a", 0.0, 0.5)
+		fade.tween_callback(func() -> void:
+			if is_instance_valid(_death_splash_layer):
+				_death_splash_layer.visible = false)
+
+
 # Re-link anyone whose assigned target is `gone_peer` (just died or left) onto a live opponent,
 # so their arrow/reveal keep pointing somewhere real and a contract is still reachable.
 func _relink_hunters_of(gone_peer: int) -> void:
@@ -1520,15 +1828,61 @@ func _respawn_player(peer: int) -> void:
 	# bar shows them (otherwise it stays stuck at the spent counts and the kit LOOKS like it didn't respawn).
 	_push_item_state_to(peer)
 	node.set("grace_active", true)
-	var grace := respawn_grace_seconds
-	if _perk_for_peer(peer) == PERK_SURVIVOR:
-		grace *= survivor_grace_scale  # SURVIVOR perk: a longer safe window
-	_grace_due[peer] = grace
+	_grace_due[peer] = respawn_grace_seconds
+	_assign_respawn_look(peer, node)  # come back wearing a DIFFERENT face so your hunter must re-find you
 	_recompute_ring_from_seats()
 	_respawn_rewire_all()
 	_ladder_reset_life(peer)  # fresh life: wipe earned upgrades, re-lock the 2nd tool, new marks (no-op if ladder off)
-	_notify_owner.rpc_id(peer, "Respawned — fresh life. Briefly safe.")
+	_notify_owner.rpc_id(peer, "Respawned — fresh face. Briefly safe.")
 	_update_status()
+
+
+# Host: give a respawned player a NEW assassin skin (different from their last), so a hunter who had
+# their face memorised must find them again. Applied on every machine, and the player's crowd
+# LOOK-ALIKES are repainted to match so the disguise-in-crowd blend follows them (§0.3).
+func _assign_respawn_look(peer: int, node: Player) -> void:
+	var current := int(node.get("appearance_index"))
+	var new_look := _different_assassin_body(current)
+	if new_look == current:
+		return  # nothing else to switch to (single skin) — leave them be
+	node.set("appearance_index", new_look)  # host-side, so _revealed_look feeds the new face to portraits
+	_apply_player_look.rpc(String(node.name), current, new_look)
+	_refresh_reveals_for(peer)  # the hunter's red TARGET portrait updates to the new face
+
+
+# A random assassin body index that isn't `current` (the 4 premium skins live at ASSASSIN_BODY_BASE..).
+func _different_assassin_body(current: int) -> int:
+	var options: Array = []
+	for i in ASSASSIN_BODY_COUNT:
+		var idx := ASSASSIN_BODY_BASE + i
+		if idx != current:
+			options.append(idx)
+	if options.is_empty():
+		return current
+	return int(options[randi() % options.size()])
+
+
+# Everyone: repaint a respawned player to `new_look`, AND repaint their crowd LOOK-ALIKES (the NPCs
+# wearing their OLD look on THIS screen) to the new look too — so the pocket of doubles that hides
+# them moves with them instead of leaving them a lone new face. The player's own screen has no copies
+# of itself (its look is excluded from its crowd), so there it just changes its own body.
+@rpc("authority", "call_local", "reliable")
+func _apply_player_look(player_name: String, old_look: int, new_look: int) -> void:
+	if _players_parent != null:
+		var node := _players_parent.get_node_or_null(player_name)
+		if node != null:
+			node.set("appearance_index", new_look)
+			var visual := node.get_node_or_null("CharacterVisual")
+			if visual != null and visual.has_method("set_appearance"):
+				visual.call("set_appearance", new_look)
+	if _crowd_parent != null:
+		for child in _crowd_parent.get_children():
+			var npc := child as Npc
+			if npc == null or npc.is_dead():
+				continue
+			var nv := npc.get_node_or_null("CharacterVisual")
+			if nv != null and nv.has_method("get_appearance") and int(nv.call("get_appearance")) == old_look:
+				nv.call("set_appearance", new_look)
 
 
 # Every machine: reverse a player's death (un-fade, re-enable physics/actions, wipe per-life state)
@@ -1565,12 +1919,26 @@ func _recompute_ring_from_seats() -> void:
 				break
 
 
+# The 2-player map keeps the kill-2-NPCs-first gate; the 3-4 player (Citadel) map goes straight to
+# the hunt. Keyed off the selected map, which IS the mode. Only consulted on the respawn path
+# (classic non-respawn mode always does its own marks flow).
+func _marks_gate_enabled() -> bool:
+	return _respawn_mode() and NetworkManager.selected_map == NetworkManager.Map.COMPACT
+
+
 # Push the current ring to clients: every living hunter is in 'target' phase, knows its prey, can kill
 # it, and the prey is told it's hunted. Idempotent — safe to call on every membership change.
 func _respawn_rewire_all() -> void:
 	for hunter in _ring_target:
 		var prey := int(_ring_target[hunter])
 		if prey == 0 or not _players_by_peer.has(prey) or bool(_dead_by_peer.get(prey, false)):
+			continue
+		# MARKS GATE (2-player map): a hunter who hasn't cleared their 2 NPC marks yet can't hunt —
+		# keep them gated (still show them their target's portrait/arrow, just no kill). Their hunt
+		# opens later via _begin_target_phase when their last mark drops. Since marks carry across
+		# respawns, after the first life everyone is already "target" and this never blocks again.
+		if _marks_gate_enabled() and _phase_by_peer.get(hunter, "marks") != "target":
+			_send_target_to(hunter)
 			continue
 		(_players_by_peer[prey] as Node).add_to_group("killable_for_%d" % hunter)
 		if _phase_by_peer.get(hunter, "marks") != "target":
@@ -1822,7 +2190,11 @@ func _tick_danger(delta: float) -> void:
 				var hunter_node := _players_by_peer.get(hunter) as Node2D
 				if prey_node != null and is_instance_valid(prey_node) and hunter_node != null and is_instance_valid(hunter_node):
 					var d := prey_node.global_position.distance_to(hunter_node.global_position)
-					if d <= danger_close_px:
+					# VIGILANT perk: this prey senses their hunter from further out.
+					var close_px := danger_close_px
+					if _perk_for_peer(int(prey)) == PERK_VIGILANT:
+						close_px *= vigilant_close_scale
+					if d <= close_px:
 						level = 2
 					else:
 						# NEAR cue (level 1) only when the hunter is actually on the prey's screen — i.e. inside
@@ -2079,7 +2451,28 @@ func _deploy_firecracker(user: Player, peer_id: int) -> void:
 		if node.global_position.distance_to(origin) <= firecracker_radius:
 			# Reuse the smoke-stun bookkeeping (decremented + applied in _update_smoke_stuns).
 			_stun_left_by_peer[other] = maxf(float(_stun_left_by_peer.get(other, 0.0)), firecracker_stun_seconds)
+			# …and BLIND them: their whole screen whites out (owner-side overlay, see below).
+			_receive_flashbang.rpc_id(int(other), firecracker_blind_seconds)
 	_spawn_firecracker_flash.rpc(origin)
+
+
+# Owner-only: we were caught in a firecracker burst — white out OUR whole screen. Fully opaque for
+# ~70% of the duration ("they should be able to see nothing"), then a quick fade as sight returns.
+# Drawn on its own TOP canvas layer so it covers the world AND the HUD — no peeking at the minimap.
+@rpc("authority", "call_local", "reliable")
+func _receive_flashbang(seconds: float) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 90  # above the whole HUD; only the end-of-match overlay ever sits higher
+	add_child(layer)
+	var white := ColorRect.new()
+	white.color = Color(1.0, 1.0, 1.0, 1.0)
+	white.set_anchors_preset(Control.PRESET_FULL_RECT)
+	white.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(white)
+	var tw := create_tween()
+	tw.tween_interval(maxf(0.1, seconds) * 0.7)                       # blind: hold fully opaque
+	tw.tween_property(white, "color:a", 0.0, maxf(0.1, seconds) * 0.3)  # sight bleeds back in
+	tw.tween_callback(layer.queue_free)
 
 
 # Everyone: a brief expanding white-yellow flash at the burst location (cosmetic).
@@ -2393,6 +2786,10 @@ func _process(delta: float) -> void:
 	_update_identity_portrait()  # "?" portrait while OUR disguise/morph is active
 	_tick_item_countdown(delta)
 	_tick_kill_lockout(delta)
+	_tick_death_splash(delta)  # respawn-mode "YOU'VE BEEN KILLED" countdown + fade
+	_tick_cover_hud(delta)     # owner-side "shadow cover Ns / EXPOSED" countdown under overhangs
+	if NetworkManager.is_host():
+		_tick_cover_glow(delta)  # host: mark maxed-out campers' roofs hot (red) for everyone
 	_read_ladder_input()  # PvE ladder: spend earned upgrade points with the two axis keys (owner-side)
 	_update_lock_reticle()  # private target-lock reticle follows our soft-locked character
 	# Round clock: the host advances _elapsed in _host_score_tick; clients tick it locally (everyone
@@ -2427,6 +2824,8 @@ func _build_roster_rows() -> Array:
 			"color": _color_for_num(num),            # keyed by number, so it survives the re-sort below
 			"score": int(score_row.get("total", 0)),
 			"player_kills": int(score_row.get("player_kills", 0)),  # for each client's focal kill-score box
+			"style": int(_style_bonus_by_peer.get(peer, 0)),         # kill-quality bonus points (breakdown)
+			"deaths": int(_deaths_by_peer.get(peer, 0)),             # times killed (breakdown)
 			"dead": bool(_dead_by_peer.get(peer, false)),
 			"peer": peer,  # so each client can find ITS OWN row and label the top-left box
 		})
@@ -2443,6 +2842,9 @@ func _build_roster_rows() -> Array:
 # Everyone: render the host's roster snapshot in the HUD scoreboard.
 @rpc("authority", "call_local", "reliable")
 func _receive_roster(rows: Array) -> void:
+	_latest_roster = rows  # kept for the mid-match scoreboard overlay (Tab/Esc)
+	if _scoreboard_layer != null and is_instance_valid(_scoreboard_layer) and _scoreboard_layer.visible:
+		_refresh_scoreboard_rows()  # live-update the open board
 	if _mhud == null:
 		return
 	_mhud.set_roster(rows)
@@ -2624,6 +3026,27 @@ func _build_player_hud() -> void:
 	_build_faceplate_row()    # red/blue identity reveals (Slice E)
 	if _is_hunted:
 		_mhud.set_hunted(true)  # already being hunted before our HUD existed
+	# NOTE: MP matches NEVER auto-open the tutorial — they just start. The tour lives on the menu's
+	# Tutorial button (a single-player bot match); mid-match, it's re-openable from the scoreboard's
+	# HOW TO PLAY button for a quick refresher.
+
+
+## The tour script, preloaded explicitly (its class_name isn't in the global cache until the
+## editor rescans — a fresh clone running a scene directly would crash on the bare name).
+const GUI_TOUR_SCRIPT := preload("res://scripts/ui/gui_tour.gd")
+## The click-through new-player GUI tour (one at a time; see gui_tour.gd).
+var _gui_tour: Node = null
+
+
+func _open_gui_tour() -> void:
+	if _gui_tour != null and is_instance_valid(_gui_tour):
+		return
+	if _mhud == null:
+		return
+	_gui_tour = GUI_TOUR_SCRIPT.new()
+	_gui_tour.name = "GuiTour"
+	_gui_tour.set("steps", _mhud.tour_steps())
+	add_child(_gui_tour)
 
 
 func _highlight_mark(mark: Node) -> void:
@@ -3504,16 +3927,139 @@ func _update_status() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# START CURTAIN: while the match is still loading in, swallow ALL of these — no scoreboard, no
+	# menu, no debug toggle can fire until the round goes live (the curtain also eats mouse clicks).
+	if _start_curtain_up():
+		return
 	# Abstract Input Map actions only — never raw keycodes (Principle #2), so these work on a
-	# controller too. `ui_cancel` is Godot's built-in Escape/B-button action; `toggle_net_debug`
-	# is our own action (F3 by default) defined in project.godot's Input Map.
-	if event.is_action_pressed("ui_cancel"):
-		_return_to_menu()  # leave the match back to the menu
+	# controller too. `ui_cancel` is Godot's built-in Escape/B-button action; `show_scoreboard`
+	# (Tab / gamepad Back) and `toggle_net_debug` (F3) are ours, defined in project.godot.
+	if event.is_action_pressed("ui_cancel") or event.is_action_pressed("show_scoreboard"):
+		# Esc/Tab now open the SCOREBOARD overlay (score breakdown + a Leave Match button) instead
+		# of instantly quitting to the menu — no more matches lost to a reflex Esc press.
+		_toggle_scoreboard()
 	elif event.is_action_pressed("toggle_net_debug"):
 		# Toggle the network debug overlay (FPS / ping / pending inputs).
 		_debug_visible = not _debug_visible
 		if _debug_layer != null:
 			_debug_layer.visible = _debug_visible
+
+
+# ================================================================================================
+# MID-MATCH SCOREBOARD (Tab/Esc): the live score breakdown per player — score, kills, style
+# points, deaths — plus RESUME and LEAVE MATCH buttons. Built from the host's replicated roster
+# rows (no identity data beyond what the top-right roster already shows), locally, on demand.
+# ================================================================================================
+
+## The latest replicated roster rows (name/color/score/kills/style/deaths per player).
+var _latest_roster: Array = []
+## The overlay layer (built once, toggled) and the container its rows are rebuilt into.
+var _scoreboard_layer: CanvasLayer = null
+var _scoreboard_rows_box: VBoxContainer = null
+
+
+func _toggle_scoreboard() -> void:
+	if _match_over:
+		return  # the end screen owns the display once the match is decided
+	if _scoreboard_layer == null or not is_instance_valid(_scoreboard_layer):
+		_build_scoreboard_overlay()
+	_scoreboard_layer.visible = not _scoreboard_layer.visible
+	if _scoreboard_layer.visible:
+		_refresh_scoreboard_rows()
+
+
+func _build_scoreboard_overlay() -> void:
+	_scoreboard_layer = CanvasLayer.new()
+	_scoreboard_layer.name = "ScoreboardOverlay"
+	_scoreboard_layer.layer = 40  # above the HUD, below the flashbang (90) and end screen
+	_scoreboard_layer.visible = false
+	add_child(_scoreboard_layer)
+	# Dim the whole screen behind the board so it reads as a pause-style overlay (game keeps running).
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.55)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scoreboard_layer.add_child(dim)
+	# Centre panel.
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	# Grow OUT from the centre as rows are added, so the panel stays centred at any size.
+	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	panel.custom_minimum_size = Vector2(560, 0)
+	_scoreboard_layer.add_child(panel)
+	var margin := MarginContainer.new()
+	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(side, 24)
+	panel.add_child(margin)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
+	margin.add_child(column)
+	var title := Label.new()
+	title.text = "SCOREBOARD"
+	title.add_theme_font_size_override("font_size", 28)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	column.add_child(title)
+	_scoreboard_rows_box = VBoxContainer.new()
+	_scoreboard_rows_box.add_theme_constant_override("separation", 4)
+	column.add_child(_scoreboard_rows_box)
+	# Buttons: resume (close) and leave (back to the main menu).
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 20)
+	column.add_child(buttons)
+	var resume := Button.new()
+	resume.text = "RESUME  (Tab/Esc)"
+	resume.pressed.connect(func() -> void: _scoreboard_layer.visible = false)
+	buttons.add_child(resume)
+	var how_to := Button.new()
+	how_to.text = "HOW TO PLAY"
+	how_to.pressed.connect(func() -> void:
+		_scoreboard_layer.visible = false
+		_open_gui_tour())
+	buttons.add_child(how_to)
+	var leave := Button.new()
+	leave.text = "LEAVE MATCH"
+	leave.modulate = Color(1.0, 0.6, 0.55)
+	leave.pressed.connect(_return_to_menu)
+	buttons.add_child(leave)
+
+
+# (Re)build the board's rows from the latest replicated roster. Each row is an HBox of
+# fixed-width labels (name | score | kills | style | deaths) so columns line up without
+# needing a monospace font.
+func _refresh_scoreboard_rows() -> void:
+	if _scoreboard_rows_box == null or not is_instance_valid(_scoreboard_rows_box):
+		return
+	for child in _scoreboard_rows_box.get_children():
+		child.queue_free()
+	_scoreboard_rows_box.add_child(_make_scoreboard_row(
+		["PLAYER", "SCORE", "KILLS", "STYLE", "DEATHS"], Color(0.75, 0.75, 0.75), 15))
+	var my_id := multiplayer.get_unique_id()
+	for row in _latest_roster:
+		var display_name := String(row.get("name", "?"))
+		if int(row.get("peer", 0)) == my_id:
+			display_name += " (YOU)"
+		if bool(row.get("dead", false)):
+			display_name += " ✗"
+		_scoreboard_rows_box.add_child(_make_scoreboard_row(
+			[display_name, str(int(row.get("score", 0))), str(int(row.get("player_kills", 0))),
+				str(int(row.get("style", 0))), str(int(row.get("deaths", 0)))],
+			row.get("color", Color.WHITE), 17))
+
+
+# One scoreboard line: a name column (wide, left-aligned) + four numeric columns (right-aligned).
+func _make_scoreboard_row(cells: Array, color: Color, font_size: int) -> HBoxContainer:
+	var box := HBoxContainer.new()
+	var widths := [200, 80, 70, 70, 70]
+	for i in cells.size():
+		var cell := Label.new()
+		cell.text = String(cells[i])
+		cell.custom_minimum_size = Vector2(widths[i % widths.size()], 0)
+		cell.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT if i == 0 else HORIZONTAL_ALIGNMENT_RIGHT
+		cell.add_theme_font_size_override("font_size", font_size)
+		cell.add_theme_color_override("font_color", color)
+		box.add_child(cell)
+	return box
 
 
 # ===========================================================================

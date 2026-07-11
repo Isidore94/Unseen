@@ -148,12 +148,18 @@ func _ready() -> void:
 	_refill_charges()
 
 
+# How long one charge takes to regenerate for THIS player: the base wait, scaled by the SWIFT
+# perk's cooldown_scale — so SWIFT speeds up recharge as well as cooldowns.
+func _regen_duration() -> float:
+	return charge_regen_seconds * cooldown_scale
+
+
 # (Re)stock each slot from its tool's charge count. Called on ready and whenever `equipped` changes
 # (the host sets equipped from spawn data, then calls this).
 func _refill_charges() -> void:
 	for slot in 2:
 		_charges[slot] = charges_for_tool(_tool(slot))
-		_regen_left[slot] = charge_regen_seconds  # full now → the regen timer is ready for the next spend
+		_regen_left[slot] = _regen_duration()  # full now → the regen timer is ready for the next spend
 
 
 func apply_equipped(tools: Array) -> void:
@@ -305,10 +311,10 @@ func _physics_process(delta: float) -> void:
 				_regen_left[slot] -= delta
 				if _regen_left[slot] <= 0.0:
 					_charges[slot] += 1
-					_regen_left[slot] = charge_regen_seconds  # arm the next charge's timer
-					charges_regenerated.emit(slot)            # → host refreshes the owner's HUD
+					_regen_left[slot] = _regen_duration()  # arm the next charge's timer
+					charges_regenerated.emit(slot)         # → host refreshes the owner's HUD
 			else:
-				_regen_left[slot] = charge_regen_seconds  # full → keep the timer ready for the next spend
+				_regen_left[slot] = _regen_duration()  # full → keep the timer ready for the next spend
 
 
 # A press on the controlling machine: act if we're the authority, else relay a request to the host.

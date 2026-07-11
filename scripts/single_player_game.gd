@@ -174,6 +174,13 @@ func _build_hud(map: TestMap01) -> Label:
 		exposure.exposure_changed.connect(func(v: float) -> void: _mhud.set_exposure(v / 100.0))
 		_mhud.set_exposure(exposure.exposure / 100.0)
 
+	# LURK warnings: say WHY exposure is climbing when the player loiters under roof cover.
+	_player.lurk_state_changed.connect(func(lurking: bool) -> void:
+		if lurking:
+			_mhud.add_log("You've lingered in the shadows too long — you're drawing eyes.")
+		else:
+			_mhud.add_log("You slip back into the flow of the crowd."))
+
 	# Hidden label the ContractManager writes to; mirrored into the objectives panel in _process.
 	_contract_label = Label.new()
 	_contract_label.name = "ContractLabel"
@@ -250,6 +257,17 @@ func _build_hud(map: TestMap01) -> Label:
 			if was_valid:
 				_score += 1)
 
+	# TUTORIAL launch (the menu's Tutorial button set the flag): open the click-through GUI tour
+	# over this live bot match. Only clicks advance it, so the player can walk around and fight the
+	# AI hunter while the tour points things out. Preloaded explicitly so a fresh clone works before
+	# the editor has rebuilt the global class cache.
+	if NetworkManager.tutorial_mode:
+		var tour_script := preload("res://scripts/ui/gui_tour.gd")
+		var tour: Node = tour_script.new()
+		tour.name = "GuiTour"
+		tour.set("steps", _mhud.tour_steps())
+		add_child(tour)
+
 	return _contract_label
 
 
@@ -325,6 +343,46 @@ func _process(delta: float) -> void:
 		_mhud.set_portrait_unknown()
 	else:
 		_mhud.set_portrait(_player.appearance_index if _player != null else 11)
+	# Overhang cover countdown ("Shadow cover — Ns" / "EXPOSED"). Offline the player runs its own
+	# lurk timer, so we recompute the display from its position each frame (as online does).
+	_tick_cover_hud(delta)
+
+
+var _cover_hud_under: float = 0.0
+var _cover_hud_outside: float = 0.0
+var _cover_hud_still: float = 0.0
+
+# Mirrors Player._update_lurk / _lurk_grace_now exactly (same rule as the online HUD): a countdown
+# while inside the grace, the red warning once it runs out. The short STILL grace only applies after
+# you've stood continuously still past the still-debuff delay — a brief pause doesn't punish you.
+func _tick_cover_hud(delta: float) -> void:
+	if _mhud == null or _player == null or not is_instance_valid(_player) or _player.is_dead():
+		if _mhud != null:
+			_mhud.set_cover_timer("", false)
+		return
+	if not _player.has_method("is_under_cover"):
+		return
+	var speed: float = _player.velocity.length()
+	if speed <= float(_player.get("lurk_still_speed")):
+		_cover_hud_still += delta
+	else:
+		_cover_hud_still = 0.0
+	if not _player.call("is_under_cover"):
+		_cover_hud_outside += delta
+		if _cover_hud_outside >= float(_player.get("lurk_reset_outside_seconds")):
+			_cover_hud_under = 0.0
+		_mhud.set_cover_timer("", false)
+		return
+	_cover_hud_outside = 0.0
+	_cover_hud_under += delta
+	var settled_still: bool = speed <= float(_player.get("lurk_still_speed")) \
+		and _cover_hud_still >= float(_player.get("lurk_still_debuff_grace_seconds"))
+	var grace: float = float(_player.get("lurk_grace_still_seconds")) if settled_still else float(_player.get("lurk_grace_seconds"))
+	var remaining: float = grace - _cover_hud_under
+	if remaining > 0.0:
+		_mhud.set_cover_timer("Shadow cover — %ds" % int(ceil(remaining)), false)
+	else:
+		_mhud.set_cover_timer("EXPOSED — KEEP MOVING", true)
 
 
 # Offline: the kit fired a tool — apply its world effect ourselves. (Disguise/morph/decoy/poison

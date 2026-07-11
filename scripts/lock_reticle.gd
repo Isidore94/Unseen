@@ -26,10 +26,19 @@ func _ready() -> void:
 
 
 # Called each frame by OnlineMatch from the local player's KillComponent lock state.
-func track(target: Node2D, ready_to_kill: bool) -> void:
+#
+# `target` is intentionally UNTYPED (not `: Node2D`). This is read every RENDER frame, but a
+# soft-locked NPC can be FREED (its death-fade queue_free) between the physics tick that clears
+# the lock and this call. A typed Node2D parameter type-checks the incoming value the moment it
+# binds — and a freed object fails that check with a hard "previously freed" crash (the bug we
+# hit killing NPCs). Taking it untyped lets a freed reference bind harmlessly; we immediately
+# null it via is_instance_valid, so the reticle just hides instead of crashing.
+func track(target, ready_to_kill: bool) -> void:
+	if not is_instance_valid(target):
+		target = null
 	_target = target
 	_ready_to_kill = ready_to_kill
-	visible = target != null and is_instance_valid(target)
+	visible = target != null
 
 
 func _process(_delta: float) -> void:

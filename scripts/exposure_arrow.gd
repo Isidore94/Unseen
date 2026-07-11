@@ -55,11 +55,11 @@ class_name ExposureArrow
 ## the target is on your screen at every tier, so the final identification stays a crowd read.
 @export var precision_tier: int = 0
 
-## EXPOSURE TEETH (Pillar #2 — acting is exposing): the TARGET's own exposure also forces the arrow
-## sharper, so a loud prey is easier to pin. At/above exposure_8way_at the arrow is at least 8-way;
-## at/above exposure_precise_at it's fully precise. The arrow uses the SHARPER of this and precision_tier.
-@export var exposure_8way_at: float = 45.0
-@export var exposure_precise_at: float = 80.0
+## EXPOSURE TEETH (Pillar #2 — acting is exposing): the HUNT arrow is ALWAYS just 4-way cardinal
+## (un-triangulatable — "they're that way", not "that exact figure") UNTIL the target's own exposure
+## hits FULL, at which point it snaps to a precise bearing. One clean step, not a gradual ramp: stay
+## under 100 and you're only ever a rough compass heading; peg the meter and you're pinpointed.
+@export var exposure_precise_at: float = 100.0
 
 var _target: Node2D = null
 var _target_exposure: ExposureComponent = null
@@ -166,15 +166,13 @@ func _process_flashing(_delta: float) -> void:
 		_alpha = 0.0  # on-screen / dead / gone → off, no fade
 
 
-# The hunt-arrow precision FORCED by the target's exposure — acting loud makes you easier to pin.
+# The hunt-arrow precision FORCED by the target's exposure. 4-way (0) until the target is FULLY
+# exposed, then precise (2) — no 8-way middle step (the arrow is "only ever 4-way unless 100%").
 func _exposure_precision_tier() -> int:
 	if _target_exposure == null:
 		return 0
-	var e: float = _target_exposure.exposure
-	if e >= exposure_precise_at:
+	if _target_exposure.exposure >= exposure_precise_at:
 		return 2
-	if e >= exposure_8way_at:
-		return 1
 	return 0
 
 

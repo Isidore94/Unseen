@@ -74,6 +74,11 @@ var selected_perk: int = 0
 ## the end scoreboard, and the death screen. Empty = the game falls back to "Player N".
 var player_nickname: String = ""
 
+## TUTORIAL launch flag. Set true by the main menu's "Tutorial" button (and cleared everywhere else),
+## so the single-player scene knows to open the click-through GUI tour over a normal bot match. Lives
+## here so it survives the menu → scene change. Real MP never sets it, so MP matches just start.
+var tutorial_mode: bool = false
+
 # --- Steam (online play over the relay; only active when run in the GodotSteam editor) ---
 ## Valve's free test App ID (Spacewar), used until we have our own. Matches steam_appid.txt.
 const STEAM_APP_ID := 480
